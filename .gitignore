@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+backend/.venv/
+
+# Node
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Local configuration and secrets
+.env
+secrets/
+
+# User data and generated artifacts
+workspace/*
+!workspace/.gitkeep
+backend/workspace/
+
+# Databases and logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
