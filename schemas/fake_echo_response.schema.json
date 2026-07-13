@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fake_echo_response.schema.json",
+  "title": "Fake Echo Provider Response",
+  "type": "object",
+  "required": ["provider", "task_kind", "echo"],
+  "properties": {
+    "provider": { "const": "fake" },
+    "task_kind": { "type": "string" },
+    "echo": { "type": "object" }
+  },
+  "additionalProperties": false
+}
