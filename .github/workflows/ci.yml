@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-hygiene:
+    name: repository-hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Check tracked files and UTF-8 integrity
+        run: python scripts/check_repo_hygiene.py
+
+  backend:
+    name: backend-python-${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.12"
+          - "3.13"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[dev]"
+          python -m pip check
+
+      - name: Run backend tests
+        run: python -m pytest backend/tests
+
+  migration:
+    name: migration-sqlite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AND_DATABASE_URL: sqlite:///./.ci-workspace/migration.db
+      AND_WORKSPACE_DIR: ./.ci-workspace
+      AND_CORS_ORIGINS: '["http://127.0.0.1:5173"]'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[dev]"
+          python -m pip check
+
+      - name: Migrate an empty database up, down and up
+        run: |
+          rm -rf .ci-workspace
+          mkdir -p .ci-workspace
+          python -m alembic -c backend/alembic.ini upgrade head
+          python -m alembic -c backend/alembic.ini current
+          python -m alembic -c backend/alembic.ini downgrade base
+          python -m alembic -c backend/alembic.ini upgrade head
+
+      - name: Verify migration revision
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          connection = sqlite3.connect(".ci-workspace/migration.db")
+          try:
+              row = connection.execute(
+                  "SELECT version_num FROM alembic_version"
+              ).fetchone()
+          finally:
+              connection.close()
+
+          assert row == ("0001_m0_core",), row
+          print("Migration revision verified:", row[0])
+          PY
+
+  frontend:
+    name: frontend-node-20
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify production output
+        run: test -f frontend/dist/index.html
+
+  windows-smoke:
+    name: windows-powershell-smoke
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Parse repository PowerShell scripts
+        shell: pwsh
+        run: |
+          $HasErrors = $false
+          Get-ChildItem -Path scripts -Filter *.ps1 -File | ForEach-Object {
+            $Tokens = $null
+            $ParseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$Tokens,
+              [ref]$ParseErrors
+            ) | Out-Null
+
+            if ($ParseErrors.Count -gt 0) {
+              $HasErrors = $true
+              Write-Host "Syntax errors in $($_.FullName)" -ForegroundColor Red
+              $ParseErrors | ForEach-Object {
+                Write-Host (
+                  "  Line {0}, column {1}: {2}" -f
+                  $_.Extent.StartLineNumber,
+                  $_.Extent.StartColumnNumber,
+                  $_.Message
+                ) -ForegroundColor Red
+              }
+            }
+          }
+
+          if ($HasErrors) {
+            throw "PowerShell syntax validation failed."
+          }
+
+      - name: Run Windows setup and tests
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          .\scripts\setup.ps1
+          .\scripts\test.ps1
+          .\scripts\init-db.ps1
+
+      - name: Build frontend on Windows
+        shell: pwsh
+        run: |
+          Push-Location frontend
+          try {
+            npm run build --silent
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frontend build failed with exit code $LASTEXITCODE."
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Confirm scripts did not modify tracked files
+        shell: pwsh
+        run: |
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows scripts modified tracked repository files."
+          }
