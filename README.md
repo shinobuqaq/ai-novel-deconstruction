@@ -1,29 +1,29 @@
-# AI 自动小说拆书分析器
+# AI 鑷姩灏忚鎷嗕功鍒嗘瀽鍣?
 
-这是项目的 **M0 工程骨架 + Vertical Slice 01 起点**。当前仓库实现的是最小可运行闭环，而不是完整的小说拆书产品：
+杩欐槸椤圭洰鐨?**M0 宸ョ▼楠ㄦ灦 + Vertical Slice 01 璧风偣**銆傚綋鍓嶄粨搴撳疄鐜扮殑鏄渶灏忓彲杩愯闂幆锛岃€屼笉鏄畬鏁寸殑灏忚鎷嗕功浜у搧锛?
 
 - FastAPI API
 - SQLite + Alembic
-- Project / Task / Artifact 三类基础对象
-- 单机轮询 Worker 与任务租约
+- Project / Task / Artifact 涓夌被鍩虹瀵硅薄
+- 鍗曟満杞 Worker 涓庝换鍔＄绾?
 - Fake Provider
-- React + TypeScript + Vite 最小控制台
-- Windows 一键安装、启动与测试脚本
-- M0—M8 开发 Backlog
+- React + TypeScript + Vite 鏈€灏忔帶鍒跺彴
+- Windows 涓€閿畨瑁呫€佸惎鍔ㄤ笌娴嬭瘯鑴氭湰
+- M0鈥擬8 寮€鍙?Backlog
 
-> M0 的目标是验证仓库结构、任务恢复、Artifact 写入、前后端连接和开发流程。后续能力按 `docs/ISSUE_BACKLOG.md` 逐步实现。
+> M0 鐨勭洰鏍囨槸楠岃瘉浠撳簱缁撴瀯銆佷换鍔℃仮澶嶃€丄rtifact 鍐欏叆銆佸墠鍚庣杩炴帴鍜屽紑鍙戞祦绋嬨€傚悗缁兘鍔涙寜 `docs/ISSUE_BACKLOG.md` 閫愭瀹炵幇銆?
 
 
-## 0. 环境要求
+## 0. 鐜瑕佹眰
 
 - Windows 10/11
 - Git
-- Python 3.12 或 3.13
-- Node.js 20 或更新版本（包含 npm）
+- Python 3.12 鎴?3.13
+- Node.js 20 鎴栨洿鏂扮増鏈紙鍖呭惈 npm锛?
 
-## 1. Windows 快速启动
+## 1. Windows 蹇€熷惎鍔?
 
-在项目根目录打开 PowerShell：
+鍦ㄩ」鐩牴鐩綍鎵撳紑 PowerShell锛?
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -31,82 +31,83 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\dev.ps1
 ```
 
-启动后：
+鍚姩鍚庯細
 
-- 前端：`http://127.0.0.1:5173`
-- API 文档：`http://127.0.0.1:8000/docs`
-- 健康检查：`http://127.0.0.1:8000/health`
+- 鍓嶇锛歚http://127.0.0.1:5173`
+- API 鏂囨。锛歚http://127.0.0.1:8000/docs`
+- 鍋ュ悍妫€鏌ワ細`http://127.0.0.1:8000/health`
 
-`dev.ps1` 会分别启动 API、Worker 和 Frontend。关闭对应 PowerShell 窗口即可停止。
+`dev.ps1` 浼氬垎鍒惎鍔?API銆乄orker 鍜?Frontend銆傚叧闂搴?PowerShell 绐楀彛鍗冲彲鍋滄銆?
 
-## 2. 验证最小闭环
+## 2. 楠岃瘉鏈€灏忛棴鐜?
 
-1. 在页面创建项目。
-2. 创建一个 `fake.echo` 任务。
-3. Worker 领取任务并生成不可变 JSON Artifact。
-4. 页面刷新后可看到任务状态由 `PENDING` 变为 `SUCCEEDED`。
-5. Artifact 文件写入 `workspace/artifacts/<project_id>/`。
+1. 鍦ㄩ〉闈㈠垱寤洪」鐩€?
+2. 鍒涘缓涓€涓?`fake.echo` 浠诲姟銆?
+3. Worker 棰嗗彇浠诲姟骞剁敓鎴愪笉鍙彉 JSON Artifact銆?
+4. 椤甸潰鍒锋柊鍚庡彲鐪嬪埌浠诲姟鐘舵€佺敱 `PENDING` 鍙樹负 `SUCCEEDED`銆?
+5. Artifact 鏂囦欢鍐欏叆 `workspace/artifacts/<project_id>/`銆?
 
-## 3. 常用命令
+## 3. 甯哥敤鍛戒护
 
 ```powershell
-# 只初始化数据库
+# 鍙垵濮嬪寲鏁版嵁搴?
 .\scripts\init-db.ps1
 
-# 运行测试
+# 杩愯娴嬭瘯
 .\scripts\test.ps1
 
-# 只运行一次 Worker（方便调试）
+# 鍙繍琛屼竴娆?Worker锛堟柟渚胯皟璇曪級
 .\.venv\Scripts\python.exe -m app.worker --once
 ```
 
-## 4. 当前目录
+## 4. 褰撳墠鐩綍
 
 ```text
 ai-novel-deconstruction/
-├─ backend/               FastAPI、Worker、领域与持久化
-├─ frontend/              React + TypeScript + Vite
-├─ docs/                  Roadmap、Issue Backlog、ADR、研究追踪
-├─ prompts/               后续 Prompt Registry
-├─ schemas/               Structured Output JSON Schema
-├─ fixtures/              小型可重复测试语料
-├─ scripts/               Windows 开发脚本
-├─ workspace/             本地数据库、Artifact 与用户数据（不进 Git）
-└─ .env.example
+鈹溾攢 backend/               FastAPI銆乄orker銆侀鍩熶笌鎸佷箙鍖?
+鈹溾攢 frontend/              React + TypeScript + Vite
+鈹溾攢 docs/                  Roadmap銆両ssue Backlog銆丄DR銆佺爺绌惰拷韪?
+鈹溾攢 prompts/               鍚庣画 Prompt Registry
+鈹溾攢 schemas/               Structured Output JSON Schema
+鈹溾攢 fixtures/              灏忓瀷鍙噸澶嶆祴璇曡鏂?
+鈹溾攢 scripts/               Windows 寮€鍙戣剼鏈?
+鈹溾攢 workspace/             鏈湴鏁版嵁搴撱€丄rtifact 涓庣敤鎴锋暟鎹紙涓嶈繘 Git锛?
+鈹斺攢 .env.example
 ```
 
-## 5. 当前编码顺序
+## 5. 褰撳墠缂栫爜椤哄簭
 
-先完成 `docs/ISSUE_BACKLOG.md` 中的 **M0 Ready Queue**，随后进入 Vertical Slice 01：
+鍏堝畬鎴?`docs/ISSUE_BACKLOG.md` 涓殑 **M0 Ready Queue**锛岄殢鍚庤繘鍏?Vertical Slice 01锛?
 
 ```text
-导入 2—3 章
-→ EvidenceSpan
-→ 一个实体候选路线
-→ 一个事件 LLM 路线
-→ Source Alignment
-→ Candidate / Issue
-→ 简单 Claim
-→ Evidence Inspector
+瀵煎叆 2鈥? 绔?
+鈫?EvidenceSpan
+鈫?涓€涓疄浣撳€欓€夎矾绾?
+鈫?涓€涓簨浠?LLM 璺嚎
+鈫?Source Alignment
+鈫?Candidate / Issue
+鈫?绠€鍗?Claim
+鈫?Evidence Inspector
 ```
 
-## 6. 研究成果如何进入代码
+## 6. 鐮旂┒鎴愭灉濡備綍杩涘叆浠ｇ爜
 
-本仓库不是从 P01—P18 中选择一个项目 Fork 而来，而是依据跨项目审计结论进行 clean-room 独立实现。
+鏈粨搴撲笉鏄粠 P01鈥擯18 涓€夋嫨涓€涓」鐩?Fork 鑰屾潵锛岃€屾槸渚濇嵁璺ㄩ」鐩璁＄粨璁鸿繘琛?clean-room 鐙珛瀹炵幇銆?
 
-- [研究追踪矩阵](docs/RESEARCH_TRACEABILITY.md)：Pxx / M / G → 模块 → Issue → 验证
-- [第三方代码登记](docs/THIRD_PARTY_CODE.md)：当前未复制 P01—P18 源码；未来引入必须固定来源、版本和许可证
-- [开发路线图](docs/ROADMAP.md)
+- [鐮旂┒杩借釜鐭╅樀](docs/RESEARCH_TRACEABILITY.md)锛歅xx / M / G 鈫?妯″潡 鈫?Issue 鈫?楠岃瘉
+- [绗笁鏂逛唬鐮佺櫥璁癩(docs/THIRD_PARTY_CODE.md)锛氬綋鍓嶆湭澶嶅埗 P01鈥擯18 婧愮爜锛涙湭鏉ュ紩鍏ュ繀椤诲浐瀹氭潵婧愩€佺増鏈拰璁稿彲璇?
+- [寮€鍙戣矾绾垮浘](docs/ROADMAP.md)
 - [Issue Backlog](docs/ISSUE_BACKLOG.md)
+- [M0 Windows 冷启动与最小闭环验证记录](docs/M0_COLD_START_VALIDATION.md)
 
-## 7. 文档权威
+## 7. 鏂囨。鏉冨▉
 
-1. `《产品定义与 Quality Mode 原型方案 V0.1》`：产品范围与验收
-2. `《候选系统架构与技术设计 V0.1》`：架构与技术边界
-3. `《机制演进台账 V0.16》`：研究机制状态
-4. `《P01—P17 阶段总审计报告 V1.0》` 与 P01—P18 单项目档案：研究证据
-5. 本 README：开发入口，不替代上述正式文档
+1. `銆婁骇鍝佸畾涔変笌 Quality Mode 鍘熷瀷鏂规 V0.1銆媊锛氫骇鍝佽寖鍥翠笌楠屾敹
+2. `銆婂€欓€夌郴缁熸灦鏋勪笌鎶€鏈璁?V0.1銆媊锛氭灦鏋勪笌鎶€鏈竟鐣?
+3. `銆婃満鍒舵紨杩涘彴璐?V0.16銆媊锛氱爺绌舵満鍒剁姸鎬?
+4. `銆奝01鈥擯17 闃舵鎬诲璁℃姤鍛?V1.0銆媊 涓?P01鈥擯18 鍗曢」鐩。妗堬細鐮旂┒璇佹嵁
+5. 鏈?README锛氬紑鍙戝叆鍙ｏ紝涓嶆浛浠ｄ笂杩版寮忔枃妗?
 
 ## 8. License
 
-项目当前仍为私有仓库，许可证尚未最终确定。在正式公开或分发前补充 `LICENSE`，并完成第三方依赖与通知复核。
+椤圭洰褰撳墠浠嶄负绉佹湁浠撳簱锛岃鍙瘉灏氭湭鏈€缁堢‘瀹氥€傚湪姝ｅ紡鍏紑鎴栧垎鍙戝墠琛ュ厖 `LICENSE`锛屽苟瀹屾垚绗笁鏂逛緷璧栦笌閫氱煡澶嶆牳銆?

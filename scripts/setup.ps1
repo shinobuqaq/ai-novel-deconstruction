@@ -1,6 +1,13 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
+
+function Assert-NativeSuccess {
+  param([Parameter(Mandatory = $true)][string]$Step)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Step failed with exit code $LASTEXITCODE."
+  }
+}
 
 function New-CompatibleVenv {
   if (Test-Path ".venv") {
@@ -13,6 +20,7 @@ function New-CompatibleVenv {
       if ($LASTEXITCODE -eq 0) {
         Write-Host "Creating .venv with Python $Version..."
         & py "-$Version" -m venv .venv
+        Assert-NativeSuccess "Virtual environment creation"
         return
       }
     }
@@ -20,9 +28,11 @@ function New-CompatibleVenv {
 
   if (Get-Command python -ErrorAction SilentlyContinue) {
     $VersionOk = & python -c "import sys; print(int((3,12) <= sys.version_info[:2] < (3,14)))"
+    Assert-NativeSuccess "Python version check"
     if ($VersionOk -eq "1") {
       Write-Host "Creating .venv with python..."
       & python -m venv .venv
+      Assert-NativeSuccess "Virtual environment creation"
       return
     }
   }
@@ -37,15 +47,28 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 New-CompatibleVenv
 
 & ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
+Assert-NativeSuccess "pip upgrade"
+
 & ".\.venv\Scripts\python.exe" -m pip install -e ".\backend[dev]"
+Assert-NativeSuccess "Backend dependency installation"
 
 if (-not (Test-Path ".env")) {
   Copy-Item ".env.example" ".env"
 }
 
+& ".\.venv\Scripts\python.exe" -c "from app.config import get_settings; settings = get_settings(); settings.ensure_directories(); print('Configuration OK')"
+Assert-NativeSuccess "Configuration validation"
+
 Push-Location frontend
-npm ci
-Pop-Location
+try {
+  npm ci
+  Assert-NativeSuccess "Frontend dependency installation"
+}
+finally {
+  Pop-Location
+}
 
 & ".\.venv\Scripts\python.exe" -m alembic -c backend\alembic.ini upgrade head
+Assert-NativeSuccess "Database migration"
+
 Write-Host "Setup complete." -ForegroundColor Green
