@@ -1,92 +1,92 @@
 # GitHub Issue Backlog
 
-鏈枃浠舵槸宸ョ▼ Backlog 涓?GitHub Issue 鐨勮寖鍥村熀绾裤€侻0-01鈥擬0-08 搴斿垎鍒缓绔嬫垨淇涓虹嫭绔?Issue锛涙瘡涓?Issue 蹇呴』鍖呭惈 Goal銆丷esearch basis銆丄dopted銆丷ejected銆丏eliverables銆丄cceptance criteria 鍜?Validation銆?
+本文件是工程 Backlog 与 GitHub Issue 的范围基线。M0-01—M0-08 应分别建立或修正为独立 Issue；每个 Issue 必须包含 Goal、Research basis、Adopted、Rejected、Deliverables、Acceptance criteria 和 Validation。
 
-## Ready Queue锛氬厛鍋氳繖浜?
+## Ready Queue：先做这些
 
-### M0-01 浠撳簱涓庡紑鍙戣剼鏈?
-- [x] Monorepo 鐩綍
+### M0-01 仓库与开发脚本
+- [x] Monorepo 目录
 - [x] `.gitignore` / `.env.example`
 - [x] `setup.ps1` / `dev.ps1` / `test.ps1`
-- [ ] 鍦ㄧ敤鎴?Windows 鏈哄櫒涓婂畬鎴愪竴娆″喎鍚姩楠岃瘉
+- [x] 在用户 Windows 机器上完成一次冷启动验证（见 `docs/M0_COLD_START_VALIDATION.md`）
 
-**Done:** 鏂版満鍣ㄦ寜 README 鍙湪 15 鍒嗛挓鍐呭惎鍔ㄤ笁杩涚▼銆?
+**Done:** 新机器按 README 可在 15 分钟内启动三进程。
 
-### M0-02 閰嶇疆涓?Workspace
+### M0-02 配置与 Workspace
 - [x] Pydantic Settings
-- [x] Workspace 涓?Artifact 鐩綍
-- [ ] Secret file 绾﹀畾
-- [ ] 閰嶇疆閿欒鐨勫彲璇婃柇鎻愮ず
+- [x] Workspace 与 Artifact 目录
+- [ ] Secret file 约定
+- [ ] 配置错误的可诊断提示
 
-### M0-03 SQLite 涓?Migration
+### M0-03 SQLite 与 Migration
 - [x] SQLite WAL / foreign keys
-- [x] Alembic 鍒濆 migration
-- [x] Migration smoke test锛堟竻鐞嗗鍏ュ墠宸插湪闅旂鐜楠岃瘉锛?
-- [ ] 鏁版嵁搴撳浠?鎭㈠鑴氭湰
+- [x] Alembic 初始 migration
+- [x] Migration smoke test（清理导入前已在隔离环境验证）
+- [ ] 数据库备份/恢复脚本
 
 ### M0-04 Task Lease
 - [x] PENDING / RUNNING / SUCCEEDED / FAILED
 - [x] lease owner / expiry / attempts
-- [ ] 杩涚▼宕╂簝鍚庣殑杩囨湡绉熺害鎭㈠娴嬭瘯
+- [ ] 进程崩溃后的过期租约恢复测试
 - [ ] CANCEL command
 
 ### M0-05 Artifact Registry
-- [x] 鍐呭鍝堝笇
-- [x] 涓存椂鏂囦欢 + 鍘熷瓙鏇挎崲
-- [x] 鍐呭鍘婚噸
+- [x] 内容哈希
+- [x] 临时文件 + 原子替换
+- [x] 内容去重
 - [ ] Artifact lineage / dependency edge
 - [ ] DIRTY propagation baseline
 
 ### M0-06 Fake Provider
-- [x] 纭畾鎬у搷搴?
-- [x] Token 鐢ㄩ噺鍗犱綅璁板綍
+- [x] 确定性响应
+- [x] Token 用量占位记录
 - [ ] Provider contract test
 - [ ] invalid JSON / timeout / rate-limit fake scenarios
 
-### M0-07 API 涓庢渶灏?Run Center
+### M0-07 API 与最小 Run Center
 - [x] Project / Task / Artifact API
-- [x] React 鏈€灏忛〉闈?
-- [ ] SSE 鎴栬疆璇㈣繘搴﹁鑼?
-- [ ] 閿欒鐮佺洰褰曟帴鍏?UI
+- [x] React 最小页面
+- [ ] SSE 或轮询进度规范
+- [ ] 错误码目录接入 UI
 
-### M0-08 M0 鎭㈠涓庢祴璇?Gate
+### M0-08 M0 恢复与测试 Gate
 - [x] API health test
-- [x] Project 鈫?Task 鈫?Artifact integration test
-- [ ] Worker 鍦?Provider 鍚庛€丄rtifact commit 鍓嶅穿婧冪殑鎭㈠娴嬭瘯
-- [ ] Windows 鍐峰惎鍔ㄦ祴璇曡褰?
+- [x] Project → Task → Artifact integration test
+- [ ] Worker 在 Provider 后、Artifact commit 前崩溃的恢复测试
+- [x] Windows 冷启动测试记录（见 `docs/M0_COLD_START_VALIDATION.md`）
 
 ---
 
 ## Vertical Slice 01
 
-### VS01-01 瀵煎叆 2鈥? 绔?
+### VS01-01 导入 2—3 章
 - TXT/Markdown parser
 - SourceDocument / SourceVersion / SourceUnit
-- 绔犺妭椤哄簭銆佺┖绔犮€侀噸澶嶇珷 Issue
+- 章节顺序、空章、重复章 Issue
 
 ### VS01-02 EvidenceSpan
 - `start_char/end_char/text_snapshot/context_hash`
-- 绮剧‘鍥炶创娴嬭瘯
-- 澶氬尮閰?Locator 杩斿洖 UNCERTAIN
+- 精确回贴测试
+- 多匹配 Locator 返回 UNCERTAIN
 
-### VS01-03 鍗曚竴璺疄浣撳€欓€?
-- 鍏堝疄鐜?LLM 鎴栬鍒欎腑鐨勪竴鏉?
-- Candidate 鍙粦瀹?Evidence锛屼笉鐩存帴 Canonical Write
+### VS01-03 单一路实体候选
+- 先实现 LLM 或规则中的一条
+- Candidate 只绑定 Evidence，不直接 Canonical Write
 
-### VS01-04 鍗曚竴璺簨浠跺€欓€?
+### VS01-04 单一路事件候选
 - Structured Output Schema
 - Trigger phrase + source text
 - Character Locator
 
 ### VS01-05 Source Alignment Gate
-- 0 鍖归厤锛歊EJECTED
-- 1 鍖归厤锛歏ALID candidate
-- 澶氬尮閰嶏細UNCERTAIN Issue
+- 0 匹配：REJECTED
+- 1 匹配：VALID candidate
+- 多匹配：UNCERTAIN Issue
 
 ### VS01-06 Candidate / Issue Queue
-- Candidate 鐘舵€佹満
-- Issue 涓ラ噸搴︿笌瀵硅薄寮曠敤
-- 鐢ㄦ埛鎺ュ彈/鎷掔粷鍩虹鍛戒护
+- Candidate 状态机
+- Issue 严重度与对象引用
+- 用户接受/拒绝基础命令
 
 ### VS01-07 Simple Claim
 - Claim text / type / Evidence IDs
@@ -94,16 +94,16 @@
 - VERIFIED / UNCERTAIN / REJECTED
 
 ### VS01-08 Evidence Inspector
-- 鍘熸枃楂樹寒
-- Candidate / Claim 璺宠浆
-- 灞曠ず鍧愭爣銆佹潵婧愩€佺姸鎬佸拰 Issue
+- 原文高亮
+- Candidate / Claim 跳转
+- 展示坐标、来源、状态和 Issue
 
 ---
 
 ## M1 Source / Evidence
 - M1-01 Source schema and deterministic IDs
 - M1-02 TXT/Markdown importer
-- M1-03 DOCX/EPUB adapter锛堝彲寤跺悗锛?
+- M1-03 DOCX/EPUB adapter（可延后）
 - M1-04 chapter parser and manual correction
 - M1-05 character authority and token projection
 - M1-06 chunk overlap and dedup
@@ -182,7 +182,7 @@
 - M7-09 publish gate
 
 ## M8 Benchmark
-- M8-01 30鈥?0 chapter gold corpus
+- M8-01 30—50 chapter gold corpus
 - M8-02 metric harness
 - M8-03 ablation runner
 - M8-04 cost and latency dashboard
