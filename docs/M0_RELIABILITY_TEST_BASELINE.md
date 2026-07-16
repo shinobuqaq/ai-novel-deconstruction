@@ -6,7 +6,13 @@
 
 > PR B：Task Reliability Test Baseline
 
-PR B 只建立可靠性测试基线，不修改 Task、Lease、Provider、Artifact 或数据库运行语义。
+PR B 建立第一版可靠性测试基线。PR B.1 补充此前未落地的过期任务收敛、失败分类和取消竞争行为测试，并加入自动 gap 清单检查。
+
+完整设计、不变量、固定命令契约与后续唯一 PR 顺序见：
+
+- `docs/M0_RELIABILITY_DESIGN.md`
+
+PR B 与 PR B.1 都不修改 Task、Lease、Provider、Artifact 或数据库运行语义。
 
 当前项目状态仍定义为：
 
@@ -41,7 +47,13 @@ PR B 只建立可靠性测试基线，不修改 Task、Lease、Provider、Artifa
 | M0-GAP-LEASE-01 | 旧 Worker 在租约被重新领取后不能完成 Task | XFAIL |
 | M0-GAP-LEASE-02 | Heartbeat 必须携带 Attempt 与 Fencing Identity | XFAIL |
 | M0-GAP-RETRY-01 | 达到最大尝试次数后不能重新进入 PENDING | XFAIL |
+| M0-GAP-REAPER-01 | 过期 Attempt 有重试预算时进入 RETRY_WAIT | XFAIL |
+| M0-GAP-REAPER-02 | 过期 Attempt 达到上限时进入 FAILED | XFAIL |
+| M0-GAP-RETRY-02 | 可重试失败进入 RETRY_WAIT 并设置 next_attempt_at | XFAIL |
+| M0-GAP-RETRY-03 | 永久失败第一次直接进入 FAILED | XFAIL |
 | M0-GAP-CANCEL-01 | CANCELLED 是不可被原地重开的终态 | XFAIL |
+| M0-GAP-CANCEL-02 | 取消先提交时拒绝迟到成功 | XFAIL |
+| M0-GAP-CANCEL-03 | 成功先提交时迟到取消不得改写终态 | XFAIL |
 | M0-GAP-STATE-01 | 状态机包含 RETRY_WAIT 与 CANCEL_REQUESTED | XFAIL |
 | M0-GAP-PROVIDER-01 | Task 执行通过 Provider/Registry 注入 | XFAIL |
 | M0-GAP-ARTIFACT-01 | Artifact 身份与 Blob 内容去重分离 | XFAIL |
@@ -50,9 +62,9 @@ PR B 只建立可靠性测试基线，不修改 Task、Lease、Provider、Artifa
 固定基线计数：
 
 ```text
-11 tests
-1 passed
-10 xfailed
+18 tests
+2 passed
+16 xfailed
 0 failed
 0 errors
 ```
@@ -64,9 +76,11 @@ PR B 只建立可靠性测试基线，不修改 Task、Lease、Provider、Artifa
 ```text
 backend/tests/reliability/
 ├── conftest.py
+├── test_gap_manifest.py
 ├── test_task_claim_contract.py
 ├── test_lease_fencing_contract.py
 ├── test_retry_cancel_contract.py
+├── test_recovery_semantics_contract.py
 └── test_provider_artifact_contract.py
 ```
 
@@ -77,9 +91,10 @@ backend/tests/reliability/
 - 真实 WAL 配置；
 - 线程 Barrier 构造确定性的双 Worker Claim 交错；
 - 真实 Artifact 文件写入临时 Workspace；
+- 自动核对每个 strict xfail 的唯一 gap ID；
 - 不调用外部模型或网络服务。
 
-## 5. PR B 不做什么
+## 5. PR B 与 PR B.1 不做什么
 
 本 PR 不会：
 
@@ -93,19 +108,22 @@ backend/tests/reliability/
 - 实现 Artifact Reconciler；
 - 修改前端 Run Center。
 
-这些实现分别进入后续 PR C—PR I。
+这些实现分别进入后续 PR C—PR K。
 
 ## 6. 后续转绿顺序
 
-建议按以下顺序解除 strict xfail：
+冻结后的唯一顺序如下：
 
-1. PR C：TaskAttempt Schema；
-2. PR D：Atomic Claim；
-3. PR E：Lease Fencing 与 Heartbeat；
-4. PR F：Retry 与 Cancellation；
-5. PR G：Provider Contract；
-6. PR H：Artifact Identity / Blob；
-7. PR I：Artifact Recovery。
+1. PR B.1：补全可靠性设计与高风险行为测试；
+2. PR C：TaskAttempt Schema；
+3. PR D：Atomic Claim；
+4. PR E：Lease Fencing 与 Heartbeat；
+5. PR F：Retry 与 Cancellation；
+6. PR G：Provider Contract；
+7. PR H：Artifact Identity / Blob；
+8. PR I：Artifact Recovery；
+9. PR J：Run Center Reliability UI；
+10. PR K：M0 Reliability Gate。
 
 每个实现 PR 必须：
 
@@ -115,14 +133,15 @@ backend/tests/reliability/
 4. 通过六项 GitHub Actions Required checks；
 5. 不顺手修改无关模块。
 
-## 7. PR B 完成标准
+## 7. PR B.1 完成标准
 
-PR B 只有同时满足以下条件才可合并：
+PR B.1 只有同时满足以下条件才可合并：
 
-- 可靠性目录共收集 11 个测试；
-- 结果恰好为 1 PASS、10 XFAIL；
+- 完整设计基线进入 `docs/M0_RELIABILITY_DESIGN.md`；
+- 可靠性目录共收集 18 个测试；
+- 结果恰好为 2 PASS、16 XFAIL；
 - 没有普通 FAIL 或 ERROR；
 - 完整后端测试通过；
 - 六项远端 Required checks 全部通过；
-- PR 文件范围只包含本文件和可靠性测试目录；
+- PR 文件范围只包含可靠性设计、测试基线和可靠性测试目录；
 - PR 保持 Draft，等待人工审核后再合并。
