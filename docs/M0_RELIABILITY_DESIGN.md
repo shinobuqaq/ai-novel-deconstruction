@@ -8,10 +8,10 @@
 |---|---|
 | 设计版本 | V1.1 |
 | 更新日期 | 2026-07-16 |
-| 适用基线 | `main` at `aaa1345`，PR #14 合并后 |
-| 已完成 | PR A：CI Gate；PR B：Reliability Test Baseline |
-| 当前实施项 | PR B.1：Reliability Baseline Completeness |
-| 下一实施项 | PR C：TaskAttempt Schema |
+| 适用基线 | `main` at `b76cd3d`，PR #15 合并后 |
+| 已完成 | PR A、PR B、PR B.1 |
+| 当前实施项 | PR C：TaskAttempt Schema |
+| 下一实施项 | PR D：Atomic Claim |
 
 当前判断保持为：
 

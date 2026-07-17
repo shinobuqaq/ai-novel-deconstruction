@@ -108,7 +108,7 @@ jobs:
           finally:
               connection.close()
 
-          assert row == ("0001_m0_core",), row
+          assert row == ("0002_task_attempts",), row
           print("Migration revision verified:", row[0])
           PY
 

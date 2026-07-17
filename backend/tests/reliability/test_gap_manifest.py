@@ -20,7 +20,6 @@ EXPECTED_GAP_IDS = {
     "M0-GAP-RETRY-01",
     "M0-GAP-RETRY-02",
     "M0-GAP-RETRY-03",
-    "M0-GAP-STATE-01",
 }
 
 GAP_ID_PATTERN = re.compile(r"M0-GAP-[A-Z]+-\d{2}")

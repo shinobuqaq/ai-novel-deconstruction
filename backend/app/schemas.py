@@ -41,6 +41,12 @@ class TaskRead(BaseModel):
     max_attempts: int
     lease_owner: str | None
     lease_expires_at: datetime | None
+    current_attempt_id: str | None
+    lease_generation: int
+    next_attempt_at: datetime | None
+    cancel_requested_at: datetime | None
+    last_error_code: str | None
+    last_error_message: str | None
     error_code: str | None
     error_message: str | None
     created_at: datetime
