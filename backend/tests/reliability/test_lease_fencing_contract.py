@@ -10,6 +10,7 @@ from app.models import Artifact, TaskAttemptStatus, TaskStatus
 from app.repositories import claim_next_task, get_task, heartbeat_task
 from app.services.tasks import execute_task_sync
 from app.worker import _maintain_lease
+from app.providers import create_default_provider_registry
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -62,6 +63,7 @@ def test_stale_worker_cannot_finalize_after_lease_reclaim(
         reliability_env.session_factory,
         reliability_env.settings,
         stale_task,
+        create_default_provider_registry(),
     )
 
     with reliability_env.session_factory() as reading_session:
@@ -113,6 +115,7 @@ def test_stale_worker_failure_cannot_overwrite_new_attempt(
         reliability_env.session_factory,
         reliability_env.settings,
         stale_claim,
+        create_default_provider_registry(),
     )
 
     with reliability_env.session_factory() as session:

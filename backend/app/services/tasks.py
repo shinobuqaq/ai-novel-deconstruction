@@ -6,7 +6,8 @@ import json
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Settings
-from ..providers.fake import FakeProvider
+from ..providers.base import ProviderError
+from ..providers.registry import ProviderRegistry
 from ..repositories import (
     ClaimedTask,
     acknowledge_task_cancellation,
@@ -21,13 +22,29 @@ async def execute_task(
     session_factory: sessionmaker[Session],
     settings: Settings,
     claim: ClaimedTask,
+    provider_registry: ProviderRegistry,
 ) -> bool:
     if claim.kind != "fake.echo":
         raise ValueError(f"UNSUPPORTED_TASK_KIND:{claim.kind}")
 
     payload = json.loads(claim.payload_json)
-    provider = FakeProvider()
-    response = await provider.complete(task_kind=claim.kind, payload=payload)
+    provider = provider_registry.resolve(settings.provider_name)
+    try:
+        response = await provider.complete(task_kind=claim.kind, payload=payload)
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError(
+            code="PROVIDER_UNEXPECTED_ERROR",
+            message=str(exc) or "Provider raised an unexpected error.",
+            retryable=False,
+        ) from exc
+    if not isinstance(response.parsed, dict):
+        raise ProviderError(
+            code="PROVIDER_INVALID_OUTPUT",
+            message="Provider response must contain a JSON object.",
+            retryable=True,
+        )
 
     with session_factory() as session:
         if not task_claim_is_current(session, claim=claim):
@@ -56,6 +73,14 @@ async def execute_task(
             lease_token=claim.lease_token,
             lease_generation=claim.lease_generation,
             result_artifact_id=artifact.id,
+            provider_name=provider.name,
+            usage_json=json.dumps(
+                {
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                },
+                sort_keys=True,
+            ),
         )
         if not accepted:
             acknowledge_task_cancellation(session, claim=claim)
@@ -66,10 +91,33 @@ def execute_task_sync(
     session_factory: sessionmaker[Session],
     settings: Settings,
     claim: ClaimedTask,
+    provider_registry: ProviderRegistry,
 ) -> bool:
     try:
-        return asyncio.run(execute_task(session_factory, settings, claim))
+        return asyncio.run(
+            execute_task(
+                session_factory,
+                settings,
+                claim,
+                provider_registry,
+            )
+        )
     except Exception as exc:
+        if isinstance(exc, ProviderError):
+            error_code = exc.code
+            retryable = exc.retryable
+            retry_after_seconds = exc.retry_after_seconds
+        else:
+            if isinstance(exc, ValueError) and str(exc).startswith(
+                "UNSUPPORTED_TASK_KIND:"
+            ):
+                error_code = "UNSUPPORTED_TASK_KIND"
+            elif isinstance(exc, json.JSONDecodeError):
+                error_code = "TASK_PAYLOAD_INVALID"
+            else:
+                error_code = "TASK_EXECUTION_ERROR"
+            retryable = False
+            retry_after_seconds = None
         with session_factory() as session:
             failed = fail_task_attempt(
                 session,
@@ -77,10 +125,15 @@ def execute_task_sync(
                 attempt_id=claim.current_attempt_id,
                 lease_token=claim.lease_token,
                 lease_generation=claim.lease_generation,
-                error_code=type(exc).__name__,
+                error_code=error_code,
                 error_message=str(exc),
-                retryable=False,
-                retry_after_seconds=None,
+                retryable=retryable,
+                retry_after_seconds=retry_after_seconds,
+                provider_name=(
+                    settings.provider_name
+                    if error_code.startswith("PROVIDER_")
+                    else None
+                ),
             )
             if not failed:
                 acknowledge_task_cancellation(session, claim=claim)

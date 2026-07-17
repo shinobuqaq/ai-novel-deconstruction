@@ -7,9 +7,13 @@ from .api import router
 from .config import Settings, get_settings
 from .db import create_db_engine, create_session_factory
 from .models import Base
+from .providers import ProviderRegistry, create_default_provider_registry
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    provider_registry: ProviderRegistry | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
     settings.ensure_directories()
 
@@ -22,6 +26,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.provider_registry = (
+        provider_registry or create_default_provider_registry()
+    )
 
     app.add_middleware(
         CORSMiddleware,
