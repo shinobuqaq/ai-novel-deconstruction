@@ -34,6 +34,8 @@ def test_project_task_artifact_flow(client):
 
     final_task = client.get(f"/api/tasks/{task_id}").json()
     assert final_task["status"] == "SUCCEEDED"
+    assert final_task["created_at"].endswith("Z")
+    assert final_task["finished_at"].endswith("Z")
     artifact_id = final_task["result_artifact_id"]
     assert artifact_id
 
