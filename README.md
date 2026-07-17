@@ -56,6 +56,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 # 运行测试
 .\scripts\test.ps1
 
+# M0 Windows 强杀恢复与最终可靠性验收
+.\scripts\verify-m0-reliability.ps1
+
 # 只运行一次 Worker（方便调试）
 .\.venv\Scripts\python.exe -m app.worker --once
 ```
@@ -99,6 +102,7 @@ ai-novel-deconstruction/
 - [开发路线图](docs/ROADMAP.md)
 - [Issue Backlog](docs/ISSUE_BACKLOG.md)
 - [M0 Windows 冷启动与最小闭环验证记录](docs/M0_COLD_START_VALIDATION.md)
+- [M0 可靠性最终验收](docs/M0_RELIABILITY_GATE.md)
 
 ## 7. 文档权威
 
