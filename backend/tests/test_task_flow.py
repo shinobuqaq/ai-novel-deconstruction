@@ -39,3 +39,54 @@ def test_project_task_artifact_flow(client):
     artifact = client.get(f"/api/artifacts/{artifact_id}/content")
     assert artifact.status_code == 200
     assert artifact.json()["response"]["echo"]["message"] == "hello"
+
+
+def test_running_task_cancellation_is_acknowledged_by_worker(client):
+    project = client.post("/api/projects", json={"name": "取消测试"}).json()
+    created = client.post(
+        "/api/tasks",
+        json={
+            "project_id": project["id"],
+            "kind": "fake.echo",
+            "payload": {"message": "cancel me"},
+        },
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="pytest-cancel-worker",
+            lease_seconds=60,
+        )
+        assert claim is not None
+
+    requested = client.post(f"/api/tasks/{created['id']}/cancel")
+    assert requested.status_code == 200
+    assert requested.json()["status"] == "CANCEL_REQUESTED"
+
+    assert not execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        claim,
+    )
+    final_task = client.get(f"/api/tasks/{created['id']}").json()
+    assert final_task["status"] == "CANCELLED"
+    assert final_task["result_artifact_id"] is None
+
+
+def test_pending_task_cancellation_is_idempotent(client):
+    project = client.post("/api/projects", json={"name": "幂等取消"}).json()
+    created = client.post(
+        "/api/tasks",
+        json={"project_id": project["id"], "kind": "fake.echo"},
+    ).json()
+
+    first = client.post(f"/api/tasks/{created['id']}/cancel")
+    second = client.post(f"/api/tasks/{created['id']}/cancel")
+    retried = client.post(f"/api/tasks/{created['id']}/retry")
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "CANCELLED"
+    assert second.json()["status"] == "CANCELLED"
+    assert second.json()["cancel_requested_at"] == first.json()["cancel_requested_at"]
+    assert retried.json()["status"] == "CANCELLED"

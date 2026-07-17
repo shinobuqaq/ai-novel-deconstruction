@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import datetime, timedelta, timezone
 
 from app.models import TaskStatus
 from app.repositories import (
     claim_next_task,
+    fail_task_attempt,
     get_task,
+    reap_expired_tasks,
+    request_task_cancellation,
     retry_task,
 )
 from app.services.tasks import execute_task_sync
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-RETRY-01: retry_task can return an exhausted task to "
-        "PENDING, leaving it permanently unclaimable instead of terminal."
-    ),
-    strict=True,
-)
 def test_retry_does_not_reopen_a_task_after_max_attempts(
     reliability_env,
     task_factory,
@@ -58,13 +52,6 @@ def test_retry_does_not_reopen_a_task_after_max_attempts(
         assert persisted.status == TaskStatus.FAILED.value
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-CANCEL-01: CANCELLED is currently reopened by retry_task; "
-        "terminal states are not immutable."
-    ),
-    strict=True,
-)
 def test_cancelled_task_is_terminal_and_cannot_be_reopened(
     reliability_env,
     task_factory,
@@ -97,3 +84,89 @@ def test_task_state_machine_contains_reliability_states() -> None:
     }
 
     assert required.issubset(actual)
+
+
+def test_retryable_failures_stop_when_budget_is_exhausted(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_id = task_factory(max_attempts=2)
+    now = datetime.now(timezone.utc)
+
+    for attempt_number in (1, 2):
+        with reliability_env.session_factory() as session:
+            claim = claim_next_task(
+                session,
+                worker_id=f"worker-retry-{attempt_number}",
+                lease_seconds=60,
+                now=now + timedelta(seconds=attempt_number),
+            )
+            assert claim is not None
+            assert claim.attempts == attempt_number
+
+        with reliability_env.session_factory() as session:
+            accepted = fail_task_attempt(
+                session,
+                task_id=task_id,
+                attempt_id=claim.current_attempt_id,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
+                error_code="PROVIDER_TIMEOUT",
+                error_message="retry until exhausted",
+                retryable=True,
+                retry_after_seconds=0,
+                now=now + timedelta(seconds=attempt_number, milliseconds=1),
+            )
+            assert accepted
+
+    with reliability_env.session_factory() as session:
+        persisted = get_task(session, task_id)
+        assert persisted is not None
+        assert persisted.status == TaskStatus.FAILED.value
+        assert persisted.attempts == 2
+        assert persisted.error_code == "PROVIDER_TIMEOUT"
+        assert claim_next_task(
+            session,
+            worker_id="worker-too-late",
+            lease_seconds=60,
+            now=now + timedelta(seconds=10),
+        ) is None
+
+
+def test_cancel_requested_task_converges_after_lease_expiry(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_id = task_factory()
+    now = datetime.now(timezone.utc)
+
+    with reliability_env.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="worker-cancelled",
+            lease_seconds=1,
+            now=now,
+        )
+        assert claim is not None
+
+    with reliability_env.session_factory() as session:
+        requested = request_task_cancellation(
+            session,
+            task_id=task_id,
+            now=now + timedelta(milliseconds=1),
+        )
+        assert requested is not None
+        assert requested.status == TaskStatus.CANCEL_REQUESTED.value
+
+    with reliability_env.session_factory() as session:
+        assert reap_expired_tasks(
+            session,
+            now=now + timedelta(seconds=2),
+        ) == 1
+
+    with reliability_env.session_factory() as session:
+        persisted = get_task(session, task_id)
+        assert persisted is not None
+        assert persisted.status == TaskStatus.CANCELLED.value
+        assert persisted.current_attempt is not None
+        assert persisted.current_attempt.status == "CANCELLED"

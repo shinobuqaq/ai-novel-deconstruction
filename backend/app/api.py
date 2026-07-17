@@ -10,7 +10,16 @@ from sqlalchemy.orm import Session
 from .config import Settings
 from .db import get_db
 from .models import Artifact, Project, Task
-from .repositories import create_project, create_task, get_project, get_task, list_projects, list_tasks, retry_task
+from .repositories import (
+    create_project,
+    create_task,
+    get_project,
+    get_task,
+    list_projects,
+    list_tasks,
+    request_task_cancellation,
+    retry_task,
+)
 from .schemas import ArtifactRead, ProjectCreate, ProjectRead, TaskCreate, TaskRead
 
 router = APIRouter()
@@ -106,6 +115,14 @@ def tasks_retry(task_id: str, session: Session = Depends(get_db)) -> TaskRead:
     if task is None:
         raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
     return _task_read(retry_task(session, task))
+
+
+@router.post("/api/tasks/{task_id}/cancel", response_model=TaskRead)
+def tasks_cancel(task_id: str, session: Session = Depends(get_db)) -> TaskRead:
+    task = request_task_cancellation(session, task_id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
+    return _task_read(task)
 
 
 @router.get("/api/artifacts", response_model=list[ArtifactRead])

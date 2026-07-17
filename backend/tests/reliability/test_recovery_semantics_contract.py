@@ -54,13 +54,6 @@ def _claim_with_short_lease(reliability_env, task_id: str, worker_id: str):
         return _as_utc(lease_expires_at)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-REAPER-01: expired RUNNING attempts are not reaped into "
-        "RETRY_WAIT before another claim is allowed."
-    ),
-    strict=True,
-)
 def test_expired_attempt_with_budget_is_reaped_to_retry_wait(
     reliability_env,
     task_factory,
@@ -89,13 +82,6 @@ def test_expired_attempt_with_budget_is_reaped_to_retry_wait(
         assert persisted.next_attempt_at is not None
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-REAPER-02: an expired RUNNING task at max_attempts remains "
-        "RUNNING instead of converging to FAILED."
-    ),
-    strict=True,
-)
 def test_expired_attempt_at_max_attempts_is_reaped_to_failed(
     reliability_env,
     task_factory,
@@ -125,13 +111,6 @@ def test_expired_attempt_at_max_attempts_is_reaped_to_failed(
         assert persisted.finished_at is not None
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-RETRY-02: retryable failures do not enter RETRY_WAIT with "
-        "a deterministic next_attempt_at."
-    ),
-    strict=True,
-)
 def test_retryable_failure_enters_retry_wait(
     reliability_env,
     task_factory,
@@ -174,13 +153,6 @@ def test_retryable_failure_enters_retry_wait(
         assert _error_code(persisted) == "PROVIDER_TIMEOUT"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-RETRY-03: permanent failures are not finalized through a "
-        "stable failure classification contract."
-    ),
-    strict=True,
-)
 def test_permanent_failure_stops_after_first_attempt(
     reliability_env,
     task_factory,
@@ -247,13 +219,6 @@ def _claimed_task(reliability_env, task_id: str):
         return _claim_identity(claimed)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-CANCEL-02: cancellation requested before completion does not "
-        "fence the worker from publishing success."
-    ),
-    strict=True,
-)
 def test_cancel_request_wins_when_recorded_before_completion(
     reliability_env,
     task_factory,
@@ -289,13 +254,6 @@ def test_cancel_request_wins_when_recorded_before_completion(
         assert persisted.result_artifact_id is None
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-CANCEL-03: a cancellation arriving after fenced completion "
-        "can still rewrite a terminal success."
-    ),
-    strict=True,
-)
 def test_completion_wins_when_committed_before_cancel_request(
     reliability_env,
     task_factory,
