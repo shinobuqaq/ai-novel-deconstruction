@@ -8,7 +8,7 @@
 |---|---|
 | 设计版本 | V1.3 |
 | 更新日期 | 2026-07-17 |
-| 适用基线 | `main` at `0895c87`，PR #18 合并后 |
+| 适用基线 | `main` at `7d311b1`，PR #19 合并后 |
 | 已完成 | PR A、PR B、PR B.1、PR C、PR D、PR E |
 | 当前实施项 | PR F：Retry & Cancellation |
 | 下一实施项 | PR G：Provider Contract |
