@@ -6,12 +6,12 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 设计版本 | V1.6 |
+| 设计版本 | V1.7 |
 | 更新日期 | 2026-07-17 |
-| 适用基线 | `main` at `d20d158`，PR #22 合并后 |
-| 已完成 | PR A、PR B、PR B.1、PR C、PR D、PR E、PR F、PR G、PR H |
-| 当前实施项 | PR I：Artifact Recovery |
-| 下一实施项 | PR J：Run Center Reliability UI |
+| 适用基线 | `main` at `69cab69`，PR #23 合并后 |
+| 已完成 | PR A、PR B、PR B.1、PR C、PR D、PR E、PR F、PR G、PR H、PR I |
+| 当前实施项 | PR J：Run Center Reliability UI |
+| 下一实施项 | PR K：M0 Reliability Gate |
 
 当前判断保持为：
 

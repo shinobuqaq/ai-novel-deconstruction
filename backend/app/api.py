@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -25,6 +26,14 @@ from .schemas import ArtifactRead, ProjectCreate, ProjectRead, TaskCreate, TaskR
 router = APIRouter()
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _task_read(task: Task) -> TaskRead:
     return TaskRead(
         id=task.id,
@@ -36,19 +45,19 @@ def _task_read(task: Task) -> TaskRead:
         attempts=task.attempts,
         max_attempts=task.max_attempts,
         lease_owner=task.lease_owner,
-        lease_expires_at=task.lease_expires_at,
+        lease_expires_at=_as_utc(task.lease_expires_at),
         current_attempt_id=task.current_attempt_id,
         lease_generation=task.lease_generation,
-        next_attempt_at=task.next_attempt_at,
-        cancel_requested_at=task.cancel_requested_at,
+        next_attempt_at=_as_utc(task.next_attempt_at),
+        cancel_requested_at=_as_utc(task.cancel_requested_at),
         last_error_code=task.last_error_code,
         last_error_message=task.last_error_message,
         error_code=task.error_code,
         error_message=task.error_message,
-        created_at=task.created_at,
-        started_at=task.started_at,
-        finished_at=task.finished_at,
-        updated_at=task.updated_at,
+        created_at=_as_utc(task.created_at),
+        started_at=_as_utc(task.started_at),
+        finished_at=_as_utc(task.finished_at),
+        updated_at=_as_utc(task.updated_at),
     )
 
 
@@ -67,7 +76,7 @@ def _artifact_read(artifact: Artifact) -> ArtifactRead:
         created_by_attempt_id=artifact.created_by_attempt_id,
         lease_generation=artifact.lease_generation,
         metadata=json.loads(artifact.metadata_json),
-        created_at=artifact.created_at,
+        created_at=_as_utc(artifact.created_at),
     )
 
 
