@@ -25,7 +25,11 @@ def test_project_task_artifact_flow(client):
         task = claim_next_task(session, worker_id="pytest-worker", lease_seconds=60)
         assert task is not None
         assert task.id == task_id
-        execute_task_sync(session, app.state.settings, task)
+    assert execute_task_sync(
+        app.state.session_factory,
+        app.state.settings,
+        task,
+    )
 
     final_task = client.get(f"/api/tasks/{task_id}").json()
     assert final_task["status"] == "SUCCEEDED"

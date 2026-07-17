@@ -6,12 +6,12 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 设计版本 | V1.1 |
-| 更新日期 | 2026-07-16 |
-| 适用基线 | `main` at `b6e796b`，PR #16 合并后 |
-| 已完成 | PR A、PR B、PR B.1、PR C |
-| 当前实施项 | PR D：Atomic Claim |
-| 下一实施项 | PR E：Lease Fencing & Heartbeat |
+| 设计版本 | V1.2 |
+| 更新日期 | 2026-07-17 |
+| 适用基线 | `main` at `2070135`，PR #17 合并后 |
+| 已完成 | PR A、PR B、PR B.1、PR C、PR D |
+| 当前实施项 | PR E：Lease Fencing & Heartbeat |
+| 下一实施项 | PR F：Retry & Cancellation |
 
 当前判断保持为：
 
@@ -42,18 +42,18 @@ PR B.1 只补充设计与红灯测试，不修改 Task、Provider、Artifact、W
 - 不以性能优化替代正确性验证。
 - 不在一个 PR 中同时重写 Task、Provider、Artifact 和 UI。
 
-## 3. 已验证的当前缺口
+## 3. 已验证的风险与处理状态
 
-| ID | 当前实现 | 风险 |
+| ID | 处理状态 | 风险 |
 |---|---|---|
-| R-01 | Claim 先 SELECT，再修改 ORM 并 COMMIT | 两个 Worker 可领取同一任务 |
-| R-02 | 完成和失败不校验 Attempt、Token、Generation | 旧 Worker 可覆盖新 Worker |
-| R-03 | 任意执行异常立即 FAILED | `max_attempts` 没有自动重试语义 |
-| R-04 | 过期 RUNNING 达到上限后无人处理 | 任务可永久卡住 |
-| R-05 | Artifact READY 与 Task SUCCEEDED 分两次提交 | 崩溃后状态可能分裂 |
-| R-06 | Task Service 直接创建 FakeProvider | Provider Protocol 没有运行时解耦 |
-| R-07 | Artifact 身份与内容哈希绑定 | 不同 Task 的 lineage 可能错误共享 |
-| R-08 | 当前没有 Heartbeat、Reaper 或 Reconciler | 长任务和崩溃恢复不可验证 |
+| R-01 | PR D 已解决并通过并发测试 | 两个 Worker 可领取同一任务 |
+| R-02 | PR E 已解决并通过旧 Worker 隔离测试 | 旧 Worker 可覆盖新 Worker |
+| R-03 | 待 PR F | `max_attempts` 没有自动重试语义 |
+| R-04 | 待 PR F | 过期 RUNNING 达到上限后无人处理 |
+| R-05 | 待 PR H / PR I | 崩溃后状态可能分裂 |
+| R-06 | 待 PR G | Provider Protocol 没有运行时解耦 |
+| R-07 | 待 PR H | 不同 Task 的 lineage 可能错误共享 |
+| R-08 | Heartbeat 已由 PR E 解决；Reaper 和 Reconciler 仍待后续 PR | 长任务和崩溃恢复尚未完整验证 |
 
 这些缺口由 `backend/tests/reliability/` 中的 strict xfail 契约固定。strict xfail 表示“当前已知失败，但目标断言不能删除或放宽”。
 

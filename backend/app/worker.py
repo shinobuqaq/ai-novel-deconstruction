@@ -2,14 +2,43 @@ from __future__ import annotations
 
 import argparse
 import socket
+import threading
 import time
 from uuid import uuid4
+
+from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_settings
 from .db import create_db_engine, create_session_factory
 from .models import Base
-from .repositories import claim_next_task
+from .repositories import ClaimedTask, claim_next_task, get_task, heartbeat_task
 from .services.tasks import execute_task_sync
+
+
+def _maintain_lease(
+    *,
+    session_factory: sessionmaker[Session],
+    claim: ClaimedTask,
+    lease_seconds: int,
+    stop: threading.Event,
+    lease_lost: threading.Event,
+    heartbeat_interval_seconds: float | None = None,
+) -> None:
+    interval = heartbeat_interval_seconds or max(0.1, lease_seconds / 3)
+    while not stop.wait(interval):
+        with session_factory() as session:
+            renewed = heartbeat_task(
+                session,
+                task_id=claim.id,
+                attempt_id=claim.current_attempt_id,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
+                worker_id=claim.lease_owner,
+                lease_seconds=lease_seconds,
+            )
+        if not renewed:
+            lease_lost.set()
+            return
 
 
 def run_worker(*, once: bool = False) -> None:
@@ -23,17 +52,49 @@ def run_worker(*, once: bool = False) -> None:
 
     while True:
         with session_factory() as session:
-            task = claim_next_task(
+            claim = claim_next_task(
                 session,
                 worker_id=worker_id,
                 lease_seconds=settings.worker_lease_seconds,
             )
-            if task is not None:
-                print(f"[worker] claimed task={task.id} kind={task.kind} attempt={task.attempts}")
-                execute_task_sync(session, settings, task)
-                print(f"[worker] finished task={task.id} status={task.status}")
-            elif once:
-                print("[worker] no pending task")
+
+        if claim is not None:
+            print(
+                f"[worker] claimed task={claim.id} kind={claim.kind} "
+                f"attempt={claim.attempts}"
+            )
+            stop_heartbeat = threading.Event()
+            lease_lost = threading.Event()
+            heartbeat = threading.Thread(
+                target=_maintain_lease,
+                kwargs={
+                    "session_factory": session_factory,
+                    "claim": claim,
+                    "lease_seconds": settings.worker_lease_seconds,
+                    "stop": stop_heartbeat,
+                    "lease_lost": lease_lost,
+                },
+                name=f"heartbeat-{claim.id}",
+                daemon=True,
+            )
+            heartbeat.start()
+            accepted = execute_task_sync(session_factory, settings, claim)
+            stop_heartbeat.set()
+            heartbeat.join(timeout=max(1.0, settings.worker_lease_seconds))
+
+            with session_factory() as session:
+                persisted = get_task(session, claim.id)
+                status = "MISSING" if persisted is None else persisted.status
+
+            if not accepted:
+                print(
+                    f"[worker] result rejected task={claim.id} "
+                    f"reason=LEASE_LOST status={status}"
+                )
+            else:
+                print(f"[worker] finished task={claim.id} status={status}")
+        elif once:
+            print("[worker] no pending task")
 
         if once:
             return

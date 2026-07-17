@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Select, and_, func, or_, select, update
@@ -15,6 +16,21 @@ from .models import (
     TaskStatus,
     new_id,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedTask:
+    id: str
+    project_id: str
+    kind: str
+    payload_json: str
+    attempts: int
+    max_attempts: int
+    current_attempt_id: str
+    lease_token: str
+    lease_generation: int
+    lease_owner: str
+    lease_expires_at: datetime
 
 
 def create_project(session: Session, *, name: str, description: str | None) -> Project:
@@ -70,7 +86,7 @@ def claim_next_task(
     worker_id: str,
     lease_seconds: int,
     now: datetime | None = None,
-) -> Task | None:
+) -> ClaimedTask | None:
     now = now or datetime.now(timezone.utc)
     lease_expires_at = now + timedelta(seconds=lease_seconds)
 
@@ -154,12 +170,210 @@ def claim_next_task(
 
         session.commit()
         task = session.get(Task, candidate.id)
-        if task is None:
+        if task is None or task.current_attempt is None:
             raise RuntimeError("CLAIMED_TASK_NOT_FOUND")
-        return task
+        return ClaimedTask(
+            id=task.id,
+            project_id=task.project_id,
+            kind=task.kind,
+            payload_json=task.payload_json,
+            attempts=task.attempts,
+            max_attempts=task.max_attempts,
+            current_attempt_id=task.current_attempt.id,
+            lease_token=task.current_attempt.lease_token,
+            lease_generation=task.lease_generation,
+            lease_owner=worker_id,
+            lease_expires_at=task.current_attempt.lease_expires_at,
+        )
     except Exception:
         session.rollback()
         raise
+
+
+def heartbeat_task(
+    session: Session,
+    *,
+    task_id: str,
+    attempt_id: str,
+    lease_token: str,
+    lease_generation: int,
+    worker_id: str,
+    lease_seconds: int,
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    next_expiry = now + timedelta(seconds=lease_seconds)
+
+    attempt_result = session.execute(
+        update(TaskAttempt)
+        .where(
+            TaskAttempt.id == attempt_id,
+            TaskAttempt.task_id == task_id,
+            TaskAttempt.lease_token == lease_token,
+            TaskAttempt.lease_generation == lease_generation,
+            TaskAttempt.worker_id == worker_id,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+            TaskAttempt.lease_expires_at > now,
+        )
+        .values(heartbeat_at=now, lease_expires_at=next_expiry)
+    )
+    task_result = session.execute(
+        update(Task)
+        .where(
+            Task.id == task_id,
+            Task.status == TaskStatus.RUNNING.value,
+            Task.current_attempt_id == attempt_id,
+            Task.lease_generation == lease_generation,
+            Task.lease_owner == worker_id,
+            Task.lease_expires_at > now,
+        )
+        .values(lease_expires_at=next_expiry)
+    )
+    if attempt_result.rowcount != 1 or task_result.rowcount != 1:
+        session.rollback()
+        return False
+
+    session.commit()
+    return True
+
+
+def task_claim_is_current(
+    session: Session,
+    *,
+    claim: ClaimedTask,
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    current_attempt_id = session.scalar(
+        select(Task.current_attempt_id)
+        .join(TaskAttempt, Task.current_attempt_id == TaskAttempt.id)
+        .where(
+            Task.id == claim.id,
+            Task.status == TaskStatus.RUNNING.value,
+            Task.current_attempt_id == claim.current_attempt_id,
+            Task.lease_generation == claim.lease_generation,
+            Task.lease_owner == claim.lease_owner,
+            Task.lease_expires_at > now,
+            TaskAttempt.lease_token == claim.lease_token,
+            TaskAttempt.worker_id == claim.lease_owner,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+            TaskAttempt.lease_expires_at > now,
+        )
+    )
+    return current_attempt_id == claim.current_attempt_id
+
+
+def complete_task_attempt(
+    session: Session,
+    *,
+    task_id: str,
+    attempt_id: str,
+    lease_token: str,
+    lease_generation: int,
+    result_artifact_id: str,
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+
+    attempt_result = session.execute(
+        update(TaskAttempt)
+        .where(
+            TaskAttempt.id == attempt_id,
+            TaskAttempt.task_id == task_id,
+            TaskAttempt.lease_token == lease_token,
+            TaskAttempt.lease_generation == lease_generation,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+            TaskAttempt.lease_expires_at > now,
+        )
+        .values(
+            status=TaskAttemptStatus.SUCCEEDED.value,
+            finished_at=now,
+        )
+    )
+    task_result = session.execute(
+        update(Task)
+        .where(
+            Task.id == task_id,
+            Task.status == TaskStatus.RUNNING.value,
+            Task.current_attempt_id == attempt_id,
+            Task.lease_generation == lease_generation,
+            Task.lease_owner.is_not(None),
+            Task.lease_expires_at > now,
+        )
+        .values(
+            status=TaskStatus.SUCCEEDED.value,
+            result_artifact_id=result_artifact_id,
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+            last_error_code=None,
+            last_error_message=None,
+            error_code=None,
+            error_message=None,
+        )
+    )
+    if attempt_result.rowcount != 1 or task_result.rowcount != 1:
+        session.rollback()
+        return False
+
+    session.commit()
+    return True
+
+
+def fail_claim_permanently(
+    session: Session,
+    *,
+    claim: ClaimedTask,
+    error_code: str,
+    error_message: str,
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    message = error_message[:4000]
+
+    attempt_result = session.execute(
+        update(TaskAttempt)
+        .where(
+            TaskAttempt.id == claim.current_attempt_id,
+            TaskAttempt.task_id == claim.id,
+            TaskAttempt.lease_token == claim.lease_token,
+            TaskAttempt.lease_generation == claim.lease_generation,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+            TaskAttempt.lease_expires_at > now,
+        )
+        .values(
+            status=TaskAttemptStatus.PERMANENT_FAILED.value,
+            finished_at=now,
+            error_code=error_code,
+            error_message=message,
+        )
+    )
+    task_result = session.execute(
+        update(Task)
+        .where(
+            Task.id == claim.id,
+            Task.status == TaskStatus.RUNNING.value,
+            Task.current_attempt_id == claim.current_attempt_id,
+            Task.lease_generation == claim.lease_generation,
+            Task.lease_expires_at > now,
+        )
+        .values(
+            status=TaskStatus.FAILED.value,
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+            last_error_code=error_code,
+            last_error_message=message,
+            error_code=error_code,
+            error_message=message,
+        )
+    )
+    if attempt_result.rowcount != 1 or task_result.rowcount != 1:
+        session.rollback()
+        return False
+
+    session.commit()
+    return True
 
 
 def retry_task(session: Session, task: Task) -> Task:

@@ -30,19 +30,23 @@ def test_retry_does_not_reopen_a_task_after_max_attempts(
     )
 
     with reliability_env.session_factory() as session:
-        task = claim_next_task(
+        claim = claim_next_task(
             session,
             worker_id="worker-exhausted",
             lease_seconds=60,
         )
-        assert task is not None
-        assert task.attempts == 1
+        assert claim is not None
+        assert claim.attempts == 1
 
-        execute_task_sync(
-            session,
-            reliability_env.settings,
-            task,
-        )
+    execute_task_sync(
+        reliability_env.session_factory,
+        reliability_env.settings,
+        claim,
+    )
+
+    with reliability_env.session_factory() as session:
+        task = get_task(session, task_id)
+        assert task is not None
         assert task.status == TaskStatus.FAILED.value
 
         retried = retry_task(session, task)
