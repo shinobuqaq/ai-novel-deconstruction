@@ -1,21 +1,21 @@
-# M0—M8 Roadmap
+# 产品开发路线图
 
-| Milestone | Scope | Demo Gate |
+当前产品范围与用户流程以 [产品基线 V0.2](PRODUCT_BASELINE.md) 为准。旧研究文档中的 M0—M8 是历史规划，不再作为当前进度编号。
+
+| 阶段 | 范围 | 用户可见验收 |
 |---|---|---|
-| M0 | Monorepo, config, migration, Task/Artifact, Fake Provider | Create project, run task, inspect log/artifact |
-| M1 | Source import, chapters, character coordinates, hashes, FTS, Evidence | Any EvidenceSpan can be pasted back to exact source |
-| M2 | Entity mentions, candidate pairs, guards, merge/split | Alias normalization with reversible decisions |
-| M3 | Event routes, locator, union, boundary resolver, canonical events | Timeline plus boundary dispute queue |
-| M4 | FactVersion, conflict, StatePatch, State-at-T, actor knowledge | Query state at a selected chapter |
-| M5 | Task profiles, route union, RRF, rerank, backfill, audit | Explainable multi-route evidence retrieval |
-| M6 | Claim schema, support/counter evidence, repair, specialists | Evidence-backed deconstruction claims |
-| M7 | Report compiler, inspectors, issue queue, export | Complete Quality Mode workflow |
-| M8 | Gold set, ablation, cost, recovery and performance | Balanced/Economy decision package |
+| P0 工程地基 | 仓库、配置、数据库、任务恢复、制品、模拟 Provider | 不安排最终用户验收 |
+| P1 整本导入 | TXT/Markdown/DOCX/EPUB、卷章、原文坐标、哈希、问题检查 | 上传真实小说并确认章节 |
+| P2 人物与事件 | 人物候选、剧情阶段、事件候选、边界、来源对齐 | 查看真实人物和事件并跳回原文 |
+| P3 事实与状态 | 事实版本、冲突、人物状态、世界设定、时间查询 | 查询指定章节的事实和状态 |
+| P4 核心分析 | 伏笔、冲突、节奏、场景功能及证据核验 | 浏览核心拆解版块 |
+| P5 拆解工作台 | 导航、搜索、关联跳转、阶段确认、问题处理 | 完整工作台使用流程 |
+| P6 长篇验收 | 多篇幅样本、质量、成本、恢复、性能和正式入口 | 整本长篇端到端验收 |
 
 ## Current status
 
-- Research: frozen at P01—P18 / Ledger V0.16
-- Product definition: V0.1 complete
-- Candidate architecture: V0.1 complete
-- Engineering: **M0 started**
-- First vertical slice: not yet started
+- 研究：P01—P18 与机制台账 V0.16 已冻结为证据库。
+- 产品定义：V0.2 已重新基线为“分步拆解 + 完整工作台”。
+- 工程：P0 关键可靠性能力已经通过测试，少量配置、备份和依赖关系工作继续随产品阶段补齐。
+- 用户功能：P1 整本导入尚未完成。
+- 总体完成度：按最终产品能力估算约 10% 到 15%。

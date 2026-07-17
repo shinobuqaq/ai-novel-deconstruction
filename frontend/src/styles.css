@@ -19,6 +19,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 24px 24px 56px; }
 .app-header { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 4px; color: #607080; font-size: 12px; font-weight: 700; }
 h1 { margin: 0; font-size: 28px; line-height: 1.25; }
+.header-note { max-width: 560px; margin: 6px 0 0; color: #697784; font-size: 13px; line-height: 1.5; }
 h2 { margin: 0; font-size: 17px; line-height: 1.35; }
 .api-status { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 11px; border: 1px solid #cfd7df; border-radius: 6px; background: #fff; color: #526170; font-size: 13px; font-weight: 700; }
 .status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #8a98a5; }
@@ -86,6 +87,9 @@ td > small { display: block; margin-top: 6px; color: #7a687b; }
 .cell-stack { display: grid; min-width: 0; gap: 4px; }
 .task-summary > span { line-height: 1.4; }
 code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
+.technical-details { margin-top: 5px; color: #6b7782; font-size: 11px; }
+.technical-details summary { cursor: pointer; user-select: none; }
+.technical-details code { display: block; margin-top: 3px; overflow-wrap: anywhere; }
 .execution-cell strong { font-variant-numeric: tabular-nums; }
 .execution-cell span, .result-cell span { color: #596875; }
 .execution-cell small { color: #6e7a85; }

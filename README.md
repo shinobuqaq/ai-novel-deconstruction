@@ -1,6 +1,8 @@
 # AI 自动小说拆书分析器
 
-这是项目的 **M0 工程骨架 + Vertical Slice 01 起点**。当前仓库实现的是最小可运行闭环，而不是完整的小说拆书产品：
+这是“AI 小说拆解工作台”的公开开发仓库。产品目标、用户流程和真实进度以 [产品基线 V0.2](docs/PRODUCT_BASELINE.md) 为准。
+
+当前仓库已经完成 P0 工程地基的关键可靠性能力，但尚未完成整本小说导入和真实 AI 拆解。现有前端是内部任务调试台，不是最终产品界面：
 
 - FastAPI API
 - SQLite + Alembic
@@ -9,9 +11,9 @@
 - Fake Provider
 - React + TypeScript + Vite 最小控制台
 - Windows 一键安装、启动与测试脚本
-- M0—M8 开发 Backlog
+- P0—P6 产品路线图
 
-> M0 的目标是验证仓库结构、任务恢复、Artifact 写入、前后端连接和开发流程。后续能力按 `docs/ISSUE_BACKLOG.md` 逐步实现。
+> 当前完成度按最终产品能力估算约 10% 到 15%。后续能力按 `docs/ROADMAP.md` 和 `docs/ISSUE_BACKLOG.md` 逐步实现。
 
 
 ## 0. 环境要求
@@ -39,7 +41,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 `dev.ps1` 会分别启动 API、Worker 和 Frontend。关闭对应 PowerShell 窗口即可停止。
 
-## 2. 验证最小闭环
+## 2. 开发人员验证后台闭环
+
+下面的操作只用于开发人员验证后台，不是小说拆解流程，最终用户无需验收：
 
 1. 在页面创建项目。
 2. 创建一个 `fake.echo` 任务。
@@ -80,17 +84,15 @@ ai-novel-deconstruction/
 
 ## 5. 当前编码顺序
 
-先完成 `docs/ISSUE_BACKLOG.md` 中的 **M0 Ready Queue**，随后进入 Vertical Slice 01：
+当前从 P1 整本导入开始，先形成第一条真实用户闭环：
 
 ```text
-导入 2—3 章
-→ EvidenceSpan
-→ 一个实体候选路线
-→ 一个事件 LLM 路线
-→ Source Alignment
-→ Candidate / Issue
-→ 简单 Claim
-→ Evidence Inspector
+导入整本 TXT / Markdown / DOCX / EPUB
+→ 确认卷章结构
+→ 建立可回查原文证据
+→ 真实 AI 识别人物与事件
+→ 用户查看总览并抽查原文
+→ 确认进入下一阶段
 ```
 
 ## 6. 研究成果如何进入代码
@@ -106,12 +108,13 @@ ai-novel-deconstruction/
 
 ## 7. 文档权威
 
-1. `《产品定义与 Quality Mode 原型方案 V0.1》`：产品范围与验收
-2. `《候选系统架构与技术设计 V0.1》`：架构与技术边界
-3. `《机制演进台账 V0.16》`：研究机制状态
-4. `《P01—P17 阶段总审计报告 V1.0》` 与 P01—P18 单项目档案：研究证据
-5. 本 README：开发入口，不替代上述正式文档
+1. [产品基线 V0.2](docs/PRODUCT_BASELINE.md)：当前产品范围、用户流程和进度编号
+2. `《产品定义与 Quality Mode 原型方案 V0.1》`：历史产品研究基线
+3. `《候选系统架构与技术设计 V0.1》`：架构与技术边界
+4. `《机制演进台账 V0.16》`：研究机制状态
+5. `《P01—P17 阶段总审计报告 V1.0》` 与 P01—P18 单项目档案：研究证据
+6. 本 README：开发入口，不替代产品基线
 
 ## 8. License
 
-项目当前仍为私有仓库，许可证尚未最终确定。在正式公开或分发前补充 `LICENSE`，并完成第三方依赖与通知复核。
+项目仓库已经公开，但许可证尚未最终确定。公开可见不等于已经授权他人复制、修改或分发；正式发布前需补充 `LICENSE`，并完成第三方依赖与通知复核。
