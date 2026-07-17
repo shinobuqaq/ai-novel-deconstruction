@@ -8,10 +8,10 @@
 |---|---|
 | 设计版本 | V1.1 |
 | 更新日期 | 2026-07-16 |
-| 适用基线 | `main` at `b76cd3d`，PR #15 合并后 |
-| 已完成 | PR A、PR B、PR B.1 |
-| 当前实施项 | PR C：TaskAttempt Schema |
-| 下一实施项 | PR D：Atomic Claim |
+| 适用基线 | `main` at `b6e796b`，PR #16 合并后 |
+| 已完成 | PR A、PR B、PR B.1、PR C |
+| 当前实施项 | PR D：Atomic Claim |
+| 下一实施项 | PR E：Lease Fencing & Heartbeat |
 
 当前判断保持为：
 

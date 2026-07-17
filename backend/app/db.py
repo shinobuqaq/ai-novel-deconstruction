@@ -16,6 +16,7 @@ def create_db_engine(settings: Settings) -> Engine:
     connect_args: dict[str, object] = {}
     if url.get_backend_name() == "sqlite":
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 5.0
 
     engine = create_engine(
         settings.database_url,
@@ -30,6 +31,7 @@ def create_db_engine(settings: Settings) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
     return engine
