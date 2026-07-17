@@ -7,7 +7,6 @@ from pathlib import Path
 EXPECTED_GAP_IDS = {
     "M0-GAP-ARTIFACT-01",
     "M0-GAP-ARTIFACT-02",
-    "M0-GAP-PROVIDER-01",
 }
 
 GAP_ID_PATTERN = re.compile(r"M0-GAP-[A-Z]+-\d{2}")

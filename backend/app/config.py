@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
     worker_poll_seconds: float = 2.0
     worker_lease_seconds: int = 60
+    provider_name: str = "fake"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

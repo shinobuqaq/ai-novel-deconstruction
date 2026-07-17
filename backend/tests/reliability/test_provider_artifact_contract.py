@@ -9,13 +9,6 @@ from app.services.artifacts import write_json_artifact
 from app.services.tasks import execute_task
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-PROVIDER-01: execute_task constructs FakeProvider directly "
-        "instead of receiving a provider or provider registry."
-    ),
-    strict=True,
-)
 def test_task_execution_accepts_an_injected_provider_boundary() -> None:
     parameters = signature(execute_task).parameters
     assert (

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .config import get_settings
 from .db import create_db_engine, create_session_factory
 from .models import Base
+from .providers import create_default_provider_registry
 from .repositories import (
     ClaimedTask,
     claim_next_task,
@@ -54,6 +55,7 @@ def run_worker(*, once: bool = False) -> None:
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
     worker_id = f"{socket.gethostname()}-{uuid4().hex[:8]}"
+    provider_registry = create_default_provider_registry()
     print(f"[worker] started id={worker_id}")
 
     while True:
@@ -87,7 +89,12 @@ def run_worker(*, once: bool = False) -> None:
                 daemon=True,
             )
             heartbeat.start()
-            accepted = execute_task_sync(session_factory, settings, claim)
+            accepted = execute_task_sync(
+                session_factory,
+                settings,
+                claim,
+                provider_registry,
+            )
             stop_heartbeat.set()
             heartbeat.join(timeout=max(1.0, settings.worker_lease_seconds))
 

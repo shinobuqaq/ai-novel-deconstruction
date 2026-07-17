@@ -29,6 +29,7 @@ def test_project_task_artifact_flow(client):
         app.state.session_factory,
         app.state.settings,
         task,
+        app.state.provider_registry,
     )
 
     final_task = client.get(f"/api/tasks/{task_id}").json()
@@ -68,6 +69,7 @@ def test_running_task_cancellation_is_acknowledged_by_worker(client):
         client.app.state.session_factory,
         client.app.state.settings,
         claim,
+        client.app.state.provider_registry,
     )
     final_task = client.get(f"/api/tasks/{created['id']}").json()
     assert final_task["status"] == "CANCELLED"

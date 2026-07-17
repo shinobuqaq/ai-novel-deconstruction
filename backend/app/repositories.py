@@ -271,6 +271,8 @@ def complete_task_attempt(
     lease_token: str,
     lease_generation: int,
     result_artifact_id: str,
+    provider_name: str | None = None,
+    usage_json: str = "{}",
     now: datetime | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
@@ -288,6 +290,8 @@ def complete_task_attempt(
         .values(
             status=TaskAttemptStatus.SUCCEEDED.value,
             finished_at=now,
+            provider_name=provider_name,
+            usage_json=usage_json,
         )
     )
     task_result = session.execute(
@@ -331,6 +335,7 @@ def fail_task_attempt(
     error_message: str,
     retryable: bool,
     retry_after_seconds: float | None,
+    provider_name: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
@@ -367,6 +372,7 @@ def fail_task_attempt(
             finished_at=now,
             error_code=error_code,
             error_message=message,
+            provider_name=provider_name,
         )
     )
     task_result = session.execute(

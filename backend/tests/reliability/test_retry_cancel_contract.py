@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.models import TaskStatus
+from app.providers import create_default_provider_registry
 from app.repositories import (
     claim_next_task,
     fail_task_attempt,
@@ -36,6 +37,7 @@ def test_retry_does_not_reopen_a_task_after_max_attempts(
         reliability_env.session_factory,
         reliability_env.settings,
         claim,
+        create_default_provider_registry(),
     )
 
     with reliability_env.session_factory() as session:
