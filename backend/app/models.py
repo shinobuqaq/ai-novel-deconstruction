@@ -109,6 +109,12 @@ class Task(Base):
         post_update=True,
     )
 
+    @property
+    def lease_token(self) -> str | None:
+        if self.current_attempt is None:
+            return None
+        return self.current_attempt.lease_token
+
 
 class TaskAttempt(Base):
     __tablename__ = "task_attempts"

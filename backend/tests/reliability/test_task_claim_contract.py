@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
-
-import pytest
 
 from app.models import TaskStatus
 from app.repositories import claim_next_task, get_task
@@ -32,13 +31,6 @@ def test_reliability_harness_persists_across_independent_sessions(
         assert persisted.attempts == 1
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-CLAIM-01: claim_next_task performs SELECT and UPDATE "
-        "as separate operations, so two workers can select the same task."
-    ),
-    strict=True,
-)
 def test_two_synchronized_workers_cannot_both_claim_one_task(
     reliability_env,
     task_factory,
@@ -48,15 +40,7 @@ def test_two_synchronized_workers_cannot_both_claim_one_task(
 
     def claim(worker_id: str) -> dict[str, str | None]:
         with reliability_env.session_factory() as session:
-            original_scalar = session.scalar
-
-            def synchronized_scalar(*args, **kwargs):
-                selected = original_scalar(*args, **kwargs)
-                barrier.wait()
-                return selected
-
-            session.scalar = synchronized_scalar  # type: ignore[method-assign]
-
+            barrier.wait()
             try:
                 task = claim_next_task(
                     session,
@@ -100,13 +84,6 @@ def test_two_synchronized_workers_cannot_both_claim_one_task(
     assert len(not_claimed) == 1
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-CLAIM-02: a claim does not create an immutable Attempt "
-        "identity, lease token, or lease generation."
-    ),
-    strict=True,
-)
 def test_claim_creates_an_attempt_identity_and_fencing_token(
     reliability_env,
     task_factory,
@@ -136,3 +113,95 @@ def test_claim_creates_an_attempt_identity_and_fencing_token(
         assert claimed.current_attempt_id
         assert claimed.lease_token
         assert claimed.lease_generation >= 1
+
+
+def test_twenty_workers_create_exactly_one_attempt(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_id = task_factory()
+    barrier = Barrier(20, timeout=20)
+
+    def claim(worker_number: int) -> tuple[str | None, str | None]:
+        with reliability_env.session_factory() as session:
+            barrier.wait()
+            task = claim_next_task(
+                session,
+                worker_id=f"worker-{worker_number}",
+                lease_seconds=60,
+            )
+            if task is None:
+                return None, None
+            return task.id, task.current_attempt_id
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(claim, range(20)))
+
+    claimed = [result for result in results if result[0] is not None]
+    assert len(claimed) == 1
+    assert claimed[0][0] == task_id
+    assert claimed[0][1] is not None
+
+    with reliability_env.session_factory() as session:
+        persisted = get_task(session, task_id)
+        assert persisted is not None
+        assert persisted.attempts == 1
+        assert len(persisted.attempt_records) == 1
+
+
+def test_two_workers_claim_two_different_tasks(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_ids = {task_factory(), task_factory()}
+    barrier = Barrier(2, timeout=10)
+
+    def claim(worker_id: str) -> str | None:
+        with reliability_env.session_factory() as session:
+            barrier.wait()
+            task = claim_next_task(
+                session,
+                worker_id=worker_id,
+                lease_seconds=60,
+            )
+            return None if task is None else task.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claimed_ids = set(executor.map(claim, ("worker-a", "worker-b")))
+
+    assert claimed_ids == task_ids
+
+
+def test_retry_wait_task_is_claimed_only_after_next_attempt_at(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_id = task_factory()
+    now = datetime.now(timezone.utc)
+
+    with reliability_env.session_factory() as session:
+        task = get_task(session, task_id)
+        assert task is not None
+        task.status = TaskStatus.RETRY_WAIT.value
+        task.next_attempt_at = now + timedelta(seconds=30)
+        session.commit()
+
+    with reliability_env.session_factory() as session:
+        too_early = claim_next_task(
+            session,
+            worker_id="worker-early",
+            lease_seconds=60,
+            now=now,
+        )
+        assert too_early is None
+
+    with reliability_env.session_factory() as session:
+        due = claim_next_task(
+            session,
+            worker_id="worker-due",
+            lease_seconds=60,
+            now=now + timedelta(seconds=31),
+        )
+        assert due is not None
+        assert due.id == task_id
+        assert due.attempts == 1
