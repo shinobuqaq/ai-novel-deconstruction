@@ -47,6 +47,16 @@ class ArtifactStatus(StrEnum):
     DIRTY = "DIRTY"
 
 
+class SourceVersionStatus(StrEnum):
+    REVIEW = "REVIEW"
+    CONFIRMED = "CONFIRMED"
+
+
+class SourceIssueStatus(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -58,6 +68,156 @@ class Project(Base):
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    source_documents: Mapped[list["SourceDocument"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+
+class SourceDocument(Base):
+    __tablename__ = "source_documents"
+    __table_args__ = (
+        Index("ix_source_documents_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("src"))
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="source_documents")
+    versions: Mapped[list["SourceVersion"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="SourceVersion.version_no",
+    )
+
+
+class SourceVersion(Base):
+    __tablename__ = "source_versions"
+    __table_args__ = (
+        Index("ux_source_version_no", "document_id", "version_no", unique=True),
+        Index("ux_source_version_hash", "document_id", "content_hash", unique=True),
+        Index("ix_source_versions_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("svr"))
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    text_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    total_chars: Mapped[int] = mapped_column(Integer, nullable=False)
+    chapter_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    detected_encoding: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default=SourceVersionStatus.REVIEW.value, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    document: Mapped[SourceDocument] = relationship(back_populates="versions")
+    units: Mapped[list["SourceUnit"]] = relationship(
+        back_populates="source_version",
+        cascade="all, delete-orphan",
+        order_by="SourceUnit.ordinal",
+    )
+    issues: Mapped[list["SourceIssue"]] = relationship(
+        back_populates="source_version",
+        cascade="all, delete-orphan",
+    )
+    evidence_spans: Mapped[list["EvidenceSpan"]] = relationship(
+        back_populates="source_version",
+        cascade="all, delete-orphan",
+    )
+
+
+class SourceUnit(Base):
+    __tablename__ = "source_units"
+    __table_args__ = (
+        Index("ux_source_unit_ordinal", "source_version_id", "ordinal", unique=True),
+        Index("ix_source_units_version_range", "source_version_id", "start_char", "end_char"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_type: Mapped[str] = mapped_column(String(20), default="CHAPTER", nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    start_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    source_version: Mapped[SourceVersion] = relationship(back_populates="units")
+    evidence_spans: Mapped[list["EvidenceSpan"]] = relationship(
+        back_populates="source_unit",
+        cascade="all, delete-orphan",
+    )
+
+
+class SourceIssue(Base):
+    __tablename__ = "source_issues"
+    __table_args__ = (
+        Index("ix_source_issues_version_status", "source_version_id", "status", "severity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("iss"))
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_unit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("source_units.id", ondelete="SET NULL"), nullable=True
+    )
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default=SourceIssueStatus.OPEN.value, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    source_version: Mapped[SourceVersion] = relationship(back_populates="issues")
+
+
+class EvidenceSpan(Base):
+    __tablename__ = "evidence_spans"
+    __table_args__ = (
+        Index(
+            "ux_evidence_span_range",
+            "source_version_id",
+            "start_char",
+            "end_char",
+            unique=True,
+        ),
+        Index("ix_evidence_spans_unit_paragraph", "source_unit_id", "paragraph_index"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_unit_id: Mapped[str] = mapped_column(
+        ForeignKey("source_units.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    paragraph_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    source_version: Mapped[SourceVersion] = relationship(back_populates="evidence_spans")
+    source_unit: Mapped[SourceUnit] = relationship(back_populates="evidence_spans")
 
 
 class Task(Base):

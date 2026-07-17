@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     def ensure_directories(self) -> None:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+        (self.workspace_dir / "sources").mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache(maxsize=1)
