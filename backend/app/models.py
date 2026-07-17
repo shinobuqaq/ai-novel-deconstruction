@@ -153,7 +153,7 @@ class TaskAttempt(Base):
 class Artifact(Base):
     __tablename__ = "artifacts"
     __table_args__ = (
-        Index("ux_artifact_project_hash_kind", "project_id", "kind", "content_hash", unique=True),
+        Index("ux_artifact_result_key", "result_key", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("art"))
@@ -161,10 +161,43 @@ class Artifact(Base):
     kind: Mapped[str] = mapped_column(String(100), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(30), default="1.0.0", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default=ArtifactStatus.WRITING.value, nullable=False)
+    result_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    blob_id: Mapped[str] = mapped_column(
+        ForeignKey("artifact_blobs.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     created_by_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
+    blob: Mapped["ArtifactBlob"] = relationship(back_populates="artifacts")
+
+
+class ArtifactBlob(Base):
+    __tablename__ = "artifact_blobs"
+    __table_args__ = (
+        Index("ux_artifact_blob_content_hash", "content_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(68), primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default=ArtifactStatus.WRITING.value,
+        nullable=False,
+    )
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+    artifacts: Mapped[list[Artifact]] = relationship(back_populates="blob")

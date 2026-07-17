@@ -64,6 +64,8 @@ async def execute_task(
                 },
             },
             created_by_task_id=claim.id,
+            created_by_attempt_id=claim.current_attempt_id,
+            lease_generation=claim.lease_generation,
             metadata={"provider": "fake"},
         )
         accepted = complete_task_attempt(

@@ -63,9 +63,13 @@ class ArtifactRead(BaseModel):
     kind: str
     schema_version: str
     status: str
+    result_key: str
+    blob_id: str
     content_hash: str
     relative_path: str
     created_by_task_id: str | None
+    created_by_attempt_id: str | None
+    lease_generation: int | None
     metadata: dict[str, Any]
     created_at: datetime
 
