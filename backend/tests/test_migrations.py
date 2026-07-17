@@ -9,7 +9,9 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
+from app.db import create_db_engine
 from app.main import create_app
+from app.models import Base
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -257,3 +259,68 @@ def test_migrated_schema_contains_task_attempt_constraints(
         and row[4] == "id"
         for row in task_foreign_keys
     )
+
+
+def test_partial_auto_created_schema_is_repaired_without_data_loss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "partial.db"
+    workspace = tmp_path / "workspace"
+    _configure_migration_environment(monkeypatch, database, workspace)
+
+    _upgrade("0001_m0_core")
+    _seed_0001_database(database)
+
+    settings = Settings(
+        database_url=_database_url(database),
+        workspace_dir=workspace,
+        auto_create_schema=True,
+        _env_file=None,
+    )
+    engine = create_db_engine(settings)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+    with sqlite3.connect(database) as connection:
+        revision_before = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+        task_columns_before = {
+            row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+        attempt_table_before = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'task_attempts'"
+        ).fetchone()
+
+    assert revision_before == ("0001_m0_core",)
+    assert attempt_table_before == ("task_attempts",)
+    assert "current_attempt_id" not in task_columns_before
+
+    _upgrade("head")
+
+    with sqlite3.connect(database) as connection:
+        revision_after = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+        task = connection.execute(
+            "SELECT payload_json, lease_generation FROM tasks "
+            "WHERE id = 'tsk_migration'"
+        ).fetchone()
+        task_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(tasks)"
+        ).fetchall()
+        foreign_key_errors = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+
+    assert revision_after == ("0002_task_attempts",)
+    assert task == ('{"message":"preserve me"}', 0)
+    assert any(
+        row[2] == "task_attempts"
+        and row[3] == "current_attempt_id"
+        and row[4] == "id"
+        for row in task_foreign_keys
+    )
+    assert foreign_key_errors == []
