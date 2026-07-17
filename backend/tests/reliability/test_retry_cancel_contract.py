@@ -80,14 +80,6 @@ def test_cancelled_task_is_terminal_and_cannot_be_reopened(
         assert retried.status == TaskStatus.CANCELLED.value
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-STATE-01: the state machine lacks RETRY_WAIT and "
-        "CANCEL_REQUESTED, so backoff and cooperative cancellation cannot "
-        "be represented."
-    ),
-    strict=True,
-)
 def test_task_state_machine_contains_reliability_states() -> None:
     actual = {status.value for status in TaskStatus}
     required = {
