@@ -20,6 +20,7 @@ from .repositories import (
     reap_expired_tasks,
 )
 from .services.tasks import execute_task_sync
+from .services.artifacts import reconcile_artifacts
 
 
 def _maintain_lease(
@@ -56,9 +57,31 @@ def run_worker(*, once: bool = False) -> None:
     session_factory = create_session_factory(engine)
     worker_id = f"{socket.gethostname()}-{uuid4().hex[:8]}"
     provider_registry = create_default_provider_registry()
+    next_artifact_reconcile = 0.0
     print(f"[worker] started id={worker_id}")
 
     while True:
+        monotonic_now = time.monotonic()
+        if monotonic_now >= next_artifact_reconcile:
+            with session_factory() as session:
+                report = reconcile_artifacts(
+                    session,
+                    settings,
+                    stale_after_seconds=(
+                        settings.artifact_recovery_stale_seconds
+                    ),
+                )
+            if report.changes:
+                print(
+                    f"[worker] reconciled artifacts changes={report.changes} "
+                    f"temp_removed={report.temp_files_removed} "
+                    f"tasks_recovered={report.tasks_recovered}"
+                )
+            next_artifact_reconcile = (
+                monotonic_now
+                + max(1.0, settings.artifact_reconcile_seconds)
+            )
+
         with session_factory() as session:
             reaped = reap_expired_tasks(session)
             if reaped:

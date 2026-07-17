@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     worker_lease_seconds: int = 60
     provider_name: str = "fake"
+    artifact_reconcile_seconds: float = 60.0
+    artifact_recovery_stale_seconds: float = 300.0
 
     @field_validator("cors_origins", mode="before")
     @classmethod

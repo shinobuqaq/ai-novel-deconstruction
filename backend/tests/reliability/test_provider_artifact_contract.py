@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from inspect import signature
 
-import pytest
-
 from app.services import artifacts
 from app.services.artifacts import write_json_artifact
 from app.services.tasks import execute_task
@@ -55,13 +53,6 @@ def test_same_blob_from_two_tasks_has_distinct_artifact_identity(
     assert second.created_by_task_id == second_task_id
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-ARTIFACT-02: no reconciler repairs WRITING rows, promoted "
-        "files, missing files, or stale-generation artifact commits."
-    ),
-    strict=True,
-)
 def test_artifact_service_exposes_a_crash_recovery_reconciler() -> None:
     candidates = (
         "reconcile_artifacts",

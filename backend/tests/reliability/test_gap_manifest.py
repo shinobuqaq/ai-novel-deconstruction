@@ -4,9 +4,7 @@ import re
 from pathlib import Path
 
 
-EXPECTED_GAP_IDS = {
-    "M0-GAP-ARTIFACT-02",
-}
+EXPECTED_GAP_IDS: set[str] = set()
 
 GAP_ID_PATTERN = re.compile(r"M0-GAP-[A-Z]+-\d{2}")
 
