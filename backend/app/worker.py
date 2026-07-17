@@ -11,7 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from .config import get_settings
 from .db import create_db_engine, create_session_factory
 from .models import Base
-from .repositories import ClaimedTask, claim_next_task, get_task, heartbeat_task
+from .repositories import (
+    ClaimedTask,
+    claim_next_task,
+    get_task,
+    heartbeat_task,
+    reap_expired_tasks,
+)
 from .services.tasks import execute_task_sync
 
 
@@ -52,6 +58,9 @@ def run_worker(*, once: bool = False) -> None:
 
     while True:
         with session_factory() as session:
+            reaped = reap_expired_tasks(session)
+            if reaped:
+                print(f"[worker] recovered expired tasks={reaped}")
             claim = claim_next_task(
                 session,
                 worker_id=worker_id,
@@ -86,7 +95,9 @@ def run_worker(*, once: bool = False) -> None:
                 persisted = get_task(session, claim.id)
                 status = "MISSING" if persisted is None else persisted.status
 
-            if not accepted:
+            if not accepted and status == "CANCELLED":
+                print(f"[worker] cancelled task={claim.id}")
+            elif not accepted:
                 print(
                     f"[worker] result rejected task={claim.id} "
                     f"reason=LEASE_LOST status={status}"

@@ -320,29 +320,50 @@ def complete_task_attempt(
     return True
 
 
-def fail_claim_permanently(
+def fail_task_attempt(
     session: Session,
     *,
-    claim: ClaimedTask,
+    task_id: str,
+    attempt_id: str,
+    lease_token: str,
+    lease_generation: int,
     error_code: str,
     error_message: str,
+    retryable: bool,
+    retry_after_seconds: float | None,
     now: datetime | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
     message = error_message[:4000]
+    retry_budget = session.execute(
+        select(Task.attempts, Task.max_attempts).where(Task.id == task_id)
+    ).one_or_none()
+    if retry_budget is None:
+        return False
+    attempts, max_attempts = retry_budget
+    retry_scheduled = retryable and attempts < max_attempts
+    next_attempt_at = (
+        now + timedelta(seconds=max(0.0, retry_after_seconds or 0.0))
+        if retry_scheduled
+        else None
+    )
 
     attempt_result = session.execute(
         update(TaskAttempt)
         .where(
-            TaskAttempt.id == claim.current_attempt_id,
-            TaskAttempt.task_id == claim.id,
-            TaskAttempt.lease_token == claim.lease_token,
-            TaskAttempt.lease_generation == claim.lease_generation,
+            TaskAttempt.id == attempt_id,
+            TaskAttempt.task_id == task_id,
+            TaskAttempt.lease_token == lease_token,
+            TaskAttempt.lease_generation == lease_generation,
             TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
             TaskAttempt.lease_expires_at > now,
         )
         .values(
-            status=TaskAttemptStatus.PERMANENT_FAILED.value,
+            status=(
+                TaskAttemptStatus.RETRYABLE_FAILED.value
+                if retryable
+                else TaskAttemptStatus.PERMANENT_FAILED.value
+            ),
             finished_at=now,
             error_code=error_code,
             error_message=message,
@@ -351,15 +372,20 @@ def fail_claim_permanently(
     task_result = session.execute(
         update(Task)
         .where(
-            Task.id == claim.id,
+            Task.id == task_id,
             Task.status == TaskStatus.RUNNING.value,
-            Task.current_attempt_id == claim.current_attempt_id,
-            Task.lease_generation == claim.lease_generation,
+            Task.current_attempt_id == attempt_id,
+            Task.lease_generation == lease_generation,
             Task.lease_expires_at > now,
         )
         .values(
-            status=TaskStatus.FAILED.value,
-            finished_at=now,
+            status=(
+                TaskStatus.RETRY_WAIT.value
+                if retry_scheduled
+                else TaskStatus.FAILED.value
+            ),
+            next_attempt_at=next_attempt_at,
+            finished_at=None if retry_scheduled else now,
             lease_owner=None,
             lease_expires_at=None,
             last_error_code=error_code,
@@ -376,8 +402,166 @@ def fail_claim_permanently(
     return True
 
 
+def request_task_cancellation(
+    session: Session,
+    *,
+    task_id: str,
+    now: datetime | None = None,
+) -> Task | None:
+    now = now or datetime.now(timezone.utc)
+    immediate = session.execute(
+        update(Task)
+        .where(
+            Task.id == task_id,
+            Task.status.in_(
+                (TaskStatus.PENDING.value, TaskStatus.RETRY_WAIT.value)
+            ),
+        )
+        .values(
+            status=TaskStatus.CANCELLED.value,
+            cancel_requested_at=now,
+            finished_at=now,
+            next_attempt_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+    )
+    if immediate.rowcount == 0:
+        session.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                Task.status == TaskStatus.RUNNING.value,
+            )
+            .values(
+                status=TaskStatus.CANCEL_REQUESTED.value,
+                cancel_requested_at=now,
+            )
+        )
+    session.commit()
+    return session.get(Task, task_id)
+
+
+def acknowledge_task_cancellation(
+    session: Session,
+    *,
+    claim: ClaimedTask,
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    attempt_result = session.execute(
+        update(TaskAttempt)
+        .where(
+            TaskAttempt.id == claim.current_attempt_id,
+            TaskAttempt.task_id == claim.id,
+            TaskAttempt.lease_token == claim.lease_token,
+            TaskAttempt.lease_generation == claim.lease_generation,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+        )
+        .values(
+            status=TaskAttemptStatus.CANCELLED.value,
+            finished_at=now,
+        )
+    )
+    task_result = session.execute(
+        update(Task)
+        .where(
+            Task.id == claim.id,
+            Task.status == TaskStatus.CANCEL_REQUESTED.value,
+            Task.current_attempt_id == claim.current_attempt_id,
+            Task.lease_generation == claim.lease_generation,
+        )
+        .values(
+            status=TaskStatus.CANCELLED.value,
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+            next_attempt_at=None,
+        )
+    )
+    if attempt_result.rowcount != 1 or task_result.rowcount != 1:
+        session.rollback()
+        return False
+    session.commit()
+    return True
+
+
+def reap_expired_tasks(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> int:
+    now = now or datetime.now(timezone.utc)
+    connection = session.connection()
+    if connection.dialect.name != "sqlite":
+        raise RuntimeError("TASK_REAPER_REQUIRES_SQLITE_ADAPTER")
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+    tasks = list(
+        session.scalars(
+            select(Task).where(
+                Task.status.in_(
+                    (
+                        TaskStatus.RUNNING.value,
+                        TaskStatus.CANCEL_REQUESTED.value,
+                    )
+                ),
+                Task.lease_expires_at.is_not(None),
+                Task.lease_expires_at <= now,
+            )
+        )
+    )
+    reaped = 0
+    for task in tasks:
+        attempt = (
+            session.get(TaskAttempt, task.current_attempt_id)
+            if task.current_attempt_id
+            else None
+        )
+        if attempt is not None and attempt.status == TaskAttemptStatus.RUNNING.value:
+            attempt.finished_at = now
+
+        if task.status == TaskStatus.CANCEL_REQUESTED.value:
+            if attempt is not None:
+                attempt.status = TaskAttemptStatus.CANCELLED.value
+            task.status = TaskStatus.CANCELLED.value
+            task.finished_at = now
+        elif task.attempts >= task.max_attempts:
+            if attempt is not None:
+                attempt.status = TaskAttemptStatus.EXPIRED.value
+                attempt.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+                attempt.error_message = "Lease expired and retry budget is exhausted."
+            task.status = TaskStatus.FAILED.value
+            task.finished_at = now
+            task.last_error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+            task.last_error_message = "Lease expired and retry budget is exhausted."
+            task.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+            task.error_message = "Lease expired and retry budget is exhausted."
+        else:
+            if attempt is not None:
+                attempt.status = TaskAttemptStatus.EXPIRED.value
+                attempt.error_code = "LEASE_EXPIRED_RETRY"
+                attempt.error_message = "Lease expired; task is waiting for retry."
+            task.status = TaskStatus.RETRY_WAIT.value
+            task.next_attempt_at = now
+            task.last_error_code = "LEASE_EXPIRED_RETRY"
+            task.last_error_message = "Lease expired; task is waiting for retry."
+
+        task.lease_owner = None
+        task.lease_expires_at = None
+        task.next_attempt_at = (
+            task.next_attempt_at
+            if task.status == TaskStatus.RETRY_WAIT.value
+            else None
+        )
+        reaped += 1
+
+    session.commit()
+    return reaped
+
+
 def retry_task(session: Session, task: Task) -> Task:
-    if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
+    if task.status != TaskStatus.FAILED.value or task.attempts >= task.max_attempts:
         return task
     task.status = TaskStatus.PENDING.value
     task.lease_owner = None

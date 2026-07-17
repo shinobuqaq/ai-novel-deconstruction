@@ -9,8 +9,9 @@ from ..config import Settings
 from ..providers.fake import FakeProvider
 from ..repositories import (
     ClaimedTask,
+    acknowledge_task_cancellation,
     complete_task_attempt,
-    fail_claim_permanently,
+    fail_task_attempt,
     task_claim_is_current,
 )
 from .artifacts import write_json_artifact
@@ -30,6 +31,7 @@ async def execute_task(
 
     with session_factory() as session:
         if not task_claim_is_current(session, claim=claim):
+            acknowledge_task_cancellation(session, claim=claim)
             return False
         artifact = write_json_artifact(
             session,
@@ -47,7 +49,7 @@ async def execute_task(
             created_by_task_id=claim.id,
             metadata={"provider": "fake"},
         )
-        return complete_task_attempt(
+        accepted = complete_task_attempt(
             session,
             task_id=claim.id,
             attempt_id=claim.current_attempt_id,
@@ -55,6 +57,9 @@ async def execute_task(
             lease_generation=claim.lease_generation,
             result_artifact_id=artifact.id,
         )
+        if not accepted:
+            acknowledge_task_cancellation(session, claim=claim)
+        return accepted
 
 
 def execute_task_sync(
@@ -66,9 +71,17 @@ def execute_task_sync(
         return asyncio.run(execute_task(session_factory, settings, claim))
     except Exception as exc:
         with session_factory() as session:
-            return fail_claim_permanently(
+            failed = fail_task_attempt(
                 session,
-                claim=claim,
+                task_id=claim.id,
+                attempt_id=claim.current_attempt_id,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 error_code=type(exc).__name__,
                 error_message=str(exc),
+                retryable=False,
+                retry_after_seconds=None,
             )
+            if not failed:
+                acknowledge_task_cancellation(session, claim=claim)
+            return failed
