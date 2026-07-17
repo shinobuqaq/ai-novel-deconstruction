@@ -197,6 +197,10 @@ jobs:
           .\scripts\test.ps1
           .\scripts\init-db.ps1
 
+      - name: Run M0 hard-kill recovery gate
+        shell: pwsh
+        run: .\scripts\verify-m0-reliability.ps1
+
       - name: Build frontend on Windows
         shell: pwsh
         run: |
