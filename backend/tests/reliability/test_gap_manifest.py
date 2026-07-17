@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 EXPECTED_GAP_IDS = {
-    "M0-GAP-ARTIFACT-01",
     "M0-GAP-ARTIFACT-02",
 }
 

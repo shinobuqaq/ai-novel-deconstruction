@@ -139,11 +139,18 @@ def test_0001_data_survives_upgrade_and_downgrade(
         attempt_count = connection.execute(
             "SELECT COUNT(*) FROM task_attempts"
         ).fetchone()
+        artifact = connection.execute(
+            "SELECT result_key, blob_id FROM artifacts "
+            "WHERE id = 'art_migration'"
+        ).fetchone()
+        blob_count = connection.execute(
+            "SELECT COUNT(*) FROM artifact_blobs"
+        ).fetchone()
         foreign_key_errors = connection.execute(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0002_task_attempts",)
+    assert revision == ("0003_artifact_blobs",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -157,6 +164,11 @@ def test_0001_data_survives_upgrade_and_downgrade(
         None,
     )
     assert attempt_count == (0,)
+    assert artifact == (
+        "tsk_migration:migration.fixture",
+        "blb_" + "0" * 64,
+    )
+    assert blob_count == (1,)
     assert foreign_key_errors == []
 
     settings = Settings(
@@ -221,6 +233,23 @@ def test_migrated_schema_contains_task_attempt_constraints(
         task_foreign_keys = connection.execute(
             "PRAGMA foreign_key_list(tasks)"
         ).fetchall()
+        artifact_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(artifacts)")
+        }
+        blob_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(artifact_blobs)")
+        }
+        artifact_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(artifacts)")
+        }
+        blob_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(artifact_blobs)")
+        }
+        artifact_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(artifacts)"
+        ).fetchall()
 
     assert {
         "current_attempt_id",
@@ -258,6 +287,28 @@ def test_migrated_schema_contains_task_attempt_constraints(
         and row[3] == "current_attempt_id"
         and row[4] == "id"
         for row in task_foreign_keys
+    )
+    assert {
+        "result_key",
+        "blob_id",
+        "created_by_attempt_id",
+        "lease_generation",
+    }.issubset(artifact_columns)
+    assert {
+        "id",
+        "content_hash",
+        "status",
+        "relative_path",
+        "size_bytes",
+        "created_at",
+    } == blob_columns
+    assert "ux_artifact_result_key" in artifact_indexes
+    assert "ux_artifact_blob_content_hash" in blob_indexes
+    assert any(
+        row[2] == "artifact_blobs"
+        and row[3] == "blob_id"
+        and row[4] == "id"
+        for row in artifact_foreign_keys
     )
 
 
@@ -315,7 +366,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0002_task_attempts",)
+    assert revision_after == ("0003_artifact_blobs",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"

@@ -37,6 +37,11 @@ def test_project_task_artifact_flow(client):
     artifact_id = final_task["result_artifact_id"]
     assert artifact_id
 
+    artifact_record = client.get("/api/artifacts").json()[0]
+    assert artifact_record["id"] == artifact_id
+    assert artifact_record["blob_id"].startswith("blb_")
+    assert artifact_record["result_key"] == f"{task_id}:fake.echo.result"
+
     artifact = client.get(f"/api/artifacts/{artifact_id}/content")
     assert artifact.status_code == 200
     assert artifact.json()["response"]["echo"]["message"] == "hello"

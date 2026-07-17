@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import get_db
-from .models import Artifact, Project, Task
+from .models import Artifact, ArtifactBlob, ArtifactStatus, Project, Task
 from .repositories import (
     create_project,
     create_task,
@@ -59,9 +59,13 @@ def _artifact_read(artifact: Artifact) -> ArtifactRead:
         kind=artifact.kind,
         schema_version=artifact.schema_version,
         status=artifact.status,
+        result_key=artifact.result_key,
+        blob_id=artifact.blob_id,
         content_hash=artifact.content_hash,
         relative_path=artifact.relative_path,
         created_by_task_id=artifact.created_by_task_id,
+        created_by_attempt_id=artifact.created_by_attempt_id,
+        lease_generation=artifact.lease_generation,
         metadata=json.loads(artifact.metadata_json),
         created_at=artifact.created_at,
     )
@@ -138,8 +142,13 @@ def artifact_content(artifact_id: str, request: Request, session: Session = Depe
     artifact = session.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND")
+    blob = session.get(ArtifactBlob, artifact.blob_id)
+    if blob is None:
+        raise HTTPException(status_code=409, detail="ARTIFACT_BLOB_MISSING")
+    if blob.status != ArtifactStatus.READY.value:
+        raise HTTPException(status_code=409, detail="ARTIFACT_BLOB_NOT_READY")
     settings: Settings = request.app.state.settings
-    path = settings.workspace_dir / Path(artifact.relative_path)
+    path = settings.workspace_dir / Path(blob.relative_path)
     if not path.is_file():
         raise HTTPException(status_code=409, detail="ARTIFACT_FILE_MISSING")
     return json.loads(path.read_text(encoding="utf-8"))

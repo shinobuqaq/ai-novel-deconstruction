@@ -17,13 +17,6 @@ def test_task_execution_accepts_an_injected_provider_boundary() -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M0-GAP-ARTIFACT-01: artifact identity is deduplicated by content "
-        "hash, so two tasks can incorrectly share one lineage record."
-    ),
-    strict=True,
-)
 def test_same_blob_from_two_tasks_has_distinct_artifact_identity(
     reliability_env,
     task_factory,
@@ -57,6 +50,7 @@ def test_same_blob_from_two_tasks_has_distinct_artifact_identity(
 
     assert first.id != second.id
     assert first.content_hash == second.content_hash
+    assert first.blob_id == second.blob_id
     assert first.created_by_task_id == first_task_id
     assert second.created_by_task_id == second_task_id
 
