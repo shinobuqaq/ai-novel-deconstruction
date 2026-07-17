@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Project, Task } from "./api";
+import ProductWorkbench from "./ProductWorkbench";
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: "待处理",
@@ -33,7 +34,7 @@ function taskMessage(task: Task) {
   return typeof message === "string" && message.trim() ? message : "无任务内容";
 }
 
-export default function App() {
+export function DebugConsole() {
   const [health, setHealth] = useState("checking");
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -334,4 +335,8 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+export default function App() {
+  return window.location.pathname === "/debug" ? <DebugConsole /> : <ProductWorkbench />;
 }

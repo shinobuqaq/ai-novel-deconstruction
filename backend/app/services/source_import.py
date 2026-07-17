@@ -29,7 +29,7 @@ from ..models import (
 )
 
 
-SUPPORTED_FORMATS = {"txt", "md", "docx", "epub"}
+SUPPORTED_FORMATS = {"txt", "md", "markdown", "docx", "epub"}
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
 
 
@@ -99,7 +99,7 @@ def _source_format(filename: str) -> str:
             "当前只支持 TXT、Markdown、DOCX 和 EPUB 文件。",
             status_code=415,
         )
-    return extension
+    return "md" if extension == "markdown" else extension
 
 
 def _normalize_text(text: str) -> str:
@@ -486,7 +486,7 @@ def import_source(
         original_relative_path="pending",
         text_relative_path="pending",
         total_chars=len(parsed.text),
-        chapter_count=len(chapters),
+        chapter_count=sum(item.unit_type == "CHAPTER" for item in chapters),
         detected_encoding=parsed.detected_encoding,
         status=SourceVersionStatus.REVIEW.value,
     )

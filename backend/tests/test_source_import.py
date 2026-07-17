@@ -90,6 +90,18 @@ def test_markdown_book_title_is_kept_as_preface_not_empty_chapter() -> None:
     assert not any(item.code == "CHAPTER_EMPTY" for item in issues)
 
 
+def test_markdown_import_counts_chapters_without_preface(client) -> None:
+    project = client.post("/api/projects", json={"name": "章节统计"}).json()
+    response = client.post(
+        f"/api/projects/{project['id']}/sources/import?filename=book.md",
+        content="# 书名\n\n## 第一章\n正文\n## 第二章\n正文二".encode(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["version"]["chapter_count"] == 2
+    assert len(response.json()["units"]) == 3
+
+
 def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> None:
     project = client.post("/api/projects", json={"name": "真实小说"}).json()
     payload = "第一章 开始\n张三推开了门。\n第二章 重复\n张三推开了门。".encode("utf-8")
