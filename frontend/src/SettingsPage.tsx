@@ -385,8 +385,8 @@ export default function SettingsPage() {
                       <small>越低越稳定，越高越发散。信息抽取建议保持较低。</small>
                     </label>
                     <label>最大输出长度
-                      <input type="number" min="256" max="128000" step="256" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
-                      <small>限制单次模型返回的最大内容量。</small>
+                      <input type="number" min="256" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
+                      <small>限制单次模型返回的最大内容量；实际可用上限由所选模型决定。</small>
                     </label>
                     <label>单次超时（秒）
                       <input type="number" min="10" max="1800" value={profileDraft.timeout_seconds} onChange={(event) => setProfileDraft({ ...profileDraft, timeout_seconds: Number(event.target.value) })} />

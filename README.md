@@ -97,10 +97,10 @@ ai-novel-deconstruction/
 
 ## 6. 研究成果如何进入代码
 
-本仓库不是从 P01—P18 中选择一个项目 Fork 而来，而是依据跨项目审计结论进行 clean-room 独立实现。
+本仓库不是从 P01—P19 中选择一个项目 Fork 而来，而是依据跨项目审计结论进行 clean-room 独立实现。
 
 - [研究追踪矩阵](docs/RESEARCH_TRACEABILITY.md)：Pxx / M / G → 模块 → Issue → 验证
-- [第三方代码登记](docs/THIRD_PARTY_CODE.md)：当前未复制 P01—P18 源码；未来引入必须固定来源、版本和许可证
+- [第三方代码登记](docs/THIRD_PARTY_CODE.md)：当前未复制 P01—P19 源码；未来引入必须固定来源、版本和许可证
 - [开发路线图](docs/ROADMAP.md)
 - [Issue Backlog](docs/ISSUE_BACKLOG.md)
 - [M0 Windows 冷启动与最小闭环验证记录](docs/M0_COLD_START_VALIDATION.md)
@@ -112,7 +112,7 @@ ai-novel-deconstruction/
 2. `《产品定义与 Quality Mode 原型方案 V0.1》`：历史产品研究基线
 3. `《候选系统架构与技术设计 V0.1》`：架构与技术边界
 4. `《机制演进台账 V0.16》`：研究机制状态
-5. `《P01—P17 阶段总审计报告 V1.0》` 与 P01—P18 单项目档案：研究证据
+5. `《P01—P17 阶段总审计报告 V1.0》` 与 P01—P19 单项目档案：研究证据
 6. 本 README：开发入口，不替代产品基线
 
 ## 8. License
