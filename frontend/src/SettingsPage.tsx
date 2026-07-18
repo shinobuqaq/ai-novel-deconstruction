@@ -53,6 +53,7 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [manualModelEntry, setManualModelEntry] = useState(false);
 
   async function loadSettings(preferredServiceId?: string) {
     const loaded = await api.modelSettings();
@@ -149,6 +150,7 @@ export default function SettingsPage() {
       setError("");
       const result = await api.modelCatalog(serviceId);
       setCatalogs((current) => ({ ...current, [serviceId]: result.models }));
+      setManualModelEntry(false);
       setNotice(result.message);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -200,6 +202,9 @@ export default function SettingsPage() {
   }
 
   const currentCatalog = profileDraft ? catalogs[profileDraft.service_id] ?? [] : [];
+  const currentModelIsListed = Boolean(
+    profileDraft?.model && currentCatalog.includes(profileDraft.model),
+  );
 
   return (
     <div className="settings-shell">
@@ -299,17 +304,57 @@ export default function SettingsPage() {
               <form className="profile-editor" onSubmit={handleSaveProfile}>
                 <div className="profile-summary-band">
                   <label>使用的模型服务
-                    <select value={profileDraft.service_id} onChange={(event) => setProfileDraft({ ...profileDraft, service_id: event.target.value })}>
+                    <select
+                      value={profileDraft.service_id}
+                      onChange={(event) => {
+                        setProfileDraft({ ...profileDraft, service_id: event.target.value, model: "" });
+                        setManualModelEntry(false);
+                      }}
+                    >
                       {settings?.services.map((service) => <option key={service.id} value={service.id}>{service.name}{service.configured ? "" : "（未连接）"}</option>)}
                     </select>
                   </label>
-                  <label>分析模型
+                  <div className="profile-field">
+                    <label htmlFor="analysis-model">分析模型 {currentCatalog.length > 0 && <span>已加载 {currentCatalog.length} 个</span>}</label>
                     <div className="model-picker">
-                      <input list="available-models" value={profileDraft.model} onChange={(event) => setProfileDraft({ ...profileDraft, model: event.target.value })} placeholder="选择或手工填写模型名称" />
-                      <datalist id="available-models">{currentCatalog.map((model) => <option value={model} key={model} />)}</datalist>
-                      <button type="button" className="secondary-button" disabled={busy === "load-models"} onClick={() => void loadCatalog(profileDraft.service_id)}>{busy === "load-models" ? "读取中" : "获取模型"}</button>
+                      {manualModelEntry ? (
+                        <input
+                          id="analysis-model"
+                          value={profileDraft.model}
+                          onChange={(event) => setProfileDraft({ ...profileDraft, model: event.target.value })}
+                          placeholder="填写服务商提供的模型名称"
+                        />
+                      ) : (
+                        <select
+                          id="analysis-model"
+                          value={profileDraft.model}
+                          onChange={(event) => setProfileDraft({ ...profileDraft, model: event.target.value })}
+                        >
+                          {!profileDraft.model && <option value="">请先获取模型</option>}
+                          {profileDraft.model && !currentModelIsListed && (
+                            <option value={profileDraft.model}>{profileDraft.model}（当前设置，列表中未找到）</option>
+                          )}
+                          {currentCatalog.map((model) => <option value={model} key={model}>{model}</option>)}
+                        </select>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy === "load-models"}
+                        onClick={() => void loadCatalog(profileDraft.service_id)}
+                      >
+                        {busy === "load-models" ? "读取中" : currentCatalog.length ? "刷新模型" : "获取模型"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setManualModelEntry((current) => !current)}
+                      >
+                        {manualModelEntry ? "使用模型列表" : "手工填写"}
+                      </button>
                     </div>
-                  </label>
+                    {!currentCatalog.length && <small>点击“获取模型”后，可从服务返回的模型中直接选择。</small>}
+                  </div>
                 </div>
 
                 <div className="recommended-settings">

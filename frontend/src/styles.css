@@ -298,7 +298,11 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .delete-confirmation { display: flex; margin-right: auto; gap: 8px; }
 .profile-editor { gap: 18px; margin-top: 20px; padding: 26px 28px; border: 1px solid #d8dee5; border-radius: 8px; background: #fff; }
 .profile-summary-band { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr); gap: 20px; }
-.model-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.profile-field { display: grid; gap: 7px; }
+.profile-field > label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.profile-field > label span { color: #23684d; font-size: 11px; }
+.profile-field > small { color: #71808e; font-size: 11px; line-height: 1.45; }
+.model-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
 .recommended-settings { display: grid; grid-template-columns: minmax(220px, 0.7fr) minmax(420px, 1.3fr); align-items: end; gap: 24px; padding: 18px; border-top: 1px solid #e1e6eb; border-bottom: 1px solid #e1e6eb; background: #f8fafb; }
 .recommended-settings > div { display: grid; gap: 3px; }
 .recommended-settings span { color: #71808e; font-size: 11px; }
