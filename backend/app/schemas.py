@@ -169,3 +169,56 @@ class EvidenceContextRead(BaseModel):
     context_start: int
     context_end: int
     context_text: str
+
+
+class OpenAIConfigRead(BaseModel):
+    configured: bool
+    base_url: str
+    model: str
+
+
+class OpenAIConfigWrite(BaseModel):
+    api_key: str | None = Field(default=None, max_length=500)
+    base_url: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class AnalysisRunRead(BaseModel):
+    id: str
+    source_version_id: str
+    stage: str
+    status: str
+    total_batches: int
+    completed_batches: int
+    failed_batches: int
+    created_at: datetime
+    finished_at: datetime | None
+    confirmed_at: datetime | None
+
+
+class EntityCandidateRead(BaseModel):
+    id: str
+    run_id: str
+    source_version_id: str
+    name: str
+    entity_type: str
+    aliases: list[str]
+    description: str
+    evidence_ids: list[str]
+    status: str
+    confidence: int
+
+
+class EventCandidateRead(BaseModel):
+    id: str
+    run_id: str
+    source_version_id: str
+    title: str
+    event_type: str
+    summary: str
+    participants: list[str]
+    evidence_ids: list[str]
+    start_char: int
+    end_char: int
+    status: str
+    confidence: int

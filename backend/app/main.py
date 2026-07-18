@@ -27,7 +27,7 @@ def create_app(
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.provider_registry = (
-        provider_registry or create_default_provider_registry()
+        provider_registry or create_default_provider_registry(settings)
     )
 
     app.add_middleware(

@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0004_source_ingest",)
+    assert revision == ("0005_analysis_candidates",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -381,7 +381,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0004_source_ingest",)
+    assert revision_after == ("0005_analysis_candidates",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"

@@ -14,13 +14,18 @@ from .models import (
     Artifact,
     ArtifactBlob,
     ArtifactStatus,
+    AnalysisRun,
+    CandidateStatus,
+    EntityCandidate,
     EvidenceSpan,
+    EventCandidate,
     Project,
     SourceDocument,
     SourceIssue,
     SourceUnit,
     SourceVersion,
     Task,
+    TaskStatus,
 )
 from .repositories import (
     create_project,
@@ -34,8 +39,13 @@ from .repositories import (
 )
 from .schemas import (
     ArtifactRead,
+    AnalysisRunRead,
+    EntityCandidateRead,
     EvidenceContextRead,
     EvidenceSpanRead,
+    EventCandidateRead,
+    OpenAIConfigRead,
+    OpenAIConfigWrite,
     ProjectCreate,
     ProjectRead,
     SourceDocumentRead,
@@ -54,6 +64,14 @@ from .services.source_import import (
     resolve_source_issue,
     source_text,
 )
+from .services.analysis import (
+    ANALYSIS_STAGE,
+    analysis_run_progress,
+    confirm_analysis_run,
+    refresh_analysis_run,
+    start_entities_events_run,
+)
+from .services.provider_config import read_openai_config, write_openai_config
 
 router = APIRouter()
 
@@ -134,9 +152,97 @@ def _source_error(error: SourceImportError) -> HTTPException:
     )
 
 
+def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
+    refresh_analysis_run(session, run)
+    completed, failed = analysis_run_progress(session, run)
+    return AnalysisRunRead(
+        id=run.id,
+        source_version_id=run.source_version_id,
+        stage=run.stage,
+        status=run.status,
+        total_batches=run.total_batches,
+        completed_batches=completed,
+        failed_batches=failed,
+        created_at=_as_utc(run.created_at),
+        finished_at=_as_utc(run.finished_at),
+        confirmed_at=_as_utc(run.confirmed_at),
+    )
+
+
+def _entity_candidate_read(candidate: EntityCandidate) -> EntityCandidateRead:
+    return EntityCandidateRead(
+        id=candidate.id,
+        run_id=candidate.run_id,
+        source_version_id=candidate.source_version_id,
+        name=candidate.name,
+        entity_type=candidate.entity_type,
+        aliases=json.loads(candidate.aliases_json),
+        description=candidate.description,
+        evidence_ids=json.loads(candidate.evidence_ids_json),
+        status=candidate.status,
+        confidence=candidate.confidence,
+    )
+
+
+def _event_candidate_read(candidate: EventCandidate) -> EventCandidateRead:
+    return EventCandidateRead(
+        id=candidate.id,
+        run_id=candidate.run_id,
+        source_version_id=candidate.source_version_id,
+        title=candidate.title,
+        event_type=candidate.event_type,
+        summary=candidate.summary,
+        participants=json.loads(candidate.participants_json),
+        evidence_ids=json.loads(candidate.evidence_ids_json),
+        start_char=candidate.start_char,
+        end_char=candidate.end_char,
+        status=candidate.status,
+        confidence=candidate.confidence,
+    )
+
+
 @router.get("/health")
 def health(request: Request) -> dict[str, str]:
     return {"status": "ok", "app": request.app.title}
+
+
+@router.get("/api/settings/openai", response_model=OpenAIConfigRead)
+def openai_config_get(request: Request) -> OpenAIConfigRead:
+    config = read_openai_config(request.app.state.settings)
+    return OpenAIConfigRead(
+        configured=config.configured,
+        base_url=config.base_url,
+        model=config.model,
+    )
+
+
+@router.put("/api/settings/openai", response_model=OpenAIConfigRead)
+def openai_config_put(
+    payload: OpenAIConfigWrite,
+    request: Request,
+) -> OpenAIConfigRead:
+    try:
+        config = write_openai_config(
+            request.app.state.settings,
+            api_key=payload.api_key,
+            base_url=payload.base_url,
+            model=payload.model,
+        )
+    except ValueError as error:
+        messages = {
+            "OPENAI_API_KEY_REQUIRED": "请输入 API Key。",
+            "OPENAI_BASE_URL_INVALID": "接口地址必须使用 HTTPS。",
+            "OPENAI_MODEL_REQUIRED": "模型名称不能为空。",
+        }
+        raise HTTPException(
+            status_code=422,
+            detail={"code": str(error), "message": messages.get(str(error), "AI 配置无效。")},
+        ) from error
+    return OpenAIConfigRead(
+        configured=config.configured,
+        base_url=config.base_url,
+        model=config.model,
+    )
 
 
 @router.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -283,6 +389,119 @@ def source_versions_confirm(
         return confirm_source_version(session, version)
     except SourceImportError as error:
         raise _source_error(error) from error
+
+
+@router.post(
+    "/api/source-versions/{version_id}/analysis/entities-events/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def entities_events_start(
+    version_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    version = session.get(SourceVersion, version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
+    config = read_openai_config(request.app.state.settings)
+    if not config.configured:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROVIDER_NOT_CONFIGURED", "message": "请先填写 OpenAI API Key。"},
+        )
+    try:
+        run = start_entities_events_run(session, request.app.state.settings, version)
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/source-versions/{version_id}/analysis/entities-events",
+    response_model=AnalysisRunRead | None,
+)
+def entities_events_latest(
+    version_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead | None:
+    if session.get(SourceVersion, version_id) is None:
+        raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
+    run = session.scalar(
+        select(AnalysisRun)
+        .where(
+            AnalysisRun.source_version_id == version_id,
+            AnalysisRun.stage == ANALYSIS_STAGE,
+        )
+        .order_by(AnalysisRun.created_at.desc())
+    )
+    return _analysis_run_read(session, run) if run else None
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/entities",
+    response_model=list[EntityCandidateRead],
+)
+def analysis_entities_list(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[EntityCandidateRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    candidates = session.scalars(
+        select(EntityCandidate)
+        .join(Task, Task.id == EntityCandidate.created_by_task_id)
+        .where(
+            EntityCandidate.run_id == run_id,
+            EntityCandidate.status != CandidateStatus.REJECTED.value,
+            Task.status == TaskStatus.SUCCEEDED.value,
+            Task.current_attempt_id == EntityCandidate.created_by_attempt_id,
+        )
+        .order_by(EntityCandidate.name)
+    )
+    return [_entity_candidate_read(item) for item in candidates]
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/events",
+    response_model=list[EventCandidateRead],
+)
+def analysis_events_list(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[EventCandidateRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    candidates = session.scalars(
+        select(EventCandidate)
+        .join(Task, Task.id == EventCandidate.created_by_task_id)
+        .where(
+            EventCandidate.run_id == run_id,
+            EventCandidate.status != CandidateStatus.REJECTED.value,
+            Task.status == TaskStatus.SUCCEEDED.value,
+            Task.current_attempt_id == EventCandidate.created_by_attempt_id,
+        )
+        .order_by(EventCandidate.start_char, EventCandidate.title)
+    )
+    return [_event_candidate_read(item) for item in candidates]
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/confirm",
+    response_model=AnalysisRunRead,
+)
+def analysis_run_confirm(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    try:
+        confirmed = confirm_analysis_run(session, run)
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return _analysis_run_read(session, confirmed)
 
 
 @router.get(

@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     worker_lease_seconds: int = 60
     provider_name: str = "fake"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-5.6-terra"
+    openai_api_key: str | None = None
+    openai_timeout_seconds: float = 180.0
+    openai_reasoning_effort: str = "low"
     artifact_reconcile_seconds: float = 60.0
     artifact_recovery_stale_seconds: float = 300.0
 
@@ -64,6 +69,7 @@ class Settings(BaseSettings):
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "sources").mkdir(parents=True, exist_ok=True)
+        (self.workspace_dir / "secrets").mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache(maxsize=1)
