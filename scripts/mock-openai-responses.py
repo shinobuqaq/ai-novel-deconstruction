@@ -10,9 +10,17 @@ from fastapi import FastAPI
 app = FastAPI(title="Novel analysis preview provider")
 
 
-@app.post("/v1/responses")
-def responses(payload: dict) -> dict:
-    source = str(payload.get("input") or "")
+@app.get("/v1/models")
+def models() -> dict:
+    return {
+        "data": [
+            {"id": "novel-quality-preview", "object": "model"},
+            {"id": "novel-economy-preview", "object": "model"},
+        ]
+    }
+
+
+def _analysis_result(source: str) -> dict:
     entities = []
     events = []
     if "林舟收到一封没有署名的信" in source:
@@ -60,7 +68,13 @@ def responses(payload: dict) -> dict:
                 "confidence": 97,
             },
         ])
-    result = json.dumps({"entities": entities, "events": events}, ensure_ascii=False)
+    return {"entities": entities, "events": events}
+
+
+@app.post("/v1/responses")
+def responses(payload: dict) -> dict:
+    source = str(payload.get("input") or "")
+    result = json.dumps(_analysis_result(source), ensure_ascii=False)
     return {
         "output": [
             {
@@ -69,6 +83,21 @@ def responses(payload: dict) -> dict:
             }
         ],
         "usage": {"input_tokens": 320, "output_tokens": 180},
+    }
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(payload: dict) -> dict:
+    messages = payload.get("messages") or []
+    source = "\n".join(
+        str(item.get("content") or "")
+        for item in messages
+        if isinstance(item, dict)
+    )
+    result = json.dumps(_analysis_result(source), ensure_ascii=False)
+    return {
+        "choices": [{"message": {"role": "assistant", "content": result}}],
+        "usage": {"prompt_tokens": 320, "completion_tokens": 180},
     }
 
 

@@ -41,10 +41,17 @@ from .repositories import (
 from .schemas import (
     ArtifactRead,
     AnalysisRunRead,
+    AnalysisProfileRead,
+    AnalysisProfileWrite,
     EntityCandidateRead,
     EvidenceContextRead,
     EvidenceSpanRead,
     EventCandidateRead,
+    ModelCatalogRead,
+    ModelConnectionRead,
+    ModelServiceRead,
+    ModelServiceWrite,
+    ModelSettingsRead,
     OpenAIConfigRead,
     OpenAIConfigWrite,
     ProjectCreate,
@@ -72,7 +79,19 @@ from .services.analysis import (
     refresh_analysis_run,
     start_entities_events_run,
 )
-from .services.provider_config import read_openai_config, write_openai_config
+from .services.provider_config import (
+    AnalysisProfile,
+    ModelService,
+    ModelSettingsError,
+    delete_model_service,
+    discover_models,
+    read_model_settings,
+    read_openai_config,
+    record_connection_result,
+    save_analysis_profile,
+    save_model_service,
+    write_openai_config,
+)
 
 router = APIRouter()
 
@@ -83,6 +102,46 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _model_service_read(service: ModelService) -> ModelServiceRead:
+    return ModelServiceRead(
+        id=service.id,
+        name=service.name,
+        service_type=service.service_type,
+        base_url=service.base_url,
+        configured=service.configured,
+        last_tested_at=service.last_tested_at,
+        last_test_status=service.last_test_status,
+        last_test_message=service.last_test_message,
+    )
+
+
+def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
+    return AnalysisProfileRead(
+        id=profile.id,
+        name=profile.name,
+        task_type=profile.task_type,
+        service_id=profile.service_id,
+        model=profile.model,
+        temperature=profile.temperature,
+        max_output_tokens=profile.max_output_tokens,
+        reasoning_effort=profile.reasoning_effort,
+        timeout_seconds=profile.timeout_seconds,
+        max_retries=profile.max_retries,
+    )
+
+
+def _model_settings_error(error: ModelSettingsError, *, connection: bool = False) -> HTTPException:
+    status_code = 502 if connection else 422
+    if error.code in {"PROVIDER_NOT_FOUND", "ANALYSIS_PROFILE_NOT_FOUND"}:
+        status_code = 404
+    if error.code == "PROVIDER_NOT_CONFIGURED":
+        status_code = 409
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": error.code, "message": error.message},
+    )
 
 
 def _task_read(task: Task) -> TaskRead:
@@ -258,6 +317,160 @@ def openai_config_put(
     )
 
 
+@router.get("/api/settings/models", response_model=ModelSettingsRead)
+def model_settings_get(request: Request) -> ModelSettingsRead:
+    settings = read_model_settings(request.app.state.settings)
+    return ModelSettingsRead(
+        services=[_model_service_read(item) for item in settings.services],
+        analysis_profiles=[_analysis_profile_read(item) for item in settings.analysis_profiles],
+    )
+
+
+@router.post(
+    "/api/settings/model-services",
+    response_model=ModelServiceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def model_services_create(payload: ModelServiceWrite, request: Request) -> ModelServiceRead:
+    try:
+        service = save_model_service(
+            request.app.state.settings,
+            service_id=None,
+            name=payload.name,
+            service_type=payload.service_type,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+        )
+    except ModelSettingsError as error:
+        raise _model_settings_error(error) from error
+    return _model_service_read(service)
+
+
+@router.put(
+    "/api/settings/model-services/{service_id}",
+    response_model=ModelServiceRead,
+)
+def model_services_update(
+    service_id: str,
+    payload: ModelServiceWrite,
+    request: Request,
+) -> ModelServiceRead:
+    try:
+        service = save_model_service(
+            request.app.state.settings,
+            service_id=service_id,
+            name=payload.name,
+            service_type=payload.service_type,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+        )
+    except ModelSettingsError as error:
+        raise _model_settings_error(error) from error
+    return _model_service_read(service)
+
+
+@router.delete(
+    "/api/settings/model-services/{service_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def model_services_delete(service_id: str, request: Request) -> None:
+    try:
+        delete_model_service(request.app.state.settings, service_id)
+    except ModelSettingsError as error:
+        raise _model_settings_error(error) from error
+
+
+@router.get(
+    "/api/settings/model-services/{service_id}/models",
+    response_model=ModelCatalogRead,
+)
+async def model_services_models(service_id: str, request: Request) -> ModelCatalogRead:
+    try:
+        models = await discover_models(request.app.state.settings, service_id)
+    except ModelSettingsError as error:
+        raise _model_settings_error(error, connection=True) from error
+    return ModelCatalogRead(
+        service_id=service_id,
+        models=models,
+        message=f"已读取 {len(models)} 个可用模型。",
+    )
+
+
+@router.post(
+    "/api/settings/model-services/{service_id}/test",
+    response_model=ModelConnectionRead,
+)
+async def model_services_test(service_id: str, request: Request) -> ModelConnectionRead:
+    try:
+        models = await discover_models(request.app.state.settings, service_id)
+    except ModelSettingsError as error:
+        if error.code in {
+            "PROVIDER_MODELS_UNSUPPORTED",
+            "PROVIDER_MODELS_INVALID",
+            "PROVIDER_MODELS_EMPTY",
+        }:
+            service = record_connection_result(
+                request.app.state.settings,
+                service_id,
+                success=True,
+                message=error.message,
+            )
+            return ModelConnectionRead(
+                service=_model_service_read(service),
+                model_count=0,
+                message=error.message,
+            )
+        try:
+            record_connection_result(
+                request.app.state.settings,
+                service_id,
+                success=False,
+                message=error.message,
+            )
+        except ModelSettingsError:
+            pass
+        raise _model_settings_error(error, connection=True) from error
+    message = f"连接成功，并读取到 {len(models)} 个模型。"
+    service = record_connection_result(
+        request.app.state.settings,
+        service_id,
+        success=True,
+        message=message,
+    )
+    return ModelConnectionRead(
+        service=_model_service_read(service),
+        model_count=len(models),
+        message=message,
+    )
+
+
+@router.put(
+    "/api/settings/analysis-profiles/{profile_id}",
+    response_model=AnalysisProfileRead,
+)
+def analysis_profiles_update(
+    profile_id: str,
+    payload: AnalysisProfileWrite,
+    request: Request,
+) -> AnalysisProfileRead:
+    try:
+        profile = save_analysis_profile(
+            request.app.state.settings,
+            profile_id=profile_id,
+            name=payload.name,
+            service_id=payload.service_id,
+            model=payload.model,
+            temperature=payload.temperature,
+            max_output_tokens=payload.max_output_tokens,
+            reasoning_effort=payload.reasoning_effort,
+            timeout_seconds=payload.timeout_seconds,
+            max_retries=payload.max_retries,
+        )
+    except ModelSettingsError as error:
+        raise _model_settings_error(error) from error
+    return _analysis_profile_read(profile)
+
+
 @router.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 def projects_create(payload: ProjectCreate, session: Session = Depends(get_db)) -> Project:
     return create_project(session, name=payload.name, description=payload.description)
@@ -417,12 +630,6 @@ def entities_events_start(
     version = session.get(SourceVersion, version_id)
     if version is None:
         raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
-    config = read_openai_config(request.app.state.settings)
-    if not config.configured:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "PROVIDER_NOT_CONFIGURED", "message": "请先填写 OpenAI API Key。"},
-        )
     try:
         run = start_entities_events_run(session, request.app.state.settings, version)
     except SourceImportError as error:

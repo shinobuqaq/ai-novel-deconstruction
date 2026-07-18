@@ -102,6 +102,11 @@ async def execute_task(
         artifact_payload = {
             "task_id": claim.id,
             "response": response.parsed,
+            "model": {
+                "provider_id": response.provider_id or provider.name,
+                "model": response.model,
+                "parameters": response.parameters,
+            },
             "usage": {
                 "prompt_tokens": response.prompt_tokens,
                 "completion_tokens": response.completion_tokens,
@@ -123,7 +128,11 @@ async def execute_task(
             created_by_task_id=claim.id,
             created_by_attempt_id=claim.current_attempt_id,
             lease_generation=claim.lease_generation,
-            metadata={"provider": provider.name},
+            metadata={
+                "provider": response.provider_id or provider.name,
+                "model": response.model,
+                "parameters": response.parameters,
+            },
         )
         accepted = complete_task_attempt(
             session,
@@ -132,7 +141,7 @@ async def execute_task(
             lease_token=claim.lease_token,
             lease_generation=claim.lease_generation,
             result_artifact_id=artifact.id,
-            provider_name=provider.name,
+            provider_name=response.provider_id or provider.name,
             usage_json=json.dumps(
                 {
                     "prompt_tokens": response.prompt_tokens,
@@ -157,6 +166,10 @@ def execute_task_sync(
     claim: ClaimedTask,
     provider_registry: ProviderRegistry,
 ) -> bool:
+    try:
+        failure_provider_name = str(json.loads(claim.payload_json).get("provider_name") or settings.provider_name)
+    except json.JSONDecodeError:
+        failure_provider_name = settings.provider_name
     try:
         return asyncio.run(
             execute_task(
@@ -194,7 +207,7 @@ def execute_task_sync(
                 retryable=retryable,
                 retry_after_seconds=retry_after_seconds,
                 provider_name=(
-                    settings.provider_name
+                    failure_provider_name
                     if error_code.startswith("PROVIDER_")
                     else None
                 ),

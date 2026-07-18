@@ -28,6 +28,7 @@ from ..models import (
     TaskStatus,
 )
 from .source_import import SourceImportError, source_text
+from .provider_config import ENTITIES_EVENTS_PROFILE_ID, ModelSettingsError, resolve_analysis_profile
 
 
 ANALYSIS_TASK_KIND = "analysis.entities_events"
@@ -158,6 +159,11 @@ def start_entities_events_run(
     if existing is not None:
         return existing
 
+    try:
+        _service, model_profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
+    except ModelSettingsError as exc:
+        raise SourceImportError(exc.code, exc.message, status_code=409) from exc
+
     text = source_text(settings, version)
     units = list(session.scalars(
         select(SourceUnit)
@@ -190,11 +196,12 @@ def start_entities_events_run(
                     "end_char": batch.end_char,
                     "unit_ids": list(batch.unit_ids),
                     "provider_name": "openai",
+                    "model_profile_id": model_profile.id,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            max_attempts=3,
+            max_attempts=model_profile.max_retries + 1,
         )
         session.add(task)
         session.flush()
@@ -231,6 +238,7 @@ def provider_payload_for_claim(
         "instructions": instructions,
         "input": f"原文在全书中的字符范围：{start}-{end}\n\n{excerpt}",
         "output_schema": _schema(),
+        "model_profile_id": str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
     }
 
 

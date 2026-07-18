@@ -102,6 +102,44 @@ export type OpenAIConfig = {
   model: string;
 };
 
+export type ModelService = {
+  id: string;
+  name: string;
+  service_type: "OPENAI" | "OPENAI_COMPATIBLE";
+  base_url: string;
+  configured: boolean;
+  last_tested_at: string | null;
+  last_test_status: "NOT_TESTED" | "CONNECTED" | "FAILED";
+  last_test_message: string | null;
+};
+
+export type AnalysisProfile = {
+  id: string;
+  name: string;
+  task_type: string;
+  service_id: string;
+  model: string;
+  temperature: number;
+  max_output_tokens: number;
+  reasoning_effort: "none" | "low" | "medium" | "high";
+  timeout_seconds: number;
+  max_retries: number;
+};
+
+export type ModelSettings = {
+  services: ModelService[];
+  analysis_profiles: AnalysisProfile[];
+};
+
+export type ModelServiceInput = {
+  name: string;
+  service_type: ModelService["service_type"];
+  base_url: string;
+  api_key?: string;
+};
+
+export type AnalysisProfileInput = Omit<AnalysisProfile, "id" | "task_type">;
+
 export type AnalysisRun = {
   id: string;
   source_version_id: string;
@@ -195,6 +233,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const payload = await response.json().catch(() => null) as unknown;
     throw new Error(errorMessage(payload, response.status));
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return response.json() as Promise<T>;
 }
 
@@ -226,6 +267,33 @@ export const api = {
   openAIConfig: () => request<OpenAIConfig>("/api/settings/openai"),
   saveOpenAIConfig: (payload: { api_key?: string; base_url?: string; model?: string }) =>
     request<OpenAIConfig>("/api/settings/openai", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  modelSettings: () => request<ModelSettings>("/api/settings/models"),
+  createModelService: (payload: ModelServiceInput) =>
+    request<ModelService>("/api/settings/model-services", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  saveModelService: (serviceId: string, payload: ModelServiceInput) =>
+    request<ModelService>(`/api/settings/model-services/${serviceId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  deleteModelService: (serviceId: string) =>
+    request<void>(`/api/settings/model-services/${serviceId}`, { method: "DELETE" }),
+  testModelService: (serviceId: string) =>
+    request<{ service: ModelService; model_count: number; message: string }>(
+      `/api/settings/model-services/${serviceId}/test`,
+      { method: "POST" },
+    ),
+  modelCatalog: (serviceId: string) =>
+    request<{ service_id: string; models: string[]; message: string }>(
+      `/api/settings/model-services/${serviceId}/models`,
+    ),
+  saveAnalysisProfile: (profileId: string, payload: AnalysisProfileInput) =>
+    request<AnalysisProfile>(`/api/settings/analysis-profiles/${profileId}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),

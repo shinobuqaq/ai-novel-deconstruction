@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Project, Task } from "./api";
 import ProductWorkbench from "./ProductWorkbench";
+import SettingsPage from "./SettingsPage";
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: "待处理",
@@ -338,5 +339,7 @@ export function DebugConsole() {
 }
 
 export default function App() {
-  return window.location.pathname === "/debug" ? <DebugConsole /> : <ProductWorkbench />;
+  if (window.location.pathname === "/debug") return <DebugConsole />;
+  if (window.location.pathname === "/settings") return <SettingsPage />;
+  return <ProductWorkbench />;
 }

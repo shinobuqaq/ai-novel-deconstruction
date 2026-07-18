@@ -5,7 +5,7 @@ import {
   EntityCandidate,
   EventCandidate,
   EvidenceContext,
-  OpenAIConfig,
+  ModelSettings,
   Project,
   SourceIssue,
   SourceUnit,
@@ -67,12 +67,7 @@ export default function ProductWorkbench() {
   const [selectedChapter, setSelectedChapter] = useState("");
   const [chapterContent, setChapterContent] = useState<SourceUnitContent | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [providerConfig, setProviderConfig] = useState<OpenAIConfig | null>(null);
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [model, setModel] = useState("");
-  const [showProviderSettings, setShowProviderSettings] = useState(false);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
   const [entities, setEntities] = useState<EntityCandidate[]>([]);
   const [events, setEvents] = useState<EventCandidate[]>([]);
@@ -137,16 +132,14 @@ export default function ProductWorkbench() {
 
   const loadProjects = useCallback(async () => {
     try {
-      const [healthResult, projectResult, configResult] = await Promise.all([
+      const [healthResult, projectResult, settingsResult] = await Promise.all([
         api.health(),
         api.projects(),
-        api.openAIConfig(),
+        api.modelSettings(),
       ]);
       setHealth(healthResult.status);
       setProjects(projectResult);
-      setProviderConfig(configResult);
-      setBaseUrl(configResult.base_url);
-      setModel(configResult.model);
+      setModelSettings(settingsResult);
       setSelectedProject((current) => current || projectResult[0]?.id || "");
       setError("");
     } catch (reason) {
@@ -303,28 +296,6 @@ export default function ProductWorkbench() {
     }
   }
 
-  async function handleSaveProvider(event: FormEvent) {
-    event.preventDefault();
-    try {
-      setBusy("save-provider");
-      setError("");
-      const saved = await api.saveOpenAIConfig({
-        api_key: apiKey || undefined,
-        base_url: showAdvancedSettings ? baseUrl : undefined,
-        model: showAdvancedSettings ? model : undefined,
-      });
-      setProviderConfig(saved);
-      setBaseUrl(saved.base_url);
-      setModel(saved.model);
-      setApiKey("");
-      setShowProviderSettings(false);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy("");
-    }
-  }
-
   async function handleStartAnalysis() {
     if (!activeVersion) return;
     try {
@@ -413,6 +384,10 @@ export default function ProductWorkbench() {
     ? Math.round((analysisRun.completed_batches / analysisRun.total_batches) * 100)
     : 0;
 
+  const analysisProfile = modelSettings?.analysis_profiles.find((item) => item.id === "entities-events") ?? null;
+  const analysisService = modelSettings?.services.find((item) => item.id === analysisProfile?.service_id) ?? null;
+  const analysisConfigured = Boolean(analysisService?.configured && analysisProfile?.model);
+
   const evidenceParts = evidenceContext
     ? evidenceContext.context_text.split(evidenceContext.evidence.text_snapshot)
     : [];
@@ -424,9 +399,12 @@ export default function ProductWorkbench() {
           <p className="product-kicker">AI 小说拆解工作台</p>
           <h1>{activeProject?.name ?? "我的小说项目"}</h1>
         </div>
-        <div className={`api-status ${health}`}>
-          <span className="status-dot" />
-          {health === "ok" ? "系统正常" : health === "offline" ? "系统未连接" : "正在连接"}
+        <div className="topbar-actions">
+          <a className="button-link secondary-button" href="/settings"><span aria-hidden="true">⚙</span> 设置</a>
+          <div className={`api-status ${health}`}>
+            <span className="status-dot" />
+            {health === "ok" ? "系统正常" : health === "offline" ? "系统未连接" : "正在连接"}
+          </div>
         </div>
       </header>
 
@@ -575,64 +553,29 @@ export default function ProductWorkbench() {
                             <p>第 2 步</p>
                             <h2>识别人物和关键事件</h2>
                           </div>
-                          {providerConfig?.configured && (
-                            <div className="provider-status"><span />在线 AI 已连接</div>
+                          {analysisConfigured && (
+                            <div className="provider-status"><span />{analysisService?.name} · {analysisProfile?.model}</div>
                           )}
                         </div>
 
-                        {(!providerConfig?.configured || showProviderSettings) && (
-                          <form className="provider-form" onSubmit={handleSaveProvider}>
-                            <div className="provider-copy">
-                              <strong>{providerConfig?.configured ? "更换在线 AI 设置" : "连接在线 AI"}</strong>
-                              <span>API Key 只保存在这台电脑，不会显示在页面或分析结果中。</span>
+                        {!analysisConfigured && (
+                          <div className="provider-required">
+                            <div>
+                              <strong>开始分析前需要连接在线 AI</strong>
+                              <span>模型服务、API Key 和分析参数统一在设置中心管理。</span>
                             </div>
-                            <label htmlFor="api-key">API Key</label>
-                            <input
-                              id="api-key"
-                              type="password"
-                              autoComplete="off"
-                              value={apiKey}
-                              onChange={(event) => setApiKey(event.target.value)}
-                              placeholder={providerConfig?.configured ? "留空表示继续使用当前密钥" : "输入你的 API Key"}
-                            />
-                            <button
-                              className="advanced-toggle"
-                              type="button"
-                              onClick={() => setShowAdvancedSettings((current) => !current)}
-                            >
-                              {showAdvancedSettings ? "收起高级设置" : "高级设置"}
-                            </button>
-                            {showAdvancedSettings && (
-                              <div className="advanced-fields">
-                                <label htmlFor="base-url">接口地址</label>
-                                <input id="base-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-                                <label htmlFor="model">分析模型</label>
-                                <input id="model" value={model} onChange={(event) => setModel(event.target.value)} />
-                              </div>
-                            )}
-                            <div className="provider-actions">
-                              {providerConfig?.configured && (
-                                <button type="button" className="secondary-button" onClick={() => setShowProviderSettings(false)}>
-                                  取消
-                                </button>
-                              )}
-                              <button type="submit" disabled={!apiKey && !providerConfig?.configured || busy === "save-provider"}>
-                                {busy === "save-provider" ? "正在连接" : "保存并连接"}
-                              </button>
-                            </div>
-                          </form>
+                            <a className="button-link" href="/settings">前往设置中心</a>
+                          </div>
                         )}
 
-                        {providerConfig?.configured && !showProviderSettings && !analysisRun && (
+                        {analysisConfigured && !analysisRun && (
                           <div className="analysis-start">
                             <div>
                               <strong>人物和事件分析尚未开始</strong>
-                              <span>系统会按篇幅自动分批，长篇可能需要数小时；中断后可以继续。</span>
+                              <span>当前使用“{analysisProfile?.name}”，系统会按篇幅自动分批；中断后可以继续。</span>
                             </div>
                             <div className="analysis-start-actions">
-                              <button type="button" className="secondary-button" onClick={() => setShowProviderSettings(true)}>
-                                更换设置
-                              </button>
+                              <a className="button-link secondary-button" href="/settings">查看分析设置</a>
                               <button type="button" disabled={busy === "start-analysis"} onClick={() => void handleStartAnalysis()}>
                                 {busy === "start-analysis" ? "正在准备" : "开始分析人物和事件"}
                               </button>
@@ -661,9 +604,7 @@ export default function ProductWorkbench() {
                               <span>{analysisRun.failure_message || "系统已停止当前批次，原文和已确认章节不会受到影响。"}</span>
                             </div>
                             <div className="analysis-start-actions">
-                              <button type="button" className="secondary-button" onClick={() => setShowProviderSettings(true)}>
-                                检查在线 AI 设置
-                              </button>
+                              <a className="button-link secondary-button" href="/settings">检查在线 AI 设置</a>
                               <button type="button" disabled={busy === "start-analysis"} onClick={() => void handleStartAnalysis()}>
                                 {busy === "start-analysis" ? "正在准备" : "重新开始分析"}
                               </button>

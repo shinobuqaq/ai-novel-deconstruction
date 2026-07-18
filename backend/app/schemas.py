@@ -184,6 +184,65 @@ class OpenAIConfigWrite(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
+class ModelServiceRead(BaseModel):
+    id: str
+    name: str
+    service_type: str
+    base_url: str
+    configured: bool
+    last_tested_at: datetime | None
+    last_test_status: str
+    last_test_message: str | None
+
+
+class ModelServiceWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    service_type: str = Field(max_length=50)
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+
+
+class AnalysisProfileRead(BaseModel):
+    id: str
+    name: str
+    task_type: str
+    service_id: str
+    model: str
+    temperature: float
+    max_output_tokens: int
+    reasoning_effort: str
+    timeout_seconds: float
+    max_retries: int
+
+
+class AnalysisProfileWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    service_id: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    temperature: float = Field(ge=0, le=2)
+    max_output_tokens: int = Field(ge=256, le=128_000)
+    reasoning_effort: str = Field(max_length=20)
+    timeout_seconds: float = Field(ge=10, le=1800)
+    max_retries: int = Field(ge=0, le=10)
+
+
+class ModelSettingsRead(BaseModel):
+    services: list[ModelServiceRead]
+    analysis_profiles: list[AnalysisProfileRead]
+
+
+class ModelCatalogRead(BaseModel):
+    service_id: str
+    models: list[str]
+    message: str
+
+
+class ModelConnectionRead(BaseModel):
+    service: ModelServiceRead
+    model_count: int
+    message: str
+
+
 class AnalysisRunRead(BaseModel):
     id: str
     source_version_id: str
