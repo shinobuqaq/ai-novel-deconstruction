@@ -38,6 +38,7 @@ export type SourceVersion = {
   document_id: string;
   version_no: number;
   content_hash: string;
+  parser_version: number;
   total_chars: number;
   chapter_count: number;
   detected_encoding: string | null;

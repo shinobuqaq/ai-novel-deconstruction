@@ -95,6 +95,7 @@ class SourceVersionRead(BaseModel):
     document_id: str
     version_no: int
     content_hash: str
+    parser_version: int
     total_chars: int
     chapter_count: int
     detected_encoding: str | None

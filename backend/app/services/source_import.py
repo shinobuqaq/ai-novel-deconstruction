@@ -6,6 +6,7 @@ import json
 import posixpath
 import re
 import shutil
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from ..models import (
 
 SUPPORTED_FORMATS = {"txt", "md", "markdown", "docx", "epub"}
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
+SOURCE_PARSER_VERSION = 2
 
 
 class SourceImportError(ValueError):
@@ -324,28 +326,87 @@ def _display_title(raw: str) -> str:
     return re.sub(r"^#{1,6}\s+", "", raw.strip()).strip()[:500] or "未命名章节"
 
 
+def _chapter_identity(raw: str) -> str | None:
+    title = unicodedata.normalize("NFKC", _display_title(raw)).casefold()
+    match = re.match(
+        r"^(第[0-9零〇一二三四五六七八九十百千万两]+[卷章节回部篇集幕]|"
+        r"卷[ ]*[0-9零〇一二三四五六七八九十百千万两]+|"
+        r"chapter[ ]+[0-9ivxlcdm]+)",
+        title,
+    )
+    return re.sub(r"\s+", "", match.group(1)) if match else None
+
+
+def _merge_adjacent_duplicate_headings(
+    text: str,
+    matches: list[re.Match[str]],
+) -> list[re.Match[str]]:
+    merged: list[re.Match[str]] = []
+    for match in matches:
+        if merged:
+            previous = merged[-1]
+            same_chapter = (
+                _chapter_identity(previous.group("title")) is not None
+                and _chapter_identity(previous.group("title"))
+                == _chapter_identity(match.group("title"))
+            )
+            if same_chapter and not text[previous.end():match.start()].strip():
+                continue
+        merged.append(match)
+    return merged
+
+
 def parse_chapters(text: str, source_format: str) -> tuple[tuple[ParsedChapter, ...], tuple[ParsedIssue, ...]]:
     matches = list(_HEADING.finditer(text))
+    title_match: re.Match[str] | None = None
     if source_format == "md" and len(matches) > 1:
         first_title = _display_title(matches[0].group("title"))
         later_has_chapter = any(_CHAPTER_LINE.match(_display_title(item.group("title"))) for item in matches[1:])
-        if matches[0].start() == 0 and later_has_chapter and not _CHAPTER_LINE.match(first_title):
+        first_is_markdown = matches[0].group("title").lstrip().startswith("#")
+        if (
+            matches[0].start() == 0
+            and first_is_markdown
+            and later_has_chapter
+            and not _CHAPTER_LINE.match(first_title)
+        ):
+            title_match = matches[0]
             matches = matches[1:]
+    if source_format == "md":
+        markdown_chapters = [
+            match
+            for match in matches
+            if match.group("title").lstrip().startswith("#")
+            and _CHAPTER_LINE.match(_display_title(match.group("title")))
+        ]
+        if markdown_chapters:
+            matches = markdown_chapters
+    matches = _merge_adjacent_duplicate_headings(text, matches)
 
     chapters: list[ParsedChapter] = []
     issues: list[ParsedIssue] = []
     ranges: list[tuple[str, str, int, int, int]] = []
-    if not matches:
-        ranges.append(("全文", "DOCUMENT", 0, len(text), 0))
-        issues.append(ParsedIssue(
-            code="CHAPTER_TITLE_NOT_DETECTED",
-            severity="REVIEW",
-            message="没有识别到明确的章节标题，当前按一篇全文导入。",
+    content_start = 0
+    if title_match is not None:
+        ranges.append((
+            _display_title(title_match.group("title")),
+            "TITLE",
+            title_match.start(),
+            title_match.end(),
+            0,
         ))
+        content_start = title_match.end()
+    if not matches:
+        if text[content_start:].strip():
+            ranges.append(("全文", "DOCUMENT", content_start, len(text), 0))
+            issues.append(ParsedIssue(
+                code="CHAPTER_TITLE_NOT_DETECTED",
+                severity="REVIEW",
+                message="没有识别到明确的章节标题，当前按一篇全文导入。",
+            ))
     else:
-        prefix = text[: matches[0].start()]
+        prefix = text[content_start:matches[0].start()]
         if prefix.strip():
-            ranges.append(("正文前内容", "PREFACE", 0, matches[0].start(), 0))
+            ranges.append(("正文前内容", "PREFACE", content_start, matches[0].start(), 0))
         for index, match in enumerate(matches):
             end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             ranges.append((_display_title(match.group("title")), "CHAPTER", match.start(), end, match.end()))
@@ -366,14 +427,14 @@ def parse_chapters(text: str, source_format: str) -> tuple[tuple[ParsedChapter, 
             body_is_empty=not body,
         )
         chapters.append(chapter)
-        if not body:
+        if unit_type == "CHAPTER" and not body:
             issues.append(ParsedIssue(
                 code="CHAPTER_EMPTY",
-                severity="WARNING",
+                severity="BLOCKING",
                 message=f"“{title}”没有正文内容。",
                 unit_ordinal=ordinal,
             ))
-        elif body_hash in seen_body_hashes:
+        elif unit_type == "CHAPTER" and body_hash in seen_body_hashes:
             issues.append(ParsedIssue(
                 code="CHAPTER_DUPLICATE_CONTENT",
                 severity="BLOCKING",
@@ -381,7 +442,7 @@ def parse_chapters(text: str, source_format: str) -> tuple[tuple[ParsedChapter, 
                 unit_ordinal=ordinal,
                 details={"duplicate_of_ordinal": seen_body_hashes[body_hash]},
             ))
-        else:
+        elif unit_type == "CHAPTER":
             seen_body_hashes[body_hash] = ordinal
         if len(content) > 100_000:
             issues.append(ParsedIssue(
@@ -456,6 +517,7 @@ def import_source(
             select(SourceVersion).where(
                 SourceVersion.document_id == document.id,
                 SourceVersion.content_hash == content_hash,
+                SourceVersion.parser_version == SOURCE_PARSER_VERSION,
             )
         )
         if existing is not None:
@@ -483,6 +545,7 @@ def import_source(
         document_id=document.id,
         version_no=next_version,
         content_hash=content_hash,
+        parser_version=SOURCE_PARSER_VERSION,
         original_relative_path="pending",
         text_relative_path="pending",
         total_chars=len(parsed.text),

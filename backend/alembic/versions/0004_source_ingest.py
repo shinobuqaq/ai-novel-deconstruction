@@ -24,7 +24,7 @@ def _ensure_table(name: str, columns: list[sa.Column]) -> None:
         return
     existing = {column["name"] for column in inspector.get_columns(name)}
     expected = {column.name for column in columns}
-    if existing != expected:
+    if not expected.issubset(existing):
         raise RuntimeError(f"INCOMPATIBLE_PARTIAL_{name.upper()}_SCHEMA:{sorted(existing)}")
 
 

@@ -34,6 +34,16 @@ $env:AND_WORKSPACE_DIR = $PreviewRoot
 $env:AND_CORS_ORIGINS = "[`"http://127.0.0.1:$FrontendPort`",`"http://localhost:$FrontendPort`"]"
 $env:VITE_API_URL = "http://127.0.0.1:$ApiPort"
 
+$MigrationLog = Join-Path $LogRoot "migration.log"
+& $Python scripts\prepare_preview_database.py --database $DatabasePath *> $MigrationLog
+if ($LASTEXITCODE -ne 0) {
+  throw "旧数据库检查失败，请查看日志：$MigrationLog"
+}
+& $Python -m alembic -c backend\alembic.ini upgrade head *>> $MigrationLog
+if ($LASTEXITCODE -ne 0) {
+  throw "数据库升级失败，请查看日志：$MigrationLog"
+}
+
 $Mock = $null
 if ($MockProvider) {
   $Mock = Start-Process -FilePath $Python `

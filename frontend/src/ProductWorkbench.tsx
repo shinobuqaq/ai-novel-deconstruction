@@ -121,7 +121,11 @@ export default function ProductWorkbench() {
         ]);
         setChapters(sourceChapters);
         setIssues(sourceIssues);
-        setSelectedChapter(sourceChapters[0]?.id ?? "");
+        setSelectedChapter(
+          sourceChapters.find((item) => item.unit_type === "CHAPTER")?.id
+          ?? sourceChapters[0]?.id
+          ?? "",
+        );
         if (latest.status === "CONFIRMED") {
           await loadAnalysisResults(await api.latestAnalysis(latest.id));
         }
@@ -199,7 +203,8 @@ export default function ProductWorkbench() {
   const openIssues = issues.filter((issue) => issue.status === "OPEN");
   const blockingCount = openIssues.filter((issue) => issue.severity === "BLOCKING").length;
   const chapterCount = chapters.filter((chapter) => chapter.unit_type === "CHAPTER").length;
-  const otherUnitCount = chapters.length - chapterCount;
+  const titleUnitCount = chapters.filter((chapter) => chapter.unit_type === "TITLE").length;
+  const prefaceUnitCount = chapters.filter((chapter) => chapter.unit_type === "PREFACE").length;
   const currentStage = activeVersion?.status !== "CONFIRMED"
     ? 0
     : analysisRun?.status === "CONFIRMED"
@@ -214,6 +219,17 @@ export default function ProductWorkbench() {
     }
     return counts;
   }, [openIssues]);
+  const chapterDisplayNumbers = useMemo(() => {
+    const numbers = new Map<string, number>();
+    let number = 0;
+    for (const chapter of chapters) {
+      if (chapter.unit_type === "CHAPTER") {
+        number += 1;
+        numbers.set(chapter.id, number);
+      }
+    }
+    return numbers;
+  }, [chapters]);
 
   async function handleCreateProject(event: FormEvent) {
     event.preventDefault();
@@ -246,7 +262,11 @@ export default function ProductWorkbench() {
       setActiveVersion(imported.version);
       setChapters(imported.units);
       setIssues(imported.issues);
-      setSelectedChapter(imported.units[0]?.id ?? "");
+      setSelectedChapter(
+        imported.units.find((item) => item.unit_type === "CHAPTER")?.id
+        ?? imported.units[0]?.id
+        ?? "",
+      );
       setFile(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -348,7 +368,11 @@ export default function ProductWorkbench() {
       <div className="chapter-list" aria-label="章节列表">
         <div className="chapter-list-heading">
           <h2>章节目录</h2>
-          <span>{chapterCount} 章{otherUnitCount ? ` · ${otherUnitCount} 项前置内容` : ""}</span>
+          <span>
+            {chapterCount} 章
+            {titleUnitCount ? ` · ${titleUnitCount} 项作品信息` : ""}
+            {prefaceUnitCount ? ` · ${prefaceUnitCount} 项正文前内容` : ""}
+          </span>
         </div>
         <div className="chapter-scroll">
           {chapters.map((chapter) => (
@@ -358,7 +382,11 @@ export default function ProductWorkbench() {
               className={selectedChapter === chapter.id ? "active" : ""}
               onClick={() => setSelectedChapter(chapter.id)}
             >
-              <span>{chapter.ordinal}</span>
+              <span>
+                {chapter.unit_type === "TITLE"
+                  ? "作品"
+                  : chapterDisplayNumbers.get(chapter.id) ?? chapter.ordinal}
+              </span>
               <b>{chapter.title}</b>
               <small>{formatNumber(chapter.char_count)} 字符</small>
               {(chapterIssueMap.get(chapter.id) ?? 0) > 0 && <i>{chapterIssueMap.get(chapter.id)}</i>}
@@ -488,7 +516,7 @@ export default function ProductWorkbench() {
                       <h2>{activeVersion.status === "CONFIRMED" ? "章节已经确认" : "检查章节结构"}</h2>
                     </div>
                     <div className="source-metrics">
-                      <div><span>正文字符</span><strong>{formatNumber(activeVersion.total_chars)}</strong></div>
+                      <div><span>导入字符</span><strong>{formatNumber(activeVersion.total_chars)}</strong></div>
                       <div><span>识别章节</span><strong>{activeVersion.chapter_count}</strong></div>
                       <div><span>需要确认</span><strong>{blockingCount}</strong></div>
                       <div><span>导入版本</span><strong>第 {activeVersion.version_no} 版</strong></div>

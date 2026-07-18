@@ -115,7 +115,13 @@ class SourceVersion(Base):
     __tablename__ = "source_versions"
     __table_args__ = (
         Index("ux_source_version_no", "document_id", "version_no", unique=True),
-        Index("ux_source_version_hash", "document_id", "content_hash", unique=True),
+        Index(
+            "ux_source_version_hash_parser",
+            "document_id",
+            "content_hash",
+            "parser_version",
+            unique=True,
+        ),
         Index("ix_source_versions_status_created", "status", "created_at"),
     )
 
@@ -125,6 +131,7 @@ class SourceVersion(Base):
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     original_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     text_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     total_chars: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -6,7 +6,7 @@ import zipfile
 import pytest
 from sqlalchemy import select
 
-from app.models import EvidenceSpan
+from app.models import EvidenceSpan, SourceVersion
 from app.services.source_import import parse_chapters, parse_source
 
 
@@ -81,13 +81,45 @@ def test_chapter_parser_keeps_exact_ranges_and_flags_duplicates() -> None:
     assert issues[0].severity == "BLOCKING"
 
 
-def test_markdown_book_title_is_kept_as_preface_not_empty_chapter() -> None:
+def test_markdown_book_title_is_kept_as_title_not_empty_chapter() -> None:
     text = "# 我的小说\n\n## 第一章 开始\n正文\n## 第二章 继续\n更多正文"
     chapters, issues = parse_chapters(text, "md")
 
-    assert [item.unit_type for item in chapters] == ["PREFACE", "CHAPTER", "CHAPTER"]
-    assert chapters[0].title == "正文前内容"
+    assert [item.unit_type for item in chapters] == ["TITLE", "CHAPTER", "CHAPTER"]
+    assert chapters[0].title == "我的小说"
     assert not any(item.code == "CHAPTER_EMPTY" for item in issues)
+
+
+def test_markdown_duplicate_chapter_heading_is_merged_without_swallowing_body() -> None:
+    text = (
+        "# 我才三岁，怎么会是灭世级灾厄\n"
+        "## 第1章 天才陨落就陨落吧\n"
+        "第1章 天才陨落就陨落吧【作者提示】\n"
+        "以下为正文。\n第一章正文。\n"
+        "## 第2章 一口咬下去\n"
+        "第2章 一口咬下去这只是正文第一句。\n"
+        "第二章正文。"
+    )
+
+    chapters, issues = parse_chapters(text, "md")
+
+    assert [item.unit_type for item in chapters] == ["TITLE", "CHAPTER", "CHAPTER"]
+    assert [item.title for item in chapters] == [
+        "我才三岁，怎么会是灭世级灾厄",
+        "第1章 天才陨落就陨落吧",
+        "第2章 一口咬下去",
+    ]
+    assert "第一章正文" in text[chapters[1].start_char:chapters[1].end_char]
+    assert "这只是正文第一句" in text[chapters[2].start_char:chapters[2].end_char]
+    assert not any(item.code == "CHAPTER_EMPTY" for item in issues)
+
+
+def test_real_empty_chapter_blocks_confirmation() -> None:
+    chapters, issues = parse_chapters("第一章 空章\n第二章 有正文\n正文", "txt")
+
+    assert chapters[0].body_is_empty is True
+    empty = next(item for item in issues if item.code == "CHAPTER_EMPTY")
+    assert empty.severity == "BLOCKING"
 
 
 def test_markdown_import_counts_chapters_without_preface(client) -> None:
@@ -149,6 +181,29 @@ def test_reimporting_identical_file_reuses_source_version(client) -> None:
 
     assert first["version"]["id"] == second["version"]["id"]
     assert second["reused_existing"] is True
+
+
+def test_new_parser_version_reparses_unchanged_file(client) -> None:
+    project = client.post("/api/projects", json={"name": "解析升级"}).json()
+    url = f"/api/projects/{project['id']}/sources/import?filename=upgrade.md"
+    payload = "# 书名\n## 第一章 开始\n第一章 开始【提示】\n正文".encode()
+    first = client.post(url, content=payload).json()
+
+    with client.app.state.session_factory() as session:
+        version = session.get(SourceVersion, first["version"]["id"])
+        assert version is not None
+        version.parser_version = 1
+        session.commit()
+
+    second = client.post(url, content=payload)
+
+    assert second.status_code == 201
+    result = second.json()
+    assert result["reused_existing"] is False
+    assert result["version"]["id"] != first["version"]["id"]
+    assert result["version"]["version_no"] == 2
+    assert result["version"]["parser_version"] == 2
+    assert result["version"]["chapter_count"] == 1
 
 
 def test_gb18030_import_reports_readable_warning(client) -> None:
