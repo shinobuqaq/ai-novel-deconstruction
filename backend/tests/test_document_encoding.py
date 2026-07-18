@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED = {
     "README.md": "AI 自动小说拆书分析器",
-    "docs/ISSUE_BACKLOG.md": "Ready Queue：先做这些",
+    "docs/CURRENT_BASELINE.md": "统一产品与系统设计基线 V1.0",
 }
 
 MOJIBAKE_FRAGMENTS = (
