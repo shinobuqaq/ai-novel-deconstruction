@@ -2,7 +2,7 @@
 
 ## Purpose
 
-把 P01—P18 与 M/G 研究结论追踪到自有工程模块、M0—M8 工作项和验证方式。研究参考不等于源码依赖；本仓库当前为 clean-room 独立实现。
+把 P01—P19 与 M/G 研究结论追踪到自有工程模块、M0—M8 工作项和验证方式。研究参考不等于源码依赖；本仓库当前为 clean-room 独立实现。
 
 ## Traceability matrix
 
@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|---|---|
 | Source / Evidence | P05, P07, P15 | M-015 | `source`, `evidence`, artifact metadata | M1 Source / Evidence | 稳定坐标、来源回填、逐层回源 | 摘要替代原文、自由文本位置 | EvidenceSpan 精确回贴与版本测试 |
 | Artifact Runtime | P08, P09, P12, P17 | M-022 | Task / Artifact / Worker / recovery | M0-04, M0-05, M0-08 | 不可变写入、租约、失败续跑、局部重算入口 | 把临时 Tree/Blob 当完成进度 | 崩溃恢复、哈希去重、原子写入测试 |
-| Model Settings / Provider Gateway | P01, P02, P08, P09 | 模型配置、任务参数、失败诊断和隐私 | `provider_config`, provider adapters, `/settings` | P2 及后续所有模型任务 | 独立设置中心、多服务、按任务选择模型、参数记录、脱敏诊断 | 把 API Key 表单塞进拆书步骤、全任务共用写死模型 | 旧配置迁移、密钥不回传、模型发现、参数透传和连接错误测试 |
+| Model Settings / Provider Gateway | P01, P02, P08, P09, P19 | 模型配置、任务参数、能力适配、真实请求测试、失败诊断和隐私 | `provider_config`, provider adapters, `/settings` | P2 及后续所有模型任务 | 独立设置中心、多服务、按任务选择模型、参数记录、模型目录与手工回退、按服务能力发送参数、脱敏诊断 | 把 API Key 表单塞进拆书步骤、全任务共用写死模型、读取到模型列表即视为模型可用、向所有兼容服务强发同一参数 | 旧配置迁移、密钥不回传、模型发现、真实模型测试、能力过滤、参数透传和连接错误测试 |
 | Entity Resolution | P06, P13 | M-023, G-01 | Candidate pairs / resolver / merge lineage | M2 Entity Identity | Candidate-first、程序校验、可逆合并 | 无保护 Union-Find、名称直接作稳定 ID | hard-negative、merge/split 回放测试 |
 | Event Discovery | P14, P18 | M-021, G-04 | route adapter / union / boundary resolver | M3 Event | 多路线候选并集、边界裁决、Mention 与 Canonical Event 分层 | 最近 Token 对齐、强制单 Token、候选直写正式事件 | span gold set、UNCERTAIN 队列、coreference 测试 |
 | Temporal Facts | P13 | G-02, G-08 | FactVersion / conflict guard | M4 Fact / State | 有效区间、冲突、失效保留历史 | 当前值覆盖历史、LLM 直接写权威事实 | recurrence、conflict、as-of query 测试 |
