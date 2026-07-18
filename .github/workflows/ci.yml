@@ -99,6 +99,8 @@ jobs:
         run: |
           python - <<'PY'
           import sqlite3
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
 
           connection = sqlite3.connect(".ci-workspace/migration.db")
           try:
@@ -108,7 +110,10 @@ jobs:
           finally:
               connection.close()
 
-          assert row == ("0003_artifact_blobs",), row
+          expected = ScriptDirectory.from_config(
+              Config("backend/alembic.ini")
+          ).get_current_head()
+          assert row == (expected,), (row, expected)
           print("Migration revision verified:", row[0])
           PY
 
