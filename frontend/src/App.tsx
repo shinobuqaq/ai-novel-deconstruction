@@ -1,5 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Project, Task } from "./api";
+import ProductWorkbench from "./ProductWorkbench";
+import SettingsPage from "./SettingsPage";
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: "待处理",
@@ -33,7 +35,7 @@ function taskMessage(task: Task) {
   return typeof message === "string" && message.trim() ? message : "无任务内容";
 }
 
-export default function App() {
+export function DebugConsole() {
   const [health, setHealth] = useState("checking");
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -121,8 +123,9 @@ export default function App() {
     <main>
       <header className="app-header">
         <div>
-          <p className="eyebrow">M0 运行中心</p>
-          <h1>AI 自动小说拆书分析器</h1>
+          <p className="eyebrow">P0 工程地基</p>
+          <h1>内部任务调试台</h1>
+          <p className="header-note">仅用于开发人员验证后台任务，不是小说导入和拆解界面。</p>
         </div>
         <div className={`api-status ${health}`}>
           <span className="status-dot" />
@@ -190,7 +193,7 @@ export default function App() {
                 <option key={project.id} value={project.id}>{project.name}</option>
               ))}
             </select>
-            <label htmlFor="task-message">任务内容</label>
+              <label htmlFor="task-message">测试消息（最多 4000 字符）</label>
             <textarea
               id="task-message"
               value={message}
@@ -213,8 +216,7 @@ export default function App() {
       <section className="panel run-center">
         <div className="run-center-heading">
           <div>
-            <h2>任务记录</h2>
-            <span aria-live="polite">每 2.5 秒自动更新</span>
+            <h2>后台任务记录</h2>
           </div>
           <button type="button" className="secondary-button" onClick={() => void refresh()}>
             刷新
@@ -252,7 +254,6 @@ export default function App() {
                       <div className="cell-stack task-summary">
                         <strong>{projectNames.get(task.project_id) ?? "未知项目"}</strong>
                         <span>{taskMessage(task)}</span>
-                        <code title={task.id}>{shortId(task.id)}</code>
                         {errorCode && (
                           <div className="task-error">
                             <b>{task.status === "FAILED" ? "错误" : "上次错误"} · {errorCode}</b>
@@ -263,9 +264,7 @@ export default function App() {
                     </td>
                     <td data-label="执行">
                       <div className="cell-stack execution-cell">
-                        <strong>{task.attempts} / {task.max_attempts}</strong>
-                        <span>第 {task.lease_generation} 代</span>
-                        {task.lease_owner && <small title={task.lease_owner}>Worker {shortId(task.lease_owner)}</small>}
+                        <strong>{task.attempts} / {task.max_attempts} 次</strong>
                         {task.next_attempt_at && <small>重试 {formatTime(task.next_attempt_at)}</small>}
                       </div>
                     </td>
@@ -273,9 +272,14 @@ export default function App() {
                       <div className="cell-stack result-cell">
                         <span>创建 {formatTime(task.created_at)}</span>
                         {task.finished_at && <span>结束 {formatTime(task.finished_at)}</span>}
-                        {task.result_artifact_id && (
-                          <code title={task.result_artifact_id}>结果 {shortId(task.result_artifact_id)}</code>
-                        )}
+                        {task.result_artifact_id && <span>结果已保存</span>}
+                        <details className="technical-details">
+                          <summary>技术详情</summary>
+                          <code>任务 {shortId(task.id)}</code>
+                          <code>执行代次 {task.lease_generation}</code>
+                          {task.lease_owner && <code>Worker {shortId(task.lease_owner)}</code>}
+                          {task.result_artifact_id && <code>结果 {shortId(task.result_artifact_id)}</code>}
+                        </details>
                       </div>
                     </td>
                     <td data-label="操作" className="action-column">
@@ -332,4 +336,10 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+export default function App() {
+  if (window.location.pathname === "/debug") return <DebugConsole />;
+  if (window.location.pathname === "/settings") return <SettingsPage />;
+  return <ProductWorkbench />;
 }

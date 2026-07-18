@@ -1,6 +1,6 @@
-# GitHub Issue Backlog
+# GitHub 工程任务清单
 
-本文件是工程 Backlog 与 GitHub Issue 的范围基线。M0-01—M0-08 应分别建立或修正为独立 Issue；每个 Issue 必须包含 Goal、Research basis、Adopted、Rejected、Deliverables、Acceptance criteria 和 Validation。
+本文件保留工程任务编号，用于开发追踪；面向用户的产品进度统一使用 `docs/PRODUCT_BASELINE.md` 中的 P0—P6。工程 M0 不等于整个产品完成。
 
 ## Ready Queue：先做这些
 
@@ -27,8 +27,8 @@
 ### M0-04 Task Lease
 - [x] PENDING / RUNNING / SUCCEEDED / FAILED
 - [x] lease owner / expiry / attempts
-- [ ] 进程崩溃后的过期租约恢复测试
-- [ ] CANCEL command
+- [x] 进程崩溃后的过期租约恢复测试
+- [x] CANCEL command
 
 ### M0-05 Artifact Registry
 - [x] 内容哈希
@@ -40,27 +40,27 @@
 ### M0-06 Fake Provider
 - [x] 确定性响应
 - [x] Token 用量占位记录
-- [ ] Provider contract test
-- [ ] invalid JSON / timeout / rate-limit fake scenarios
+- [x] Provider contract test
+- [x] invalid JSON / timeout / rate-limit fake scenarios
 
 ### M0-07 API 与最小 Run Center
 - [x] Project / Task / Artifact API
 - [x] React 最小页面
-- [ ] SSE 或轮询进度规范
-- [ ] 错误码目录接入 UI
+- [x] 轮询进度基线
+- [x] 错误码显示基线（正式产品需改为通俗说明）
 
 ### M0-08 M0 恢复与测试 Gate
 - [x] API health test
 - [x] Project → Task → Artifact integration test
-- [ ] Worker 在 Provider 后、Artifact commit 前崩溃的恢复测试
+- [x] Worker 在 Provider 后、Artifact commit 前崩溃的恢复测试
 - [x] Windows 冷启动测试记录（见 `docs/M0_COLD_START_VALIDATION.md`）
 
 ---
 
 ## Vertical Slice 01
 
-### VS01-01 导入 2—3 章
-- TXT/Markdown parser
+### VS01-01 导入整本小说
+- TXT/Markdown/DOCX/EPUB parser
 - SourceDocument / SourceVersion / SourceUnit
 - 章节顺序、空章、重复章 Issue
 

@@ -56,7 +56,7 @@ def run_worker(*, once: bool = False) -> None:
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
     worker_id = f"{socket.gethostname()}-{uuid4().hex[:8]}"
-    provider_registry = create_default_provider_registry()
+    provider_registry = create_default_provider_registry(settings)
     next_artifact_reconcile = 0.0
     print(f"[worker] started id={worker_id}")
 

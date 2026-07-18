@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -10,6 +10,9 @@ class ProviderResponse:
     parsed: dict[str, Any]
     prompt_tokens: int
     completion_tokens: int
+    provider_id: str | None = None
+    model: str | None = None
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 class ProviderError(Exception):

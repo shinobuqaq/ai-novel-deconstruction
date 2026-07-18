@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0003_artifact_blobs",)
+    assert revision == ("0006_source_parser_version",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -250,6 +250,20 @@ def test_migrated_schema_contains_task_attempt_constraints(
         artifact_foreign_keys = connection.execute(
             "PRAGMA foreign_key_list(artifacts)"
         ).fetchall()
+        source_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('source_documents', 'source_versions', "
+                "'source_units', 'source_issues', 'evidence_spans')"
+            )
+        }
+        source_version_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(source_versions)")
+        }
+        source_version_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(source_versions)")
+        }
 
     assert {
         "current_attempt_id",
@@ -310,6 +324,16 @@ def test_migrated_schema_contains_task_attempt_constraints(
         and row[4] == "id"
         for row in artifact_foreign_keys
     )
+    assert source_tables == {
+        "source_documents",
+        "source_versions",
+        "source_units",
+        "source_issues",
+        "evidence_spans",
+    }
+    assert "parser_version" in source_version_columns
+    assert "ux_source_version_hash_parser" in source_version_indexes
+    assert "ux_source_version_hash" not in source_version_indexes
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -366,7 +390,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0003_artifact_blobs",)
+    assert revision_after == ("0006_source_parser_version",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"
