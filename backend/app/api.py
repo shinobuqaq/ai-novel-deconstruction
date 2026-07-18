@@ -15,6 +15,7 @@ from .models import (
     ArtifactBlob,
     ArtifactStatus,
     AnalysisRun,
+    AnalysisRunTask,
     CandidateStatus,
     EntityCandidate,
     EvidenceSpan,
@@ -155,6 +156,16 @@ def _source_error(error: SourceImportError) -> HTTPException:
 def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
     refresh_analysis_run(session, run)
     completed, failed = analysis_run_progress(session, run)
+    failure = session.execute(
+        select(Task.last_error_code, Task.last_error_message)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            Task.status == TaskStatus.FAILED.value,
+        )
+        .order_by(AnalysisRunTask.batch_index)
+        .limit(1)
+    ).one_or_none()
     return AnalysisRunRead(
         id=run.id,
         source_version_id=run.source_version_id,
@@ -163,6 +174,8 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         total_batches=run.total_batches,
         completed_batches=completed,
         failed_batches=failed,
+        failure_code=failure[0] if failure else None,
+        failure_message=failure[1] if failure else None,
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),

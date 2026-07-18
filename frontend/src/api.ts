@@ -95,6 +95,72 @@ export type SourceUnitContent = {
   content: string;
 };
 
+export type OpenAIConfig = {
+  configured: boolean;
+  base_url: string;
+  model: string;
+};
+
+export type AnalysisRun = {
+  id: string;
+  source_version_id: string;
+  stage: string;
+  status: "PENDING" | "RUNNING" | "REVIEW" | "CONFIRMED" | "FAILED" | "CANCELLED";
+  total_batches: number;
+  completed_batches: number;
+  failed_batches: number;
+  failure_code: string | null;
+  failure_message: string | null;
+  created_at: string;
+  finished_at: string | null;
+  confirmed_at: string | null;
+};
+
+export type EntityCandidate = {
+  id: string;
+  run_id: string;
+  source_version_id: string;
+  name: string;
+  entity_type: "PERSON" | "ORGANIZATION" | "PLACE" | "OBJECT" | "OTHER";
+  aliases: string[];
+  description: string;
+  evidence_ids: string[];
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+};
+
+export type EventCandidate = {
+  id: string;
+  run_id: string;
+  source_version_id: string;
+  title: string;
+  event_type: string;
+  summary: string;
+  participants: string[];
+  evidence_ids: string[];
+  start_char: number;
+  end_char: number;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+};
+
+export type EvidenceContext = {
+  evidence: {
+    id: string;
+    source_version_id: string;
+    source_unit_id: string;
+    paragraph_index: number;
+    start_char: number;
+    end_char: number;
+    text_snapshot: string;
+    context_hash: string;
+  };
+  chapter_title: string;
+  context_start: number;
+  context_end: number;
+  context_text: string;
+};
+
 function errorMessage(payload: unknown, status: number) {
   if (typeof payload === "object" && payload !== null && "detail" in payload) {
     const detail = (payload as { detail: unknown }).detail;
@@ -107,6 +173,7 @@ function errorMessage(payload: unknown, status: number) {
         SOURCE_VERSION_NOT_FOUND: "没有找到这次导入记录。",
         SOURCE_UNIT_NOT_FOUND: "没有找到这个章节。",
         SOURCE_ISSUE_NOT_FOUND: "这个问题已经不存在。",
+        ANALYSIS_RUN_NOT_FOUND: "没有找到这次分析记录。",
       };
       return known[detail] ?? detail;
     }
@@ -155,6 +222,26 @@ export const api = {
     request<SourceIssue>(`/api/source-issues/${issueId}/resolve`, { method: "POST" }),
   confirmSourceVersion: (versionId: string) =>
     request<SourceVersion>(`/api/source-versions/${versionId}/confirm`, { method: "POST" }),
+  openAIConfig: () => request<OpenAIConfig>("/api/settings/openai"),
+  saveOpenAIConfig: (payload: { api_key?: string; base_url?: string; model?: string }) =>
+    request<OpenAIConfig>("/api/settings/openai", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  latestAnalysis: (versionId: string) =>
+    request<AnalysisRun | null>(`/api/source-versions/${versionId}/analysis/entities-events`),
+  startAnalysis: (versionId: string) =>
+    request<AnalysisRun>(`/api/source-versions/${versionId}/analysis/entities-events/start`, {
+      method: "POST",
+    }),
+  analysisEntities: (runId: string) =>
+    request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
+  analysisEvents: (runId: string) =>
+    request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
+  confirmAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/confirm`, { method: "POST" }),
+  evidenceContext: (evidenceId: string) =>
+    request<EvidenceContext>(`/api/evidence/${evidenceId}`),
   tasks: () => request<Task[]>("/api/tasks"),
   createEchoTask: (projectId: string, message: string) =>
     request<Task>("/api/tasks", {

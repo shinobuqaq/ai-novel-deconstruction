@@ -191,6 +191,8 @@ class AnalysisRunRead(BaseModel):
     total_batches: int
     completed_batches: int
     failed_batches: int
+    failure_code: str | None
+    failure_message: str | None
     created_at: datetime
     finished_at: datetime | None
     confirmed_at: datetime | None

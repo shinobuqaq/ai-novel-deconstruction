@@ -64,6 +64,17 @@ class StaticAnalysisProvider:
         )
 
 
+class AuthenticationFailureProvider:
+    name = "openai"
+
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        raise ProviderError(
+            code="PROVIDER_AUTH_FAILED",
+            message="API Key 无效或没有使用该模型的权限。",
+            retryable=False,
+        )
+
+
 def _import_confirmed_novel(client) -> dict:
     project = client.post("/api/projects", json={"name": "雨夜旧宅"}).json()
     source = (
@@ -199,6 +210,38 @@ def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:
 
     assert client.get(f"/api/analysis-runs/{run['id']}/entities").json() == []
     assert client.get(f"/api/analysis-runs/{run['id']}/events").json() == []
+
+
+def test_analysis_failure_exposes_plain_reason_and_can_start_again(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-invalid"})
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(session, worker_id="auth-failure-worker", lease_seconds=60)
+    assert claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        claim,
+        ProviderRegistry([AuthenticationFailureProvider()]),
+    )
+
+    failed = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert failed["id"] == run["id"]
+    assert failed["status"] == "FAILED"
+    assert failed["failure_code"] == "PROVIDER_AUTH_FAILED"
+    assert failed["failure_message"] == "API Key 无效或没有使用该模型的权限。"
+
+    restarted = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    )
+    assert restarted.status_code == 201
+    assert restarted.json()["id"] != run["id"]
 
 
 def _provider_settings(tmp_path: Path) -> Settings:
