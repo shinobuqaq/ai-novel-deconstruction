@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
@@ -46,6 +46,24 @@ DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
+
+
+class StructuredOutputValidationError(ValueError):
+    def __init__(self, code: str, errors: list[dict[str, Any]]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.errors = errors
+
+
+def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:
+    return [
+        {
+            "path": [str(part) if not isinstance(part, int) else part for part in item["loc"]],
+            "type": str(item["type"]),
+            "message": str(item["msg"]),
+        }
+        for item in error.errors(include_url=False, include_input=False)
+    ]
 
 
 class EntityProposal(BaseModel):
@@ -672,21 +690,30 @@ def parse_provider_output(value: dict) -> AnalysisProviderOutput:
     try:
         return AnalysisProviderOutput.model_validate(value)
     except ValidationError as exc:
-        raise ValueError("ANALYSIS_OUTPUT_INVALID") from exc
+        raise StructuredOutputValidationError(
+            "ANALYSIS_OUTPUT_INVALID",
+            _validation_errors(exc),
+        ) from exc
 
 
 def parse_narrative_synthesis(value: dict) -> NarrativeSynthesisOutput:
     try:
         return NarrativeSynthesisOutput.model_validate(value)
     except ValidationError as exc:
-        raise ValueError("NARRATIVE_OUTPUT_INVALID") from exc
+        raise StructuredOutputValidationError(
+            "NARRATIVE_OUTPUT_INVALID",
+            _validation_errors(exc),
+        ) from exc
 
 
 def parse_deep_analysis(value: dict) -> DeepAnalysisOutput:
     try:
         return DeepAnalysisOutput.model_validate(value)
     except ValidationError as exc:
-        raise ValueError("DEEP_ANALYSIS_OUTPUT_INVALID") from exc
+        raise StructuredOutputValidationError(
+            "DEEP_ANALYSIS_OUTPUT_INVALID",
+            _validation_errors(exc),
+        ) from exc
 
 
 def _quote_matches(text: str, quote: str, start: int, end: int) -> list[int]:

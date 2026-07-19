@@ -264,6 +264,32 @@ class AnalysisRunRead(BaseModel):
     confirmed_at: datetime | None
 
 
+class AnalysisStageDiagnosticRead(BaseModel):
+    key: str
+    label: str
+    status: str
+    task_count: int
+    attempt_count: int
+    retry_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    input_chars: int
+    output_chars: int
+    latest_error: str | None
+
+
+class AnalysisRunDiagnosticsRead(BaseModel):
+    run_id: str
+    current_step: str
+    attempt_count: int
+    retry_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    input_chars: int
+    output_chars: int
+    stages: list[AnalysisStageDiagnosticRead]
+
+
 class EntityCandidateRead(BaseModel):
     id: str
     run_id: str

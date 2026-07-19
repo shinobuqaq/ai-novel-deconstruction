@@ -28,6 +28,7 @@ from .models import (
     SourceUnit,
     SourceVersion,
     Task,
+    TaskAttempt,
     TaskStatus,
 )
 from .repositories import (
@@ -43,6 +44,8 @@ from .repositories import (
 from .schemas import (
     ArtifactRead,
     AnalysisRunRead,
+    AnalysisRunDiagnosticsRead,
+    AnalysisStageDiagnosticRead,
     AnalysisIssueCreate,
     AnalysisIssueRead,
     AnalysisProfileRead,
@@ -260,6 +263,117 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),
+    )
+
+
+_ANALYSIS_STAGE_DIAGNOSTICS = (
+    ("analysis.entities_events", "人物与事件抽取"),
+    ("analysis.narrative_synthesis", "故事结构整理"),
+    ("analysis.deep_insights", "事实与核心分析"),
+)
+
+
+def _json_dict(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _analysis_run_diagnostics(
+    session: Session,
+    run: AnalysisRun,
+) -> AnalysisRunDiagnosticsRead:
+    tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(AnalysisRunTask.run_id == run.id)
+        .order_by(AnalysisRunTask.batch_index)
+    ))
+    task_ids = [task.id for task in tasks]
+    attempts = (
+        list(session.scalars(
+            select(TaskAttempt)
+            .where(TaskAttempt.task_id.in_(task_ids))
+            .order_by(TaskAttempt.started_at)
+        ))
+        if task_ids
+        else []
+    )
+    attempts_by_task: dict[str, list[TaskAttempt]] = {}
+    for attempt in attempts:
+        attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
+
+    stage_rows: list[AnalysisStageDiagnosticRead] = []
+    for kind, label in _ANALYSIS_STAGE_DIAGNOSTICS:
+        stage_tasks = [task for task in tasks if task.kind == kind]
+        stage_attempts = [
+            attempt
+            for task in stage_tasks
+            for attempt in attempts_by_task.get(task.id, [])
+        ]
+        if any(task.status == TaskStatus.FAILED.value for task in stage_tasks):
+            stage_status = "FAILED"
+        elif any(
+            task.status in {
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.CANCEL_REQUESTED.value,
+            }
+            for task in stage_tasks
+        ):
+            stage_status = "RUNNING"
+        elif stage_tasks and all(
+            task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks
+        ):
+            stage_status = "SUCCEEDED"
+        elif stage_tasks and all(
+            task.status == TaskStatus.CANCELLED.value for task in stage_tasks
+        ):
+            stage_status = "CANCELLED"
+        else:
+            stage_status = "PENDING"
+
+        usage = [_json_dict(attempt.usage_json) for attempt in stage_attempts]
+        diagnostics = [
+            _json_dict(attempt.diagnostics_json) for attempt in stage_attempts
+        ]
+        failed_attempts = [
+            attempt for attempt in stage_attempts if attempt.error_message
+        ]
+        latest_error = (
+            failed_attempts[-1].error_message if failed_attempts else None
+        )
+        stage_rows.append(AnalysisStageDiagnosticRead(
+            key=kind,
+            label=label,
+            status=stage_status,
+            task_count=len(stage_tasks),
+            attempt_count=len(stage_attempts),
+            retry_count=sum(max(0, task.attempts - 1) for task in stage_tasks),
+            prompt_tokens=sum(int(item.get("prompt_tokens") or 0) for item in usage),
+            completion_tokens=sum(int(item.get("completion_tokens") or 0) for item in usage),
+            input_chars=sum(int(item.get("input_chars") or 0) for item in diagnostics),
+            output_chars=sum(int(item.get("output_chars") or 0) for item in diagnostics),
+            latest_error=latest_error,
+        ))
+
+    current = next(
+        (row.label for row in stage_rows if row.status != "SUCCEEDED"),
+        "全部分析已经完成",
+    )
+    return AnalysisRunDiagnosticsRead(
+        run_id=run.id,
+        current_step=current,
+        attempt_count=sum(row.attempt_count for row in stage_rows),
+        retry_count=sum(row.retry_count for row in stage_rows),
+        prompt_tokens=sum(row.prompt_tokens for row in stage_rows),
+        completion_tokens=sum(row.completion_tokens for row in stage_rows),
+        input_chars=sum(row.input_chars for row in stage_rows),
+        output_chars=sum(row.output_chars for row in stage_rows),
+        stages=stage_rows,
     )
 
 
@@ -732,6 +846,20 @@ def entities_events_latest(
         .order_by(AnalysisRun.created_at.desc())
     )
     return _analysis_run_read(session, run) if run else None
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/diagnostics",
+    response_model=AnalysisRunDiagnosticsRead,
+)
+def analysis_run_diagnostics_get(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisRunDiagnosticsRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    return _analysis_run_diagnostics(session, run)
 
 
 @router.get(

@@ -544,6 +544,7 @@ class TaskAttempt(Base):
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    diagnostics_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
 
     task: Mapped[Task] = relationship(
         back_populates="attempt_records",

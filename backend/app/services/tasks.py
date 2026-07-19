@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Settings
 from ..models import AnalysisRun, Task
-from ..providers.base import ProviderError
+from ..providers.base import ProviderError, ProviderResponse
 from ..providers.registry import ProviderRegistry
 from ..repositories import (
     ClaimedTask,
@@ -34,6 +34,7 @@ from .analysis import (
     provider_payload_for_narrative_synthesis,
     provider_payload_for_claim,
     refresh_analysis_run,
+    StructuredOutputValidationError,
 )
 
 
@@ -42,6 +43,98 @@ ANALYSIS_TASK_KINDS = {
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
 }
+
+_OUTPUT_FIELD_LABELS = {
+    "entities": "人物与实体",
+    "events": "事件",
+    "story_overview": "故事总览",
+    "character_roles": "人物档案",
+    "character_relations": "人物关系",
+    "narrative_phases": "剧情阶段",
+    "event_relations": "事件关系",
+    "fact_versions": "事实",
+    "state_changes": "状态变化",
+    "actor_knowledge": "人物认知",
+    "world_rules": "世界规则",
+    "foreshadowing": "伏笔",
+    "conflicts": "冲突",
+    "scene_analysis": "场景与节奏",
+    "claims": "分析结论",
+    "name": "名称",
+    "title": "标题",
+    "role": "角色定位",
+    "role_reason": "定位依据",
+    "evidence_ids": "原文依据",
+    "event_ids": "相关事件",
+    "confidence": "置信度",
+}
+
+
+def _validation_path(parts: list[object]) -> str:
+    path = ""
+    for part in parts:
+        if isinstance(part, int):
+            path += f"第 {part + 1} 项"
+            continue
+        label = _OUTPUT_FIELD_LABELS.get(str(part), str(part))
+        path += (" / " if path else "") + label
+    return path or "返回结果"
+
+
+def _validation_reason(error_type: str) -> str:
+    if error_type == "missing":
+        return "缺少必填内容"
+    if error_type == "extra_forbidden":
+        return "包含系统不接受的额外字段"
+    if error_type == "literal_error":
+        return "值不在允许范围内"
+    if error_type.startswith("string_too_"):
+        return "文字长度不符合要求"
+    if error_type.startswith("too_") or error_type.endswith("_too_long"):
+        return "项目数量超过允许范围"
+    if error_type.startswith("list_type"):
+        return "应当返回列表"
+    if error_type.startswith("dict_type") or error_type == "model_type":
+        return "应当返回结构化对象"
+    if error_type.startswith("int_") or error_type.startswith("greater_than") or error_type.startswith("less_than"):
+        return "数字格式或范围不符合要求"
+    return "内容格式不符合要求"
+
+
+def _validation_message(stage_label: str, errors: list[dict]) -> str:
+    examples = [
+        f"{_validation_path(item.get('path', []))}：{_validation_reason(str(item.get('type') or ''))}"
+        for item in errors[:3]
+    ]
+    detail = "；".join(examples)
+    suffix = f"，共发现 {len(errors)} 处结构问题" if len(errors) > 3 else ""
+    return f"在线 AI 返回的{stage_label}不完整。{detail}{suffix}。系统会自动重试。"
+
+
+def _attempt_diagnostics(
+    provider_payload: dict,
+    response: ProviderResponse,
+    *,
+    phase: str,
+    validation_errors: list[dict] | None = None,
+    reason_code: str | None = None,
+) -> dict:
+    model_input = str(provider_payload.get("input") or "")
+    diagnostics = {
+        "phase": phase,
+        "prompt_id": provider_payload.get("prompt_id"),
+        "prompt_version": provider_payload.get("prompt_version"),
+        "model_profile_id": provider_payload.get("model_profile_id"),
+        "model": response.model,
+        "input_chars": len(model_input),
+        "output_chars": len(response.raw_text),
+    }
+    if validation_errors:
+        diagnostics["validation_errors"] = validation_errors[:20]
+        diagnostics["validation_error_count"] = len(validation_errors)
+    if reason_code:
+        diagnostics["reason_code"] = reason_code[:200]
+    return diagnostics
 
 
 async def execute_task(
@@ -90,6 +183,15 @@ async def execute_task(
             code="PROVIDER_INVALID_OUTPUT",
             message="Provider response must contain a JSON object.",
             retryable=True,
+            diagnostics=_attempt_diagnostics(
+                provider_payload,
+                response,
+                phase="json_object_validation",
+            ),
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            provider_name=response.provider_id or provider.name,
+            model=response.model,
         )
 
     persisted_analysis = None
@@ -98,11 +200,21 @@ async def execute_task(
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
             analysis_output = parse_provider_output(response.parsed)
-        except ValueError as exc:
+        except StructuredOutputValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message="在线 AI 返回的人物和事件结构不完整。",
+                message=_validation_message("人物和事件结构", exc.errors),
                 retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -122,11 +234,21 @@ async def execute_task(
     elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
         try:
             narrative_output = parse_narrative_synthesis(response.parsed)
-        except ValueError as exc:
+        except StructuredOutputValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message="在线 AI 返回的故事总览和剧情结构不完整。",
+                message=_validation_message("故事总览和剧情结构", exc.errors),
                 retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -148,15 +270,35 @@ async def execute_task(
                     code="PROVIDER_INVALID_OUTPUT",
                     message="在线 AI 返回的故事结构引用了不存在的人物、事件或原文证据。",
                     retryable=True,
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=str(exc),
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
                 ) from exc
     elif claim.kind == DEEP_ANALYSIS_TASK_KIND:
         try:
             deep_output = parse_deep_analysis(response.parsed)
-        except ValueError as exc:
+        except StructuredOutputValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message="在线 AI 返回的事实状态和核心拆解结构不完整。",
+                message=_validation_message("事实状态和核心拆解结构", exc.errors),
                 retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -179,6 +321,16 @@ async def execute_task(
                     code="PROVIDER_INVALID_OUTPUT",
                     message="在线 AI 返回的深层拆解引用了不存在的章节、人物、事件或原文证据。",
                     retryable=True,
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=str(exc),
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
                 ) from exc
 
     with session_factory() as session:
@@ -269,6 +421,15 @@ async def execute_task(
                 },
                 sort_keys=True,
             ),
+            diagnostics_json=json.dumps(
+                _attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="completed",
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
         if not accepted:
             acknowledge_task_cancellation(session, claim=claim)
@@ -315,6 +476,12 @@ def execute_task_sync(
             error_code = exc.code
             retryable = exc.retryable
             retry_after_seconds = exc.retry_after_seconds
+            failure_diagnostics = exc.diagnostics
+            failure_usage = {
+                "prompt_tokens": exc.prompt_tokens,
+                "completion_tokens": exc.completion_tokens,
+            }
+            failure_provider_name = exc.provider_name or failure_provider_name
         else:
             if isinstance(exc, ValueError) and str(exc).startswith(
                 "UNSUPPORTED_TASK_KIND:"
@@ -326,6 +493,8 @@ def execute_task_sync(
                 error_code = "TASK_EXECUTION_ERROR"
             retryable = False
             retry_after_seconds = None
+            failure_diagnostics = {}
+            failure_usage = {}
         with session_factory() as session:
             failed = fail_task_attempt(
                 session,
@@ -341,6 +510,12 @@ def execute_task_sync(
                     failure_provider_name
                     if error_code.startswith("PROVIDER_")
                     else None
+                ),
+                usage_json=json.dumps(failure_usage, sort_keys=True),
+                diagnostics_json=json.dumps(
+                    failure_diagnostics,
+                    ensure_ascii=False,
+                    sort_keys=True,
                 ),
             )
             if not failed:

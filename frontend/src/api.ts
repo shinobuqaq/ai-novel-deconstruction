@@ -164,6 +164,32 @@ export type AnalysisRun = {
   confirmed_at: string | null;
 };
 
+export type AnalysisStageDiagnostic = {
+  key: string;
+  label: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  task_count: number;
+  attempt_count: number;
+  retry_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  latest_error: string | null;
+};
+
+export type AnalysisRunDiagnostics = {
+  run_id: string;
+  current_step: string;
+  attempt_count: number;
+  retry_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  stages: AnalysisStageDiagnostic[];
+};
+
 export type EntityCandidate = {
   id: string;
   run_id: string;
@@ -562,6 +588,8 @@ export const api = {
     request<AnalysisRun>(`/api/source-versions/${versionId}/analysis/entities-events/start`, {
       method: "POST",
     }),
+  analysisDiagnostics: (runId: string) =>
+    request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
   analysisEntities: (runId: string) =>
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>

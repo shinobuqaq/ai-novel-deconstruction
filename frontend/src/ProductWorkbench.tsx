@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AnalysisIssue,
   AnalysisRun,
+  AnalysisRunDiagnostics,
   api,
   DeepAnalysisDiff,
   DeepAnalysisRevision,
@@ -101,6 +102,14 @@ const CLAIM_STATUS_LABELS: Record<string, string> = {
   MIXED: "支持与反证并存",
   CONTRADICTED: "存在明确反证",
   INSUFFICIENT_EVIDENCE: "证据不足",
+};
+
+const ANALYSIS_STAGE_STATUS_LABELS: Record<string, string> = {
+  PENDING: "等待开始",
+  RUNNING: "正在处理",
+  SUCCEEDED: "已经完成",
+  FAILED: "处理失败",
+  CANCELLED: "已经取消",
 };
 
 type WorkbenchView =
@@ -697,6 +706,7 @@ export default function ProductWorkbench() {
   const [file, setFile] = useState<File | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
+  const [analysisDiagnostics, setAnalysisDiagnostics] = useState<AnalysisRunDiagnostics | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
@@ -707,9 +717,12 @@ export default function ProductWorkbench() {
     setAnalysisRun(run);
     setWorkbench(null);
     setEvidenceContext(null);
-    if (!run || !["REVIEW", "CONFIRMED"].includes(run.status)) {
+    if (!run) {
+      setAnalysisDiagnostics(null);
       return;
     }
+    setAnalysisDiagnostics(await api.analysisDiagnostics(run.id));
+    if (!["REVIEW", "CONFIRMED"].includes(run.status)) return;
     const workbenchResult = await api.analysisWorkbench(run.id);
     setWorkbench(workbenchResult);
   }, []);
@@ -722,6 +735,7 @@ export default function ProductWorkbench() {
     setSelectedChapter("");
     setChapterContent(null);
     setAnalysisRun(null);
+    setAnalysisDiagnostics(null);
     setWorkbench(null);
     setEvidenceContext(null);
     if (!projectId) return;
@@ -1210,6 +1224,33 @@ export default function ProductWorkbench() {
                             <div className="analysis-progress"><span style={{ width: `${analysisPercent}%` }} /></div>
                             <p>可以关闭页面，后台会继续处理；再次打开项目会恢复当前进度。</p>
                           </div>
+                        )}
+
+                        {analysisRun && analysisDiagnostics && (
+                          <section className="analysis-diagnostics" aria-label="分析过程">
+                            <header>
+                              <div>
+                                <strong>当前阶段：{analysisDiagnostics.current_step}</strong>
+                                <span>本次已经调用在线 AI {analysisDiagnostics.attempt_count} 次{analysisDiagnostics.retry_count ? `，自动重试 ${analysisDiagnostics.retry_count} 次` : "，暂未发生重试"}</span>
+                              </div>
+                              <div className="analysis-usage">
+                                <span>输入令牌约 {formatNumber(analysisDiagnostics.prompt_tokens)}</span>
+                                <span>输出令牌约 {formatNumber(analysisDiagnostics.completion_tokens)}</span>
+                              </div>
+                            </header>
+                            <div className="analysis-stage-list">
+                              {analysisDiagnostics.stages.map((stage, index) => (
+                                <article className={stage.status.toLowerCase()} key={stage.key}>
+                                  <b>{index + 1}</b>
+                                  <div>
+                                    <strong>{stage.label}</strong>
+                                    <span>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</span>
+                                    {stage.latest_error && <small>{stage.latest_error}</small>}
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          </section>
                         )}
 
                         {analysisRun?.status === "FAILED" && (

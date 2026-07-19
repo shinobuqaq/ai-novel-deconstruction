@@ -214,6 +214,22 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .analysis-progress { height: 8px; margin-top: 15px; overflow: hidden; border-radius: 4px; background: #dce7ea; }
 .analysis-progress span { display: block; height: 100%; border-radius: 4px; background: #277487; transition: width 250ms ease; }
 .analysis-running p { margin: 10px 0 0; color: #657580; font-size: 12px; }
+.analysis-diagnostics { margin-top: 12px; border: 1px solid #d8dee5; border-radius: 8px; background: #fff; }
+.analysis-diagnostics > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border-bottom: 1px solid #e3e7ea; }
+.analysis-diagnostics > header > div:first-child { display: grid; gap: 4px; }
+.analysis-diagnostics header span { color: #687985; font-size: 11px; }
+.analysis-usage { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.analysis-usage span { padding: 5px 7px; border-radius: 4px; background: #f0f3f5; }
+.analysis-stage-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.analysis-stage-list article { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; min-width: 0; padding: 13px 15px; border-left: 1px solid #e4e8eb; }
+.analysis-stage-list article:first-child { border-left: 0; }
+.analysis-stage-list article > b { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #e6ecef; color: #5d6d78; font-size: 10px; }
+.analysis-stage-list article > div { display: grid; min-width: 0; gap: 3px; }
+.analysis-stage-list article span, .analysis-stage-list article small { color: #687985; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.analysis-stage-list article.succeeded > b { background: #dcefe7; color: #23684d; }
+.analysis-stage-list article.running > b { background: #dcecf0; color: #1d6171; }
+.analysis-stage-list article.failed > b { background: #f4dddd; color: #952f2f; }
+.analysis-stage-list article.failed small { color: #8c3838; }
 .analysis-failed { border-color: #e3bcbc; background: #fff7f7; }
 .analysis-failed strong { color: #952f2f; }
 .formal-workbench { margin-top: 14px; border: 1px solid #d4dce2; border-radius: 8px; overflow: hidden; background: #fff; }

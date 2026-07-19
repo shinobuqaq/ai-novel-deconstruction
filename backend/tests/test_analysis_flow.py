@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, Task, TaskStatus
+from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, Task, TaskAttempt, TaskStatus
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
@@ -230,6 +230,32 @@ class AuthenticationFailureProvider:
         )
 
 
+class InvalidStructureProvider:
+    name = "openai"
+
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        output = {
+            "entities": [
+                {
+                    "name": "林舟",
+                    "entity_type": "PERSON",
+                    "aliases": [],
+                    "description": "雨夜回到旧宅的人。",
+                    "evidence_quotes": ["林舟推开旧宅的木门"],
+                }
+            ],
+            "events": [],
+        }
+        return ProviderResponse(
+            raw_text=json.dumps(output, ensure_ascii=False),
+            parsed=output,
+            prompt_tokens=42,
+            completion_tokens=17,
+            provider_id="compatible-test",
+            model="test-model",
+        )
+
+
 def _import_confirmed_novel(client) -> dict:
     project = client.post("/api/projects", json={"name": "雨夜旧宅"}).json()
     source = (
@@ -330,6 +356,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert progress["status"] == "PENDING"
     assert progress["completed_batches"] == 2
     assert progress["failed_batches"] == 0
+
     assert progress["total_batches"] == 3
 
     with client.app.state.session_factory() as session:
@@ -353,6 +380,19 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert progress["status"] == "REVIEW"
     assert progress["completed_batches"] == 3
     assert progress["failed_batches"] == 0
+
+    diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    ).json()
+    assert diagnostics["attempt_count"] == 3
+    assert diagnostics["retry_count"] == 0
+    assert diagnostics["prompt_tokens"] == 360
+    assert diagnostics["completion_tokens"] == 240
+    assert [item["status"] for item in diagnostics["stages"]] == [
+        "SUCCEEDED",
+        "SUCCEEDED",
+        "SUCCEEDED",
+    ]
 
     completed_task = client.get(f"/api/tasks/{claim.id}").json()
     artifact = client.get(
@@ -492,6 +532,53 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         )
         assert narrative_task is not None
         assert "CHARACTER" in narrative_task.payload_json
+
+
+def test_invalid_model_structure_records_safe_field_diagnostics(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+
+    registry = ProviderRegistry([InvalidStructureProvider()])
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="invalid-structure-worker",
+            lease_seconds=60,
+        )
+    assert claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        claim,
+        registry,
+    )
+
+    diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    )
+    assert diagnostics.status_code == 200
+    payload = diagnostics.json()
+    stage = payload["stages"][0]
+    assert stage["attempt_count"] == 1
+    assert stage["prompt_tokens"] == 42
+    assert stage["completion_tokens"] == 17
+    assert "置信度" in stage["latest_error"]
+    assert "自动重试" in stage["latest_error"]
+
+    with client.app.state.session_factory() as session:
+        attempt = session.scalar(
+            select(TaskAttempt).where(TaskAttempt.task_id == claim.id)
+        )
+        assert attempt is not None
+        stored = json.loads(attempt.diagnostics_json)
+        assert stored["phase"] == "schema_validation"
+        assert stored["validation_error_count"] == 1
+        assert stored["model"] == "test-model"
+        assert "raw_text" not in stored
 
 
 def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:
