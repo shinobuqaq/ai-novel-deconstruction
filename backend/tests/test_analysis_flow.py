@@ -718,6 +718,51 @@ def test_compatible_provider_removes_schema_document_metadata_before_request(tmp
     assert result.parsed == {"entities": [], "events": []}
 
 
+def test_compatible_provider_uses_locally_validated_json_for_complex_analysis(tmp_path: Path) -> None:
+    settings = _provider_settings(tmp_path)
+    service = save_model_service(
+        settings,
+        service_id=None,
+        name="复杂结构兼容接口",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://provider.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="人物与事件精确提取",
+        service_id=service.id,
+        model="gemini-compatible",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "response_format" not in body
+        assert "输出必须是 JSON 对象" in body["messages"][0]["content"]
+        assert '"entities"' in body["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"entities": [], "events": []}'}}]},
+        )
+
+    payload = _provider_payload()
+    payload["model_profile_id"] = ENTITIES_EVENTS_PROFILE_ID
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+
+    result = asyncio.run(
+        provider.complete(task_kind="analysis.narrative_synthesis", payload=payload)
+    )
+
+    assert result.parsed == {"entities": [], "events": []}
+    assert result.parameters["structured_output"] == "JSON_ONLY"
+
+
 def test_provider_exposes_short_upstream_bad_request_reason(tmp_path: Path) -> None:
     provider = OpenAIResponsesProvider(
         _provider_settings(tmp_path),

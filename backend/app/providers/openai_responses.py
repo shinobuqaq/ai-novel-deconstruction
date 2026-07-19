@@ -65,6 +65,15 @@ class OpenAIResponsesProvider:
             if capabilities and capabilities.structured_output in {STRUCTURED_STRICT, STRUCTURED_JSON_ONLY}
             else STRUCTURED_STRICT
         )
+        # Compatible gateways can advertise strict JSON support from a small
+        # probe while rejecting the much larger nested schemas used by later
+        # analysis stages. Keep the output contract, but move schema enforcement
+        # to the local Pydantic validator for those stages.
+        if (
+            service.service_type == "OPENAI_COMPATIBLE"
+            and task_kind in {"analysis.narrative_synthesis", "analysis.deep_insights"}
+        ):
+            structured_mode = STRUCTURED_JSON_ONLY
         reasoning_supported = not capabilities or capabilities.reasoning_effort != STRUCTURED_UNSUPPORTED
         temperature_supported = not capabilities or capabilities.temperature != STRUCTURED_UNSUPPORTED
         effective_reasoning = (
