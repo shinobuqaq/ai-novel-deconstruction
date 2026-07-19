@@ -129,6 +129,22 @@ def _attempt_diagnostics(
         "input_chars": len(model_input),
         "output_chars": len(response.raw_text),
     }
+    context_manifest = provider_payload.get("context_manifest")
+    if isinstance(context_manifest, dict):
+        # Keep the diagnostic compact enough for the task table while still
+        # preserving the exact selected/omitted counts and reasons.
+        diagnostics["context"] = {
+            key: context_manifest.get(key)
+            for key in (
+                "budget_chars",
+                "selected_count",
+                "selected_chars",
+                "omitted_count",
+                "omitted_chars",
+                "selected_by_kind",
+                "omitted_reasons",
+            )
+        }
     if validation_errors:
         diagnostics["validation_errors"] = validation_errors[:20]
         diagnostics["validation_error_count"] = len(validation_errors)
@@ -375,6 +391,7 @@ async def execute_task(
                     json.dumps(output_schema, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest(),
                 "model_profile_id": provider_payload.get("model_profile_id"),
+                "context": provider_payload.get("context_manifest"),
             }
         if persisted_analysis is not None:
             artifact_payload["accepted"] = {

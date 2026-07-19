@@ -275,6 +275,11 @@ class AnalysisStageDiagnosticRead(BaseModel):
     completion_tokens: int
     input_chars: int
     output_chars: int
+    selected_material_count: int = 0
+    selected_material_chars: int = 0
+    omitted_material_count: int = 0
+    omitted_material_chars: int = 0
+    omitted_material_reasons: dict[str, int] = Field(default_factory=dict)
     latest_error: str | None
 
 

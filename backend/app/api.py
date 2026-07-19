@@ -340,6 +340,15 @@ def _analysis_run_diagnostics(
         diagnostics = [
             _json_dict(attempt.diagnostics_json) for attempt in stage_attempts
         ]
+        context_rows = [
+            item.get("context")
+            for item in diagnostics
+            if isinstance(item.get("context"), dict)
+        ]
+        omitted_reasons: dict[str, int] = {}
+        for context in context_rows:
+            for reason, count in (context.get("omitted_reasons") or {}).items():
+                omitted_reasons[str(reason)] = omitted_reasons.get(str(reason), 0) + int(count or 0)
         failed_attempts = [
             attempt for attempt in stage_attempts if attempt.error_message
         ]
@@ -357,6 +366,11 @@ def _analysis_run_diagnostics(
             completion_tokens=sum(int(item.get("completion_tokens") or 0) for item in usage),
             input_chars=sum(int(item.get("input_chars") or 0) for item in diagnostics),
             output_chars=sum(int(item.get("output_chars") or 0) for item in diagnostics),
+            selected_material_count=sum(int(item.get("selected_count") or 0) for item in context_rows),
+            selected_material_chars=sum(int(item.get("selected_chars") or 0) for item in context_rows),
+            omitted_material_count=sum(int(item.get("omitted_count") or 0) for item in context_rows),
+            omitted_material_chars=sum(int(item.get("omitted_chars") or 0) for item in context_rows),
+            omitted_material_reasons=omitted_reasons,
             latest_error=latest_error,
         ))
 

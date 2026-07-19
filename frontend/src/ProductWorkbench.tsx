@@ -1327,6 +1327,14 @@ export default function ProductWorkbench() {
                                   <div>
                                     <strong>{stage.label}</strong>
                                     <span>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</span>
+                                    {stage.selected_material_count > 0 && (
+                                      <small>
+                                        本阶段使用 {formatNumber(stage.selected_material_count)} 条相关材料
+                                        {stage.omitted_material_count > 0
+                                          ? `，因本次模型输入预算省略 ${formatNumber(stage.omitted_material_count)} 条低优先级材料`
+                                          : "，没有省略已选材料"}
+                                      </small>
+                                    )}
                                     {stage.latest_error && <small>{stage.latest_error}</small>}
                                   </div>
                                 </article>

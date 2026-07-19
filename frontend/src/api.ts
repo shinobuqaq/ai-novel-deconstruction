@@ -175,6 +175,11 @@ export type AnalysisStageDiagnostic = {
   completion_tokens: number;
   input_chars: number;
   output_chars: number;
+  selected_material_count: number;
+  selected_material_chars: number;
+  omitted_material_count: number;
+  omitted_material_chars: number;
+  omitted_material_reasons: Record<string, number>;
   latest_error: string | null;
 };
 

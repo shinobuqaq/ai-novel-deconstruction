@@ -46,6 +46,8 @@ DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.1.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
+MIN_SYNTHESIS_CONTEXT_CHARS = 24_000
+MAX_SYNTHESIS_CONTEXT_CHARS = 160_000
 
 
 class StructuredOutputValidationError(ValueError):
@@ -337,12 +339,276 @@ class PersistedDeepAnalysis:
     analysis_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class ContextMaterial:
+    """One explainable piece of material considered for a model request."""
+
+    key: str
+    kind: str
+    text: str
+    priority: int
+    reason: str
+    chapter_ordinal: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSelection:
+    selected: tuple[ContextMaterial, ...]
+    omitted: tuple[ContextMaterial, ...]
+    budget_chars: int
+
+    @property
+    def selected_chars(self) -> int:
+        return sum(len(item.text) for item in self.selected)
+
+    @property
+    def omitted_chars(self) -> int:
+        return sum(len(item.text) for item in self.omitted)
+
+    def manifest(self) -> dict[str, Any]:
+        omitted_reasons: dict[str, int] = {}
+        selected_by_kind: dict[str, int] = {}
+        for item in self.omitted:
+            omitted_reasons[item.reason] = omitted_reasons.get(item.reason, 0) + 1
+        for item in self.selected:
+            selected_by_kind[item.kind] = selected_by_kind.get(item.kind, 0) + 1
+        return {
+            "budget_chars": self.budget_chars,
+            "selected_count": len(self.selected),
+            "selected_chars": self.selected_chars,
+            "omitted_count": len(self.omitted),
+            "omitted_chars": self.omitted_chars,
+            "selected_by_kind": selected_by_kind,
+            "omitted_reasons": omitted_reasons,
+            "selected_materials": [
+                {
+                    "key": item.key,
+                    "kind": item.kind,
+                    "chars": len(item.text),
+                    "chapter_ordinal": item.chapter_ordinal,
+                    "reason": item.reason,
+                }
+                for item in self.selected
+            ],
+            "omitted_materials": [
+                {
+                    "key": item.key,
+                    "kind": item.kind,
+                    "chars": len(item.text),
+                    "chapter_ordinal": item.chapter_ordinal,
+                    "reason": item.reason,
+                }
+                for item in self.omitted[:200]
+            ],
+        }
+
+
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _normalized_name(value: str) -> str:
     return re.sub(r"\s+", "", value).casefold()[:240]
+
+
+def _synthesis_context_budget(profile: Any, source_chars: int) -> int:
+    """Choose a request budget without turning the novel into a hard limit.
+
+    The output reservation comes from the selected analysis profile. When a
+    provider does not expose its context window, use a conservative automatic
+    budget and grow it for larger output profiles, while keeping a ceiling so
+    a single synthesis request cannot silently consume an entire long book.
+    """
+    output_reserve = max(8_000, int(getattr(profile, "max_output_tokens", 16_000)))
+    budget = max(MIN_SYNTHESIS_CONTEXT_CHARS, min(MAX_SYNTHESIS_CONTEXT_CHARS, output_reserve * 3))
+    if source_chars > budget:
+        return budget
+    return max(MIN_SYNTHESIS_CONTEXT_CHARS, min(MAX_SYNTHESIS_CONTEXT_CHARS, source_chars + 8_000))
+
+
+def _material_json(kind: str, key: str, value: object) -> str:
+    return json.dumps(
+        {"kind": kind, "key": key, "value": value},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _select_context_materials(
+    materials: list[ContextMaterial],
+    *,
+    budget_chars: int,
+) -> ContextSelection:
+    """Greedily select high-value material while preserving chapter coverage."""
+    if budget_chars <= 0:
+        return ContextSelection((), tuple(materials), 0)
+
+    # A first item from every chapter is more valuable than a dense cluster of
+    # evidence from one chapter. The caller supplies the chapter coverage
+    # priority; this stable sort keeps retries deterministic.
+    ranked = sorted(
+        enumerate(materials),
+        key=lambda pair: (-pair[1].priority, pair[0]),
+    )
+    selected: list[ContextMaterial] = []
+    omitted: list[ContextMaterial] = []
+    used = 0
+    for _, item in ranked:
+        size = len(item.text)
+        if used + size <= budget_chars:
+            selected.append(item)
+            used += size
+        else:
+            omitted.append(
+                ContextMaterial(
+                    key=item.key,
+                    kind=item.kind,
+                    text=item.text,
+                    priority=item.priority,
+                    reason="上下文预算不足",
+                    chapter_ordinal=item.chapter_ordinal,
+                )
+            )
+    selected.sort(key=lambda item: (item.chapter_ordinal or 0, item.kind, item.key))
+    omitted.sort(key=lambda item: (item.chapter_ordinal or 0, item.kind, item.key))
+    return ContextSelection(tuple(selected), tuple(omitted), budget_chars)
+
+
+def _compact_chapter_catalog(chapters: list[dict[str, object]]) -> str:
+    return json.dumps(chapters, ensure_ascii=False, separators=(",", ":"))
+
+
+def _build_synthesis_context(
+    *,
+    foundation: dict[str, Any],
+    chapters: list[dict[str, object]],
+    evidence_by_id: dict[str, EvidenceSpan],
+    chapter_title_by_id: dict[str, str],
+    source_chars: int,
+    profile: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a bounded, source-addressable input for narrative/deep stages."""
+    materials: list[ContextMaterial] = []
+    chapter_catalog = _material_json("chapter_catalog", "chapter-catalog", chapters)
+    materials.append(ContextMaterial(
+        key="chapter-catalog",
+        kind="chapter_catalog",
+        text=chapter_catalog,
+        priority=10_000,
+        reason="保持整本章节覆盖",
+    ))
+
+    characters = list(foundation.get("characters", []))
+    for item in characters:
+        appearance = int(item.get("appearance_count") or 0)
+        confidence = int(item.get("confidence") or 0)
+        payload = _material_json("character", str(item.get("id") or item.get("name")), item)
+        materials.append(ContextMaterial(
+            key=str(item.get("id") or item.get("name")),
+            kind="character",
+            text=payload,
+            priority=2_000 + appearance * 5 + confidence,
+            reason="人物身份和跨章连续性",
+        ))
+
+    related_entities = list(foundation.get("related_entities", []))
+    for item in related_entities:
+        payload = _material_json("related_entity", str(item.get("id") or item.get("name")), item)
+        materials.append(ContextMaterial(
+            key=str(item.get("id") or item.get("name")),
+            kind="related_entity",
+            text=payload,
+            priority=1_500 + int(item.get("confidence") or 0),
+            reason="世界设定和关联实体线索",
+        ))
+
+    events = list(foundation.get("events", []))
+    seen_chapters: set[int] = set()
+    for item in events:
+        chapter_ordinals = [int(value) for value in item.get("chapter_ordinals", []) if value]
+        first_chapter = min(chapter_ordinals) if chapter_ordinals else None
+        coverage_bonus = 5_000 if first_chapter is not None and first_chapter not in seen_chapters else 0
+        if first_chapter is not None:
+            seen_chapters.add(first_chapter)
+        confidence = int(item.get("confidence") or 0)
+        payload = _material_json("event", str(item.get("id") or item.get("title")), item)
+        materials.append(ContextMaterial(
+            key=str(item.get("id") or item.get("title")),
+            kind="event",
+            text=payload,
+            priority=4_000 + coverage_bonus + confidence,
+            reason="剧情发展和章节覆盖",
+            chapter_ordinal=first_chapter,
+        ))
+
+    for evidence_id, item in evidence_by_id.items():
+        chapter_ordinal = next(
+            (
+                index
+                for index, chapter in enumerate(chapters, start=1)
+                if chapter_title_by_id.get(item.source_unit_id) == chapter.get("title")
+            ),
+            None,
+        )
+        payload = _material_json(
+            "evidence",
+            evidence_id,
+            {
+                "id": evidence_id,
+                "chapter_title": chapter_title_by_id.get(item.source_unit_id, "章节待定"),
+                "start_char": item.start_char,
+                "end_char": item.end_char,
+                "text": item.text_snapshot,
+            },
+        )
+        materials.append(ContextMaterial(
+            key=evidence_id,
+            kind="evidence",
+            text=payload,
+            priority=1_000,
+            reason="正式原文证据",
+            chapter_ordinal=chapter_ordinal,
+        ))
+
+    selection = _select_context_materials(
+        materials,
+        budget_chars=_synthesis_context_budget(profile, source_chars),
+    )
+    selected_values: dict[str, list[Any]] = {
+        "chapters": [],
+        "characters": [],
+        "events": [],
+        "related_entities": [],
+        "evidence": [],
+    }
+    for item in selection.selected:
+        try:
+            value = json.loads(item.text)["value"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if item.kind == "chapter_catalog":
+            selected_values["chapters"] = value
+        elif item.kind == "character":
+            selected_values["characters"].append(value)
+        elif item.kind == "event":
+            selected_values["events"].append(value)
+        elif item.kind == "related_entity":
+            selected_values["related_entities"].append(value)
+        elif item.kind == "evidence":
+            selected_values["evidence"].append(value)
+    selected_values["context"] = {
+        "selection_mode": "预算内相关材料选择",
+        "budget_chars": selection.budget_chars,
+        "selected_count": len(selection.selected),
+        "selected_chars": selection.selected_chars,
+        "omitted_count": len(selection.omitted),
+        "omitted_chars": selection.omitted_chars,
+        "omitted_reasons": selection.manifest()["omitted_reasons"],
+        "chapter_count": len(chapters),
+        "chapter_catalog_complete": bool(selected_values["chapters"])
+        and len(selected_values["chapters"]) == len(chapters),
+    }
+    return selected_values, selection.manifest()
 
 
 def _split_long_range(text: str, start: int, end: int) -> list[tuple[int, int]]:
@@ -500,6 +766,23 @@ def provider_payload_for_claim(
         "source_version_id": version.id,
         "source_char_start": start,
         "source_char_end": end,
+        "context_manifest": {
+            "budget_chars": MAX_BATCH_CHARS,
+            "selected_count": 1,
+            "selected_chars": len(excerpt),
+            "omitted_count": 0,
+            "omitted_chars": 0,
+            "selected_by_kind": {"source_batch": 1},
+            "omitted_reasons": {},
+            "selected_materials": [{
+                "key": f"source:{start}-{end}",
+                "kind": "source_batch",
+                "chars": len(excerpt),
+                "chapter_ordinal": None,
+                "reason": "当前章节分批原文",
+            }],
+            "omitted_materials": [],
+        },
     }
 
 
@@ -568,25 +851,23 @@ def provider_payload_for_narrative_synthesis(
         for index, unit in enumerate(chapter_units, start=1)
     ]
     chapter_title_by_id = {unit.id: unit.title for unit in chapter_units}
-    evidence = [
-        {
-            "id": item.id,
-            "chapter_title": chapter_title_by_id.get(item.source_unit_id, "章节待定"),
-            "text": item.text_snapshot,
-        }
-        for item in sorted(evidence_by_id.values(), key=lambda row: row.start_char)
-    ]
+    service, model_profile = resolve_analysis_profile(
+        settings,
+        str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
+    )
+    selected, context_manifest = _build_synthesis_context(
+        foundation=foundation,
+        chapters=chapters,
+        evidence_by_id=evidence_by_id,
+        chapter_title_by_id=chapter_title_by_id,
+        source_chars=version.total_chars,
+        profile=model_profile,
+    )
     previous_synthesis = session.scalar(
         select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
     )
-    # The evidence catalog is intentionally bounded by already accepted
-    # candidates; it keeps synthesis grounded without resending the whole book.
     input_payload = {
-        "chapters": chapters,
-        "characters": foundation["characters"],
-        "related_entities": foundation["related_entities"],
-        "events": foundation["events"],
-        "evidence": evidence,
+        **selected,
         "previous_synthesis": (
             json.loads(previous_synthesis.payload_json)
             if previous_synthesis is not None
@@ -604,6 +885,7 @@ def provider_payload_for_narrative_synthesis(
         "source_version_id": version.id,
         "source_char_start": 0,
         "source_char_end": version.total_chars,
+        "context_manifest": context_manifest,
     }
 
 
@@ -663,28 +945,28 @@ def provider_payload_for_deep_analysis(
         for index, unit in enumerate(chapter_units, start=1)
     ]
     chapter_title_by_id = {item.id: item.title for item in chapter_units}
-    evidence = [
-        {
-            "id": item.id,
-            "chapter_title": chapter_title_by_id.get(item.source_unit_id, "章节待定"),
-            "text": item.text_snapshot,
-        }
-        for item in evidence_rows
-    ]
+    service, model_profile = resolve_analysis_profile(
+        settings,
+        str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
+    )
+    selected, context_manifest = _build_synthesis_context(
+        foundation=foundation,
+        chapters=chapters,
+        evidence_by_id={item.id: item for item in evidence_rows},
+        chapter_title_by_id=chapter_title_by_id,
+        source_chars=version.total_chars,
+        profile=model_profile,
+    )
     previous_analysis = session.scalar(
         select(DeepAnalysis)
         .where(DeepAnalysis.run_id == run_id)
         .order_by(DeepAnalysis.revision_no.desc())
     )
     input_payload = {
-        "chapters": chapters,
-        "characters": foundation["characters"],
-        "related_entities": foundation["related_entities"],
-        "events": foundation["events"],
+        **selected,
         "story_overview": narrative.get("story_overview"),
         "character_roles": narrative.get("character_roles", []),
         "narrative_phases": narrative.get("narrative_phases", []),
-        "evidence": evidence,
         "previous_analysis": (
             json.loads(previous_analysis.payload_json)
             if previous_analysis is not None
@@ -702,6 +984,7 @@ def provider_payload_for_deep_analysis(
         "source_version_id": version.id,
         "source_char_start": 0,
         "source_char_end": version.total_chars,
+        "context_manifest": context_manifest,
     }
 
 
@@ -1239,7 +1522,10 @@ def persist_deep_analysis(
         for item in foundation["characters"]
         for name in [item["name"], *item.get("aliases", [])]
     }
-    chapter_count = len(visible_input.get("chapters", []))
+    # The selected chapter catalog may be abbreviated for a very long source;
+    # validation must use the authoritative imported source version instead
+    # of treating the abbreviated request as the whole book.
+    chapter_count = int(version.chapter_count)
 
     evidence_items = [
         *output.fact_versions,
