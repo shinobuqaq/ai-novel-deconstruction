@@ -43,7 +43,7 @@ ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.3.0"
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.1.0"
+DEEP_PROMPT_VERSION = "1.2.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
 MIN_SYNTHESIS_CONTEXT_CHARS = 24_000
@@ -295,7 +295,7 @@ class EntityResolutionProposal(BaseModel):
 
     canonical_name: str = Field(min_length=1, max_length=120)
     merged_names: list[str] = Field(min_length=2, max_length=10)
-    entity_type: Literal["ORGANIZATION", "PLACE", "OBJECT", "OTHER"]
+    entity_type: Literal["PERSON", "ORGANIZATION", "PLACE", "OBJECT", "OTHER"]
     reason: str = Field(min_length=1, max_length=600)
     evidence_ids: list[str] = Field(min_length=1, max_length=12)
 
@@ -1574,21 +1574,30 @@ def persist_deep_analysis(
     )
     if not referenced_event_ids.issubset(valid_event_ids):
         raise ValueError("DEEP_ANALYSIS_EVENT_REFERENCE_INVALID")
-    related_by_name = {
-        _normalized_name(item["name"]): item
-        for item in foundation["related_entities"]
-    }
+    available_entities_by_name: dict[str, tuple[str, str]] = {}
+    for item in foundation["characters"]:
+        for name in [item["name"], *item.get("aliases", [])]:
+            available_entities_by_name[_normalized_name(name)] = ("PERSON", item["id"])
+    for item in foundation["related_entities"]:
+        for name in [item["name"], *item.get("aliases", [])]:
+            available_entities_by_name[_normalized_name(name)] = (item["entity_type"], item["id"])
     resolved_names: set[str] = set()
     for resolution in output.entity_resolutions:
         normalized_names = [_normalized_name(name) for name in resolution.merged_names]
+        entity_ids = {
+            available_entities_by_name.get(name, (None, None))[1]
+            for name in normalized_names
+        }
         if (
             len(set(normalized_names)) != len(normalized_names)
             or _normalized_name(resolution.canonical_name) not in normalized_names
-            or any(name not in related_by_name for name in normalized_names)
+            or any(name not in available_entities_by_name for name in normalized_names)
             or any(
-                related_by_name[name]["entity_type"] != resolution.entity_type
+                available_entities_by_name[name][0] != resolution.entity_type
                 for name in normalized_names
             )
+            or len(entity_ids) != len(normalized_names)
+            or None in entity_ids
             or resolved_names.intersection(normalized_names)
         ):
             raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")

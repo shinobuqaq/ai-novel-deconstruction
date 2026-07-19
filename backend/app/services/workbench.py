@@ -121,6 +121,173 @@ def _canonical_person(group: list[EntityCandidate]) -> EntityCandidate:
     )
 
 
+def _apply_person_resolutions(
+    run_id: str,
+    characters: list[dict],
+    events: list[dict],
+    resolutions: list[dict],
+) -> list[dict]:
+    """Apply evidence-backed person resolutions to the read projection only.
+
+    The source candidates stay immutable. A later analysis revision can remove
+    or replace a resolution, which makes the merge reversible without data
+    surgery.
+    """
+    canonical_by_name: dict[str, str] = {}
+    resolution_by_canonical: dict[str, dict] = {}
+    for resolution in resolutions:
+        if resolution.get("entity_type") != "PERSON":
+            continue
+        canonical = str(resolution.get("canonical_name") or "").strip()
+        if not canonical:
+            continue
+        normalized_canonical = _normalize(canonical)
+        resolution_by_canonical[normalized_canonical] = resolution
+        for name in resolution.get("merged_names", []):
+            normalized = _normalize(str(name))
+            if normalized:
+                canonical_by_name[normalized] = canonical
+    if not canonical_by_name:
+        return characters
+
+    for event in events:
+        event["people"] = _unique([
+            canonical_by_name.get(_normalize(name), name)
+            for name in event.get("people", [])
+        ])
+
+    groups: dict[str, list[dict]] = {}
+    canonical_label: dict[str, str] = {}
+    for character in characters:
+        names = [character.get("name", ""), *character.get("aliases", [])]
+        canonical = next(
+            (
+                canonical_by_name[_normalize(name)]
+                for name in names
+                if _normalize(name) in canonical_by_name
+            ),
+            str(character.get("name") or ""),
+        )
+        normalized = _normalize(canonical)
+        canonical_label[normalized] = canonical
+        groups.setdefault(normalized, []).append(character)
+
+    merged: list[dict] = []
+    for normalized, group in groups.items():
+        canonical = canonical_label[normalized]
+        resolution = resolution_by_canonical.get(normalized)
+        evidence_ids = _unique([
+            evidence_id
+            for character in group
+            for evidence_id in character.get("evidence_ids", [])
+        ] + (resolution.get("evidence_ids", []) if resolution else []))
+        event_ids = _unique([
+            event_id
+            for character in group
+            for event_id in character.get("event_ids", [])
+        ])
+        aliases = _unique([
+            name
+            for character in group
+            for name in [character.get("name", ""), *character.get("aliases", [])]
+            if _normalize(name) != normalized
+        ])
+        identity_notes = _unique([
+            note
+            for character in group
+            for note in character.get("identity_notes", [])
+        ])
+        if resolution:
+            reason = str(resolution.get("reason") or "原文直接身份关系").strip()
+            identity_notes.append(
+                f"依据原文身份关系合并展示：{'、'.join(resolution.get('merged_names', []))}。依据：{reason}"
+            )
+        first_candidates = [
+            character.get("first_chapter_ordinal")
+            for character in group
+            if character.get("first_chapter_ordinal") is not None
+        ]
+        last_candidates = [
+            character.get("last_chapter_ordinal")
+            for character in group
+            if character.get("last_chapter_ordinal") is not None
+        ]
+        first_ordinal = min(first_candidates) if first_candidates else None
+        last_ordinal = max(last_candidates) if last_candidates else None
+        first_title = next(
+            (
+                character.get("first_chapter_title")
+                for character in group
+                if character.get("first_chapter_ordinal") == first_ordinal
+            ),
+            None,
+        )
+        last_title = next(
+            (
+                character.get("last_chapter_title")
+                for character in group
+                if character.get("last_chapter_ordinal") == last_ordinal
+            ),
+            None,
+        )
+        activity_level = (
+            "高" if len(event_ids) >= 3 or len(evidence_ids) >= 4
+            else "中" if event_ids or len(evidence_ids) >= 2
+            else "低"
+        )
+        merged.append({
+            "id": f"chr_{_hash(f'{run_id}:{normalized}')[:32]}",
+            "name": canonical,
+            "aliases": aliases,
+            "description": max((str(item.get("description") or "") for item in group), key=len),
+            "evidence_ids": evidence_ids,
+            "event_ids": event_ids,
+            "first_chapter_ordinal": first_ordinal,
+            "first_chapter_title": first_title,
+            "last_chapter_ordinal": last_ordinal,
+            "last_chapter_title": last_title,
+            "appearance_count": len(evidence_ids),
+            "activity_level": activity_level,
+            "status": "UNCERTAIN" if resolution or any(item.get("status") == "UNCERTAIN" for item in group) else "VALID",
+            "confidence": max(int(item.get("confidence") or 0) for item in group),
+            "identity_notes": identity_notes,
+        })
+    merged.sort(key=lambda item: item["name"])
+    return merged
+
+
+def _event_candidate_groups(
+    candidates: list[EventCandidate],
+) -> list[tuple[tuple[str, str, str], list[EventCandidate]]]:
+    """Union duplicate event proposals only when they share exact evidence.
+
+    This covers overlapping extraction batches and alternate model titles while
+    keeping similar events in different passages separate.
+    """
+    groups: list[tuple[tuple[str, str, str], list[EventCandidate], set[str]]] = []
+    for event in sorted(candidates, key=lambda item: (item.start_char, item.id)):
+        details = _read_object(event.details_json)
+        narrative_mode = str(details.get("narrative_mode") or "UNCERTAIN")
+        exact_key = (_normalize(event.title), event.event_type, narrative_mode)
+        evidence_ids = set(_read_json(event.evidence_ids_json))
+        matched_index: int | None = None
+        for index, (key, _items, group_evidence) in enumerate(groups):
+            same_contract = key[1:] == exact_key[1:]
+            if key == exact_key or (same_contract and evidence_ids.intersection(group_evidence)):
+                matched_index = index
+                break
+        if matched_index is None:
+            groups.append((exact_key, [event], set(evidence_ids)))
+            continue
+        key, items, group_evidence = groups[matched_index]
+        items.append(event)
+        group_evidence.update(evidence_ids)
+        # Prefer the most frequent exact title later, but keep the first stable
+        # key so grouping is deterministic across retries.
+        groups[matched_index] = (key, items, group_evidence)
+    return [(key, items) for key, items, _evidence in groups]
+
+
 @dataclass(frozen=True, slots=True)
 class _ChapterRef:
     ordinal: int
@@ -280,21 +447,14 @@ def build_workbench_projection(
             start, end = event.start_char, event.end_char
         return _chapters_for_range(chapters, start, max(start + 1, end))
 
-    # Only exact normalized title/type matches are merged here. The projection is
-    # intentionally conservative; semantic merge suggestions belong in the next
-    # review stage and must remain reversible.
-    grouped_events: dict[tuple[str, str, str], list[EventCandidate]] = {}
-    for event in event_candidates:
-        details = _read_object(event.details_json)
-        narrative_mode = str(details.get("narrative_mode") or "UNCERTAIN")
-        grouped_events.setdefault(
-            (_normalize(event.title), event.event_type, narrative_mode),
-            [],
-        ).append(event)
+    # Exact title/type matches and shared-evidence matches from overlapping
+    # batches are safe enough for the read projection. Semantic similarity
+    # without shared source evidence remains separate.
+    grouped_events = _event_candidate_groups(event_candidates)
 
     events: list[dict] = []
     event_id_by_candidate: dict[str, str] = {}
-    for (normalized_title, event_type, narrative_mode), group in grouped_events.items():
+    for (normalized_title, event_type, narrative_mode), group in grouped_events:
         group = sorted(group, key=lambda item: (item.start_char, item.id))
         canonical_id = f"cev_{_hash(f'{run_id}:{normalized_title}:{event_type}:{narrative_mode}')[:32]}"
         evidence_ids = _unique([item for event in group for item in _read_json(event.evidence_ids_json)])
@@ -509,16 +669,70 @@ def build_workbench_projection(
             )
 
     resolution_by_name: dict[str, str] = {}
+    person_resolution_by_name: dict[str, str] = {}
+    entity_resolutions: list[dict] = []
     if deep_payload is not None:
-        for resolution in deep_payload.get("entity_resolutions", []):
+        entity_resolutions = deep_payload.get("entity_resolutions", [])
+        for resolution in entity_resolutions:
             canonical = resolution.get("canonical_name", "")
             for name in resolution.get("merged_names", []):
-                resolution_by_name[_normalize(name)] = canonical
+                target = (
+                    person_resolution_by_name
+                    if resolution.get("entity_type") == "PERSON"
+                    else resolution_by_name
+                )
+                target[_normalize(name)] = canonical
     if resolution_by_name:
         for event in events:
             event["related_entities"] = _unique([
                 resolution_by_name.get(_normalize(name), name)
                 for name in event["related_entities"]
+            ])
+    characters = _apply_person_resolutions(
+        run_id,
+        characters,
+        events,
+        entity_resolutions,
+    )
+    if story_overview is not None:
+        story_overview["protagonist"] = person_resolution_by_name.get(
+            _normalize(story_overview.get("protagonist", "")),
+            story_overview.get("protagonist", ""),
+        )
+    for phase in phases:
+        phase["people"] = _unique([
+            person_resolution_by_name.get(_normalize(name), name)
+            for name in phase.get("people", [])
+        ])
+    for relation in character_relations:
+        relation["source_name"] = person_resolution_by_name.get(
+            _normalize(relation.get("source_name", "")),
+            relation.get("source_name", ""),
+        )
+        relation["target_name"] = person_resolution_by_name.get(
+            _normalize(relation.get("target_name", "")),
+            relation.get("target_name", ""),
+        )
+    if deep_payload is not None and person_resolution_by_name:
+        for fact in deep_payload.get("fact_versions", []):
+            fact["subject"] = person_resolution_by_name.get(
+                _normalize(fact.get("subject", "")),
+                fact.get("subject", ""),
+            )
+        for change in deep_payload.get("state_changes", []):
+            change["subject"] = person_resolution_by_name.get(
+                _normalize(change.get("subject", "")),
+                change.get("subject", ""),
+            )
+        for knowledge in deep_payload.get("actor_knowledge", []):
+            knowledge["actor"] = person_resolution_by_name.get(
+                _normalize(knowledge.get("actor", "")),
+                knowledge.get("actor", ""),
+            )
+        for conflict in deep_payload.get("conflicts", []):
+            conflict["participants"] = _unique([
+                person_resolution_by_name.get(_normalize(name), name)
+                for name in conflict.get("participants", [])
             ])
 
     grouped_related: dict[tuple[str, str], list[EntityCandidate]] = {}
