@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-terra"
     openai_api_key: str | None = None
     openai_timeout_seconds: float = 180.0
-    openai_reasoning_effort: str = "low"
+    openai_reasoning_effort: str = "auto"
     artifact_reconcile_seconds: float = 60.0
     artifact_recovery_stale_seconds: float = 300.0
 

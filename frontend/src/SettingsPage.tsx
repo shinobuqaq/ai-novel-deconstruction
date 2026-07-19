@@ -159,27 +159,51 @@ export default function SettingsPage() {
     }
   }
 
+  async function persistProfile() {
+    if (!profileDraft) return null;
+    const saved = await api.saveAnalysisProfile(profileDraft.id, {
+      name: profileDraft.name,
+      service_id: profileDraft.service_id,
+      model: profileDraft.model,
+      temperature: profileDraft.temperature,
+      max_output_tokens: profileDraft.max_output_tokens,
+      reasoning_effort: profileDraft.reasoning_effort,
+      timeout_seconds: profileDraft.timeout_seconds,
+      max_retries: profileDraft.max_retries,
+    });
+    setProfileDraft(saved);
+    await loadSettings(saved.service_id);
+    return saved;
+  }
+
   async function handleSaveProfile(event: FormEvent) {
     event.preventDefault();
     if (!profileDraft) return;
     try {
       setBusy("save-profile");
       setError("");
-      const saved = await api.saveAnalysisProfile(profileDraft.id, {
-        name: profileDraft.name,
-        service_id: profileDraft.service_id,
-        model: profileDraft.model,
-        temperature: profileDraft.temperature,
-        max_output_tokens: profileDraft.max_output_tokens,
-        reasoning_effort: profileDraft.reasoning_effort,
-        timeout_seconds: profileDraft.timeout_seconds,
-        max_retries: profileDraft.max_retries,
-      });
-      setProfileDraft(saved);
+      await persistProfile();
       setNotice("人物与事件分析方案已保存，下一次分析会使用这套设置。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleTestProfile() {
+    if (!profileDraft) return;
+    try {
+      setBusy("test-profile");
+      setError("");
+      const saved = await persistProfile();
+      if (!saved) return;
+      const result = await api.testAnalysisProfile(saved.id);
+      setNotice(result.message);
       await loadSettings(saved.service_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      await loadSettings(profileDraft.service_id).catch(() => undefined);
     } finally {
       setBusy("");
     }
@@ -204,6 +228,10 @@ export default function SettingsPage() {
   const currentCatalog = profileDraft ? catalogs[profileDraft.service_id] ?? [] : [];
   const currentModelIsListed = Boolean(
     profileDraft?.model && currentCatalog.includes(profileDraft.model),
+  );
+  const profileService = settings?.services.find((service) => service.id === profileDraft?.service_id) ?? null;
+  const capabilityMatches = Boolean(
+    profileService && profileDraft?.model && profileService.capabilities.tested_model === profileDraft.model,
   );
 
   return (
@@ -357,11 +385,33 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+                <div className={`model-test-summary ${capabilityMatches ? profileService?.capabilities.ordinary_request === "SUPPORTED" ? "tested" : "failed" : "untested"}`}>
+                  <div>
+                    <span>所选模型状态</span>
+                    <strong>
+                      {capabilityMatches
+                        ? profileService?.capabilities.ordinary_request !== "SUPPORTED"
+                          ? "测试失败，当前模型暂不可用"
+                          : profileService?.capabilities.structured_output === "STRICT_JSON_SCHEMA"
+                            ? "已验证，可严格输出结构化结果"
+                            : "已验证，使用普通 JSON 模式"
+                        : "尚未测试这个模型"}
+                    </strong>
+                  </div>
+                  <p>
+                    {capabilityMatches
+                      ? profileService?.capabilities.ordinary_request !== "SUPPORTED"
+                        ? "请查看上方失败原因，确认模型名称、权限、网络或服务状态后重新测试。"
+                        : `温度：${profileService?.capabilities.temperature === "UNSUPPORTED" ? "不支持，自动忽略" : profileService?.capabilities.temperature === "SUPPORTED" ? "支持" : "使用自动设置"}；推理强度：${profileService?.capabilities.reasoning_effort === "UNSUPPORTED" ? "不支持，自动忽略" : profileService?.capabilities.reasoning_effort === "SUPPORTED" ? "支持" : "使用自动设置"}。`
+                      : "保存并测试后，系统会确认模型权限、结构化输出和当前参数。测试会发送少量内容，可能产生极少费用。"}
+                  </p>
+                </div>
+
                 <div className="recommended-settings">
-                  <div><span>结果稳定性</span><strong>质量优先</strong><small>适合人物、事件和证据抽取</small></div>
+                  <div><span>参数策略</span><strong>优先自动适配</strong><small>没有模型依据时不强制发送参数</small></div>
                   <label>推理强度
                     <div className="segmented-control">
-                      {(["none", "low", "medium", "high"] as const).map((effort) => (
+                      {(["auto", "none", "low", "medium", "high"] as const).map((effort) => (
                         <button
                           type="button"
                           key={effort}
@@ -369,23 +419,24 @@ export default function SettingsPage() {
                           className={profileDraft.reasoning_effort === effort ? "active" : ""}
                           onClick={() => setProfileDraft({ ...profileDraft, reasoning_effort: effort })}
                         >
-                          {{ none: "关闭", low: "较低", medium: "中等", high: "较高" }[effort]}
+                          {{ auto: "自动", none: "关闭", low: "较低", medium: "中等", high: "较高" }[effort]}
                         </button>
                       ))}
                     </div>
-                    <small>部分不支持推理参数的兼容服务会拒绝该设置；遇到参数错误时请选择“关闭”。</small>
+                    <small>默认不发送推理参数；手工指定后，模型测试会确认是否支持。</small>
                   </label>
                 </div>
 
                 <button type="button" className="advanced-toggle" onClick={() => setShowAdvanced((current) => !current)}>{showAdvanced ? "收起高级参数" : "展开高级参数"}</button>
                 {showAdvanced && (
                   <div className="parameter-grid">
-                    <label>温度 <span>{profileDraft.temperature.toFixed(2)}</span>
-                      <input type="range" min="0" max="2" step="0.05" value={profileDraft.temperature} onChange={(event) => setProfileDraft({ ...profileDraft, temperature: Number(event.target.value) })} />
-                      <small>越低越稳定，越高越发散。信息抽取建议保持较低。</small>
+                    <label>温度 <span>{profileDraft.temperature === null ? "自动" : profileDraft.temperature.toFixed(2)}</span>
+                      <span className="inline-check"><input type="checkbox" checked={profileDraft.temperature === null} onChange={(event) => setProfileDraft({ ...profileDraft, temperature: event.target.checked ? null : 1 })} />由模型决定</span>
+                      <input type="range" min="0" max="2" step="0.01" disabled={profileDraft.temperature === null} value={profileDraft.temperature ?? 1} onChange={(event) => setProfileDraft({ ...profileDraft, temperature: Number(event.target.value) })} />
+                      <small>自动表示不发送温度；手工设置后会按所选模型的测试结果决定是否发送。</small>
                     </label>
                     <label>最大输出长度
-                      <input type="number" min="256" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
+                      <input type="number" min="1" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
                       <small>限制单次模型返回的最大内容量；实际可用上限由所选模型决定。</small>
                     </label>
                     <label>单次超时（秒）
@@ -398,7 +449,11 @@ export default function SettingsPage() {
                     </label>
                   </div>
                 )}
-                <footer className="settings-actions"><button type="submit" disabled={Boolean(busy)}>{busy === "save-profile" ? "正在保存" : "保存分析方案"}</button></footer>
+                <footer className="settings-actions profile-actions">
+                  <small>模型测试会发送最多几次极短请求，用来确认真实能力。</small>
+                  <button type="submit" className="secondary-button" disabled={Boolean(busy)}>{busy === "save-profile" ? "正在保存" : "保存分析方案"}</button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => void handleTestProfile()}>{busy === "test-profile" ? "正在测试模型" : "保存并测试所选模型"}</button>
+                </footer>
               </form>
             </section>
           )}

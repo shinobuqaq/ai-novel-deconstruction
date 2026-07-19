@@ -111,6 +111,15 @@ export type ModelService = {
   last_tested_at: string | null;
   last_test_status: "NOT_TESTED" | "CONNECTED" | "FAILED";
   last_test_message: string | null;
+  capabilities: {
+    tested_model: string | null;
+    tested_at: string | null;
+    ordinary_request: "UNTESTED" | "SUPPORTED" | "FAILED";
+    structured_output: "UNTESTED" | "STRICT_JSON_SCHEMA" | "JSON_ONLY" | "UNSUPPORTED";
+    temperature: "UNTESTED" | "SUPPORTED" | "FAILED" | "UNSUPPORTED";
+    reasoning_effort: "UNTESTED" | "SUPPORTED" | "FAILED" | "UNSUPPORTED";
+    model_catalog: "UNTESTED" | "SUPPORTED" | "FAILED" | "UNSUPPORTED";
+  };
 };
 
 export type AnalysisProfile = {
@@ -119,9 +128,9 @@ export type AnalysisProfile = {
   task_type: string;
   service_id: string;
   model: string;
-  temperature: number;
+  temperature: number | null;
   max_output_tokens: number;
-  reasoning_effort: "none" | "low" | "medium" | "high";
+  reasoning_effort: "auto" | "none" | "low" | "medium" | "high";
   timeout_seconds: number;
   max_retries: number;
 };
@@ -291,6 +300,11 @@ export const api = {
   modelCatalog: (serviceId: string) =>
     request<{ service_id: string; models: string[]; message: string }>(
       `/api/settings/model-services/${serviceId}/models`,
+    ),
+  testAnalysisProfile: (profileId: string) =>
+    request<{ service: ModelService; message: string }>(
+      `/api/settings/analysis-profiles/${profileId}/test`,
+      { method: "POST" },
     ),
   saveAnalysisProfile: (profileId: string, payload: AnalysisProfileInput) =>
     request<AnalysisProfile>(`/api/settings/analysis-profiles/${profileId}`, {
