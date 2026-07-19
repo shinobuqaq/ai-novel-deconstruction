@@ -55,6 +55,7 @@ from .schemas import (
     EvidenceSpanRead,
     EventCandidateRead,
     WorkbenchRead,
+    WorkbenchStateAtChapterRead,
     DeepAnalysisDiffRead,
     DeepAnalysisRevisionRead,
     ModelCatalogRead,
@@ -93,7 +94,7 @@ from .services.analysis import (
     refresh_analysis_run,
     start_entities_events_run,
 )
-from .services.workbench import build_workbench_projection
+from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
     ModelService,
@@ -949,6 +950,41 @@ def analysis_workbench_get(
             ) from error
         raise
     return WorkbenchRead.model_validate(projection)
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/state-at-chapter",
+    response_model=WorkbenchStateAtChapterRead,
+)
+def analysis_state_at_chapter_get(
+    run_id: str,
+    chapter_ordinal: int,
+    deep_revision: int | None = None,
+    session: Session = Depends(get_db),
+) -> WorkbenchStateAtChapterRead:
+    try:
+        projection = build_state_at_chapter_projection(
+            session,
+            run_id,
+            chapter_ordinal,
+            deep_revision=deep_revision,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code == "ANALYSIS_RUN_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
+        if code == "DEEP_ANALYSIS_REVISION_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail={"code": code, "message": "没有找到这个拆解版本。"},
+            ) from error
+        if code == "CHAPTER_ORDINAL_INVALID":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": code, "message": "请选择这本小说中存在的章节。"},
+            ) from error
+        raise
+    return WorkbenchStateAtChapterRead.model_validate(projection)
 
 
 @router.post(

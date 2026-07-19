@@ -420,6 +420,7 @@ export type WorkbenchClaim = {
   evidence_ids: string[];
   counter_evidence_ids: string[];
   verification_status: string;
+  verification_note: string;
   confidence: number;
 };
 
@@ -482,6 +483,17 @@ export type Workbench = {
   deep_analysis: WorkbenchDeepAnalysis | null;
   deep_revision: number | null;
   chapters: WorkbenchChapterRef[];
+};
+
+export type WorkbenchStateAtChapter = {
+  run_id: string;
+  deep_revision: number | null;
+  chapter_ordinal: number;
+  chapter_title: string;
+  facts: WorkbenchFactVersion[];
+  states: WorkbenchStateChange[];
+  knowledge: WorkbenchActorKnowledge[];
+  world_rules: WorkbenchWorldRule[];
 };
 
 export type EvidenceContext = {
@@ -617,6 +629,8 @@ export const api = {
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
   analysisWorkbench: (runId: string, deepRevision?: number) =>
     request<Workbench>(`/api/analysis-runs/${runId}/workbench${deepRevision ? `?deep_revision=${deepRevision}` : ""}`),
+  stateAtChapter: (runId: string, chapterOrdinal: number, deepRevision?: number) =>
+    request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
   startDeepAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

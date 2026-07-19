@@ -486,6 +486,7 @@ def _build_synthesis_context(
     chapter_title_by_id: dict[str, str],
     source_chars: int,
     profile: Any,
+    extra_values: dict[str, object] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a bounded, source-addressable input for narrative/deep stages."""
     materials: list[ContextMaterial] = []
@@ -497,6 +498,25 @@ def _build_synthesis_context(
         priority=10_000,
         reason="保持整本章节覆盖",
     ))
+
+    extra_priorities = {
+        "revision_requests": 12_000,
+        "story_overview": 4_500,
+        "narrative_phases": 4_000,
+        "character_roles": 3_500,
+        "previous_synthesis": 1_000,
+        "previous_analysis": 1_000,
+    }
+    for key, value in (extra_values or {}).items():
+        if value is None:
+            continue
+        materials.append(ContextMaterial(
+            key=f"extra:{key}",
+            kind=f"extra:{key}",
+            text=_material_json(f"extra:{key}", key, value),
+            priority=extra_priorities.get(key, 2_000),
+            reason="任务必需的上游结果" if key in {"revision_requests", "story_overview"} else "上一阶段结果",
+        ))
 
     characters = list(foundation.get("characters", []))
     for item in characters:
@@ -574,7 +594,7 @@ def _build_synthesis_context(
         materials,
         budget_chars=_synthesis_context_budget(profile, source_chars),
     )
-    selected_values: dict[str, list[Any]] = {
+    selected_values: dict[str, Any] = {
         "chapters": [],
         "characters": [],
         "events": [],
@@ -588,6 +608,8 @@ def _build_synthesis_context(
             continue
         if item.kind == "chapter_catalog":
             selected_values["chapters"] = value
+        elif item.kind.startswith("extra:"):
+            selected_values[item.key.removeprefix("extra:")] = value
         elif item.kind == "character":
             selected_values["characters"].append(value)
         elif item.kind == "event":
@@ -855,6 +877,14 @@ def provider_payload_for_narrative_synthesis(
         settings,
         str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
     )
+    previous_synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+    )
+    previous_synthesis_payload = (
+        json.loads(previous_synthesis.payload_json)
+        if previous_synthesis is not None
+        else None
+    )
     selected, context_manifest = _build_synthesis_context(
         foundation=foundation,
         chapters=chapters,
@@ -862,18 +892,15 @@ def provider_payload_for_narrative_synthesis(
         chapter_title_by_id=chapter_title_by_id,
         source_chars=version.total_chars,
         profile=model_profile,
-    )
-    previous_synthesis = session.scalar(
-        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+        extra_values={
+            "previous_synthesis": previous_synthesis_payload,
+            "revision_requests": task_payload.get("revision_requests", []),
+        },
     )
     input_payload = {
         **selected,
-        "previous_synthesis": (
-            json.loads(previous_synthesis.payload_json)
-            if previous_synthesis is not None
-            else None
-        ),
-        "revision_requests": task_payload.get("revision_requests", []),
+        "previous_synthesis": selected.get("previous_synthesis"),
+        "revision_requests": selected.get("revision_requests", []),
     }
     return {
         "instructions": _narrative_prompt(),
@@ -949,6 +976,16 @@ def provider_payload_for_deep_analysis(
         settings,
         str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
     )
+    previous_analysis = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    previous_analysis_payload = (
+        json.loads(previous_analysis.payload_json)
+        if previous_analysis is not None
+        else None
+    )
     selected, context_manifest = _build_synthesis_context(
         foundation=foundation,
         chapters=chapters,
@@ -956,23 +993,21 @@ def provider_payload_for_deep_analysis(
         chapter_title_by_id=chapter_title_by_id,
         source_chars=version.total_chars,
         profile=model_profile,
-    )
-    previous_analysis = session.scalar(
-        select(DeepAnalysis)
-        .where(DeepAnalysis.run_id == run_id)
-        .order_by(DeepAnalysis.revision_no.desc())
+        extra_values={
+            "story_overview": narrative.get("story_overview"),
+            "character_roles": narrative.get("character_roles", []),
+            "narrative_phases": narrative.get("narrative_phases", []),
+            "previous_analysis": previous_analysis_payload,
+            "revision_requests": task_payload.get("revision_requests", []),
+        },
     )
     input_payload = {
         **selected,
-        "story_overview": narrative.get("story_overview"),
-        "character_roles": narrative.get("character_roles", []),
-        "narrative_phases": narrative.get("narrative_phases", []),
-        "previous_analysis": (
-            json.loads(previous_analysis.payload_json)
-            if previous_analysis is not None
-            else None
-        ),
-        "revision_requests": task_payload.get("revision_requests", []),
+        "story_overview": selected.get("story_overview"),
+        "character_roles": selected.get("character_roles", []),
+        "narrative_phases": selected.get("narrative_phases", []),
+        "previous_analysis": selected.get("previous_analysis"),
+        "revision_requests": selected.get("revision_requests", []),
     }
     return {
         "instructions": _deep_prompt(),
@@ -1096,6 +1131,27 @@ def _stronger_candidate_status(current: str, incoming: str) -> str:
         CandidateStatus.VALID.value: 2,
     }
     return incoming if rank[incoming] > rank[current] else current
+
+
+def _claim_verification(claim: dict[str, Any]) -> tuple[str, str]:
+    support_count = len(set(claim.get("evidence_ids", [])))
+    counter_count = len(set(claim.get("counter_evidence_ids", [])))
+    required_support = 1 if claim.get("claim_kind") in {"FACT", "INFERENCE"} else 2
+    if counter_count and not support_count:
+        status = "CONTRADICTED"
+    elif counter_count:
+        status = "DISPUTED"
+    elif support_count < required_support:
+        status = "INSUFFICIENT"
+    elif int(claim.get("confidence") or 0) < 75:
+        status = "PARTIAL"
+    else:
+        status = "SUPPORTED"
+    note = (
+        f"支持证据 {support_count} 条，反面证据 {counter_count} 条；"
+        f"{claim.get('claim_kind', 'UNKNOWN')} 类型至少需要 {required_support} 条支持证据。"
+    )
+    return status, note
 
 
 def persist_analysis_output(
@@ -1622,17 +1678,9 @@ def persist_deep_analysis(
         if fact["counter_evidence_ids"]:
             fact["status"] = "DISPUTED"
     for claim in payload["claims"]:
-        supports = bool(claim["evidence_ids"])
-        counters = bool(claim["counter_evidence_ids"])
-        claim["verification_status"] = (
-            "MIXED"
-            if supports and counters
-            else "CONTRADICTED"
-            if counters
-            else "SUPPORTED"
-            if supports
-            else "INSUFFICIENT_EVIDENCE"
-        )
+        verification_status, verification_note = _claim_verification(claim)
+        claim["verification_status"] = verification_status
+        claim["verification_note"] = verification_note
 
     existing = session.scalar(
         select(DeepAnalysis).where(DeepAnalysis.created_by_task_id == task.id)

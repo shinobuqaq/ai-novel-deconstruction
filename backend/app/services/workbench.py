@@ -815,3 +815,92 @@ def build_workbench_projection(
             for chapter in chapters
         ],
     }
+
+
+def build_state_at_chapter_projection(
+    session: Session,
+    run_id: str,
+    chapter_ordinal: int,
+    *,
+    deep_revision: int | None = None,
+) -> dict:
+    """Replay the authoritative deep-analysis projection at one chapter."""
+    projection = build_workbench_projection(
+        session,
+        run_id,
+        deep_revision=deep_revision,
+    )
+    chapters = projection["chapters"]
+    chapter = next(
+        (item for item in chapters if item["ordinal"] == chapter_ordinal),
+        None,
+    )
+    if chapter is None:
+        raise ValueError("CHAPTER_ORDINAL_INVALID")
+
+    deep = projection.get("deep_analysis") or {}
+    facts = [
+        item
+        for item in deep.get("fact_versions", [])
+        if int(item.get("valid_from_chapter") or 1) <= chapter_ordinal
+        and (
+            item.get("valid_to_chapter") is None
+            or int(item["valid_to_chapter"]) >= chapter_ordinal
+        )
+    ]
+    facts.sort(key=lambda item: (item.get("subject", ""), item.get("predicate", ""), item.get("id", "")))
+
+    state_by_key: dict[tuple[str, str], dict] = {}
+    for item in deep.get("state_changes", []):
+        item_chapter = int(item.get("chapter_ordinal") or 0)
+        if item_chapter > chapter_ordinal:
+            continue
+        key = (_normalize(item.get("subject", "")), _normalize(item.get("aspect", "")))
+        current = state_by_key.get(key)
+        if current is None or (
+            item_chapter,
+            str(item.get("id") or ""),
+        ) >= (
+            int(current.get("chapter_ordinal") or 0),
+            str(current.get("id") or ""),
+        ):
+            state_by_key[key] = item
+
+    knowledge_by_key: dict[tuple[str, str], dict] = {}
+    for item in deep.get("actor_knowledge", []):
+        item_chapter = int(item.get("chapter_ordinal") or 0)
+        if item_chapter > chapter_ordinal:
+            continue
+        key = (_normalize(item.get("actor", "")), _normalize(item.get("proposition", "")))
+        current = knowledge_by_key.get(key)
+        if current is None or (
+            item_chapter,
+            str(item.get("id") or ""),
+        ) >= (
+            int(current.get("chapter_ordinal") or 0),
+            str(current.get("id") or ""),
+        ):
+            knowledge_by_key[key] = item
+
+    rules = [
+        item
+        for item in deep.get("world_rules", [])
+        if int(item.get("discovered_chapter") or 1) <= chapter_ordinal
+    ]
+    rules.sort(key=lambda item: (int(item.get("discovered_chapter") or 1), item.get("title", "")))
+    return {
+        "run_id": run_id,
+        "deep_revision": projection.get("deep_revision"),
+        "chapter_ordinal": chapter_ordinal,
+        "chapter_title": chapter["title"],
+        "facts": facts,
+        "states": sorted(
+            state_by_key.values(),
+            key=lambda item: (item.get("subject", ""), item.get("aspect", "")),
+        ),
+        "knowledge": sorted(
+            knowledge_by_key.values(),
+            key=lambda item: (item.get("actor", ""), item.get("proposition", "")),
+        ),
+        "world_rules": rules,
+    }

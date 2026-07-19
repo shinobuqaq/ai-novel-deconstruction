@@ -520,6 +520,7 @@ class WorkbenchClaimRead(BaseModel):
     evidence_ids: list[str]
     counter_evidence_ids: list[str]
     verification_status: str
+    verification_note: str = ""
     confidence: int
 
 
@@ -555,6 +556,17 @@ class WorkbenchRead(BaseModel):
     deep_analysis: WorkbenchDeepAnalysisRead | None = None
     deep_revision: int | None = None
     chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)
+
+
+class WorkbenchStateAtChapterRead(BaseModel):
+    run_id: str
+    deep_revision: int | None
+    chapter_ordinal: int
+    chapter_title: str
+    facts: list[WorkbenchFactVersionRead] = Field(default_factory=list)
+    states: list[WorkbenchStateChangeRead] = Field(default_factory=list)
+    knowledge: list[WorkbenchActorKnowledgeRead] = Field(default_factory=list)
+    world_rules: list[WorkbenchWorldRuleRead] = Field(default_factory=list)
 
 
 class AnalysisIssueCreate(BaseModel):

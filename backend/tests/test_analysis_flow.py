@@ -420,6 +420,15 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         "SUCCEEDED",
     ]
 
+    state_at_chapter = client.get(
+        f"/api/analysis-runs/{run['id']}/state-at-chapter?chapter_ordinal=2"
+    )
+    assert state_at_chapter.status_code == 200
+    state_payload = state_at_chapter.json()
+    assert state_payload["chapter_title"].startswith("第二章")
+    assert state_payload["states"][0]["chapter_ordinal"] == 2
+    assert state_payload["knowledge"][0]["actor"] == "林舟"
+
     completed_task = client.get(f"/api/tasks/{claim.id}").json()
     artifact = client.get(
         f"/api/artifacts/{completed_task['result_artifact_id']}/content"

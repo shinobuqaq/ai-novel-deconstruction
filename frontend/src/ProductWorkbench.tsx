@@ -15,6 +15,7 @@ import {
   SourceUnitContent,
   SourceVersion,
   Workbench,
+  WorkbenchStateAtChapter,
 } from "./api";
 
 const STAGES = [
@@ -117,8 +118,11 @@ const FORESHADOWING_LABELS: Record<string, string> = {
 
 const CLAIM_STATUS_LABELS: Record<string, string> = {
   SUPPORTED: "证据支持",
+  PARTIAL: "部分支持",
+  DISPUTED: "存在争议",
   MIXED: "支持与反证并存",
   CONTRADICTED: "存在明确反证",
+  INSUFFICIENT: "证据不足",
   INSUFFICIENT_EVIDENCE: "证据不足",
 };
 
@@ -185,6 +189,9 @@ function FormalWorkbench({
   const [revisions, setRevisions] = useState<DeepAnalysisRevision[]>([]);
   const [revisionDiff, setRevisionDiff] = useState<DeepAnalysisDiff | null>(null);
   const [revisionData, setRevisionData] = useState<Workbench | null>(null);
+  const [stateProjection, setStateProjection] = useState<WorkbenchStateAtChapter | null>(null);
+  const [stateProjectionBusy, setStateProjectionBusy] = useState(false);
+  const [stateProjectionError, setStateProjectionError] = useState("");
   const [revisionBusy, setRevisionBusy] = useState(false);
   const [revisionError, setRevisionError] = useState("");
   const [issueTarget, setIssueTarget] = useState<{ kind: string; id: string | null; label: string } | null>(null);
@@ -250,36 +257,32 @@ function FormalWorkbench({
     ];
     return entries.filter((item) => `${item.title} ${item.text}`.toLocaleLowerCase("zh-CN").includes(query));
   }, [viewData, searchQuery]);
-  const pointInTime = useMemo(() => {
-    const deep = viewData.deep_analysis;
-    if (!deep) return { facts: [], states: [], knowledge: [], rules: [] };
-    const facts = deep.fact_versions.filter((item) => (
-      item.valid_from_chapter <= stateChapter
-      && (item.valid_to_chapter === null || item.valid_to_chapter >= stateChapter)
-    ));
-    const stateByKey = new Map<string, (typeof deep.state_changes)[number]>();
-    for (const item of deep.state_changes) {
-      if (item.chapter_ordinal <= stateChapter) {
-        const key = `${item.subject}\u0000${item.aspect}`;
-        const current = stateByKey.get(key);
-        if (!current || current.chapter_ordinal <= item.chapter_ordinal) stateByKey.set(key, item);
-      }
+  useEffect(() => {
+    let active = true;
+    if (!viewData.deep_analysis) {
+      setStateProjection(null);
+      setStateProjectionError("");
+      return () => { active = false; };
     }
-    const knowledgeByKey = new Map<string, (typeof deep.actor_knowledge)[number]>();
-    for (const item of deep.actor_knowledge) {
-      if (item.chapter_ordinal <= stateChapter) {
-        const key = `${item.actor}\u0000${item.proposition}`;
-        const current = knowledgeByKey.get(key);
-        if (!current || current.chapter_ordinal <= item.chapter_ordinal) knowledgeByKey.set(key, item);
+    setStateProjectionBusy(true);
+    setStateProjectionError("");
+    void api.stateAtChapter(
+      viewData.run_id,
+      stateChapter,
+      viewData.deep_revision ?? undefined,
+    ).then((result) => {
+      if (active) setStateProjection(result);
+    }).catch((reason) => {
+      if (active) {
+        setStateProjection(null);
+        setStateProjectionError(reason instanceof Error ? reason.message : String(reason));
       }
-    }
-    return {
-      facts,
-      states: [...stateByKey.values()],
-      knowledge: [...knowledgeByKey.values()],
-      rules: deep.world_rules.filter((item) => item.discovered_chapter <= stateChapter),
-    };
-  }, [viewData.deep_analysis, stateChapter]);
+    }).finally(() => {
+      if (active) setStateProjectionBusy(false);
+    });
+    return () => { active = false; };
+  }, [viewData.run_id, viewData.deep_revision, viewData.deep_analysis, stateChapter]);
+  const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], world_rules: [] };
   const evidenceButtons = (evidenceIds: string[], label = "查看原文") => (
     <div className="evidence-buttons">
       {evidenceIds.map((evidenceId, index) => (
@@ -480,7 +483,7 @@ function FormalWorkbench({
                 <header><h3>地点、组织与重要事物</h3><span>{viewData.related_entities.length} 个</span></header>
                 <div>{viewData.related_entities.map((entity) => <span key={entity.id}>{ENTITY_LABELS[entity.entity_type]}：{entity.name}</span>)}</div>
               </div>
-              {viewData.deep_analysis?.claims.length ? <section className="insight-group overview-claims"><header><div><span>带证据的专项判断</span><h3>分析结论</h3></div><b>{viewData.deep_analysis.claims.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.claims.map((claim) => <article className="formal-card" key={claim.id}><header><div><span>{claim.claim_kind === "FACT" ? "事实判断" : claim.claim_kind === "INFERENCE" ? "推断" : claim.claim_kind === "PATTERN" ? "叙事模式" : "解释"}</span><h3>{claim.claim_text}</h3></div><i className={claim.verification_status !== "SUPPORTED" ? "needs-review" : ""}>{CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</i></header><small>适用范围：{claim.scope}</small>{evidenceButtons(claim.evidence_ids, "查看支持证据")}</article>)}</div></section> : null}
+              {viewData.deep_analysis?.claims.length ? <section className="insight-group overview-claims"><header><div><span>带证据的专项判断</span><h3>分析结论</h3></div><b>{viewData.deep_analysis.claims.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.claims.map((claim) => <article className="formal-card" key={claim.id}><header><div><span>{claim.claim_kind === "FACT" ? "事实判断" : claim.claim_kind === "INFERENCE" ? "推断" : claim.claim_kind === "PATTERN" ? "叙事模式" : "解释"}</span><h3>{claim.claim_text}</h3></div><i className={claim.verification_status !== "SUPPORTED" ? "needs-review" : ""}>{CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</i></header><small>适用范围：{claim.scope}</small>{claim.verification_note && <small>{claim.verification_note}</small>}{evidenceButtons(claim.evidence_ids, "查看支持证据")}{claim.counter_evidence_ids.length > 0 && evidenceButtons(claim.counter_evidence_ids, "查看反面证据")}</article>)}</div></section> : null}
             </>
           )}
 
@@ -606,6 +609,8 @@ function FormalWorkbench({
                       {viewData.chapters.map((chapter) => <option value={chapter.ordinal} key={chapter.ordinal}>第 {chapter.ordinal} 章 · {chapter.title}</option>)}
                     </select>
                   </div>
+                  {stateProjectionBusy && <div className="workbench-callout"><strong>正在重放这一章的状态</strong><span>系统正在统一核对事实有效期、状态变化和人物认知。</span></div>}
+                  {stateProjectionError && <div className="analysis-issue-error">{stateProjectionError}</div>}
                   <section className="insight-group">
                     <header><div><span>第 {stateChapter} 章时仍然成立</span><h3>世界事实</h3></div><b>{pointInTime.facts.length}</b></header>
                     <div className="formal-card-list compact-list">
@@ -673,7 +678,7 @@ function FormalWorkbench({
             <div className="deep-analysis-view">
               {!viewData.deep_analysis ? <div className="workbench-callout"><strong>世界设定仍在整理</strong><span>系统完成证据校验后，会在这里显示地点、组织、能力、限制、代价和例外。</span></div> : <>
                 <div className="chapter-state-selector"><div><strong>按章节查看当时已经出现的设定</strong><span>后面的章节不会提前泄露到这个视图。</span></div><label htmlFor="world-state-chapter">截至</label><select id="world-state-chapter" value={stateChapter} onChange={(event) => setStateChapter(Number(event.target.value))}>{viewData.chapters.map((chapter) => <option value={chapter.ordinal} key={chapter.ordinal}>第 {chapter.ordinal} 章 · {chapter.title}</option>)}</select></div>
-                <section className="insight-group"><header><div><span>限制、代价和例外都会保留</span><h3>世界规则</h3></div><b>{pointInTime.rules.length}</b></header><div className="formal-card-list compact-list">{pointInTime.rules.map((rule) => <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div><i>第 {rule.discovered_chapter} 章起可知</i></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>)}{!pointInTime.rules.length && <p className="result-empty">截至这一章，原文尚未明确建立世界规则。</p>}</div></section>
+                <section className="insight-group"><header><div><span>限制、代价和例外都会保留</span><h3>世界规则</h3></div><b>{pointInTime.world_rules.length}</b></header><div className="formal-card-list compact-list">{pointInTime.world_rules.map((rule) => <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div><i>第 {rule.discovered_chapter} 章起可知</i></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>)}{!pointInTime.world_rules.length && <p className="result-empty">截至这一章，原文尚未明确建立世界规则。</p>}</div></section>
               </>}
             </div>
           )}
