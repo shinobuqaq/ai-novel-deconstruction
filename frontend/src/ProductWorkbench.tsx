@@ -507,7 +507,7 @@ function FormalWorkbench({
                 <article className="formal-card" key={character.id}>
                   <header>
                     <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
-                    <i className={character.status === "UNCERTAIN" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "待抽查" : `置信度 ${character.confidence}%`}</i>
+                    <i className={character.status === "UNCERTAIN" || character.role === "UNCLASSIFIED" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? "角色作用待确认" : "角色定位已生成"}</i>
                   </header>
                   <p>{character.description || "原文中已识别到该人物。"}</p>
                   <small>{character.role_reason}</small>
@@ -523,6 +523,7 @@ function FormalWorkbench({
                   {character.arc_summary && <p><strong>人物变化：</strong>{character.arc_summary}</p>}
                   <div className="character-meta">
                     <span>出场活跃度：{character.activity_level}</span>
+                    <span>人物识别置信度：{character.confidence}%</span>
                     <span>证据 {character.appearance_count} 处</span>
                     <span>{character.first_chapter_ordinal ? `第 ${character.first_chapter_ordinal} 章首次出现` : "章节位置待定"}</span>
                     <span>{character.event_ids.length} 个相关事件</span>
@@ -903,11 +904,11 @@ export default function ProductWorkbench() {
   const chapterCount = chapters.filter((chapter) => chapter.unit_type === "CHAPTER").length;
   const titleUnitCount = chapters.filter((chapter) => chapter.unit_type === "TITLE").length;
   const prefaceUnitCount = chapters.filter((chapter) => chapter.unit_type === "PREFACE").length;
-  const currentStage = activeVersion?.status !== "CONFIRMED"
-    ? 0
-    : analysisRun?.status === "CONFIRMED"
-      ? 3
-      : 1;
+  let currentStage = 0;
+  if (activeVersion?.status === "CONFIRMED") currentStage = 1;
+  if (workbench?.narrative_status === "READY") currentStage = 3;
+  if (workbench?.deep_status === "READY") currentStage = 5;
+  if (analysisRun?.status === "CONFIRMED") currentStage = STAGES.length;
   const chapterIssueMap = useMemo(() => {
     const counts = new Map<string, number>();
     for (const issue of openIssues) {

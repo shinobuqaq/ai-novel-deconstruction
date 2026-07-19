@@ -1477,6 +1477,28 @@ def persist_narrative_synthesis(
         for item in output.character_roles
     ):
         raise ValueError("NARRATIVE_CHARACTER_REFERENCE_INVALID")
+    required_characters = sorted(
+        foundation["characters"],
+        key=lambda item: (
+            -int(item.get("appearance_count") or 0),
+            -int(item.get("confidence") or 0),
+            item.get("name", ""),
+        ),
+    )[:100]
+    returned_role_names = {
+        _normalized_name(item.name)
+        for item in output.character_roles
+    }
+    missing_required = [
+        item["name"]
+        for item in required_characters
+        if not {
+            _normalized_name(item["name"]),
+            *(_normalized_name(alias) for alias in item.get("aliases", [])),
+        }.intersection(returned_role_names)
+    ]
+    if missing_required:
+        raise ValueError("NARRATIVE_CHARACTER_ROLES_INCOMPLETE")
     if any(
         not _normalized_name(item.source_name) in valid_character_names
         or not _normalized_name(item.target_name) in valid_character_names
