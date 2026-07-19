@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AnalysisIssue,
+  AnalysisCostEstimate,
   AnalysisRun,
   AnalysisRunDiagnostics,
   api,
@@ -29,6 +30,15 @@ const STAGES = [
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function formatCost(value: number, currency: string) {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value < 1 ? 6 : 2,
+  }).format(value);
 }
 
 function formatFileSize(value: number) {
@@ -769,6 +779,7 @@ export default function ProductWorkbench() {
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
   const [analysisDiagnostics, setAnalysisDiagnostics] = useState<AnalysisRunDiagnostics | null>(null);
+  const [analysisEstimate, setAnalysisEstimate] = useState<AnalysisCostEstimate | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
@@ -798,6 +809,7 @@ export default function ProductWorkbench() {
     setChapterContent(null);
     setAnalysisRun(null);
     setAnalysisDiagnostics(null);
+    setAnalysisEstimate(null);
     setWorkbench(null);
     setEvidenceContext(null);
     if (!projectId) return;
@@ -1109,6 +1121,22 @@ export default function ProductWorkbench() {
   const analysisService = modelSettings?.services.find((item) => item.id === analysisProfile?.service_id) ?? null;
   const analysisConfigured = Boolean(analysisService?.configured && analysisProfile?.model);
 
+  useEffect(() => {
+    let active = true;
+    if (!activeVersion || activeVersion.status !== "CONFIRMED" || !analysisConfigured || analysisRun) {
+      setAnalysisEstimate(null);
+      return () => { active = false; };
+    }
+    void api.analysisEstimate(activeVersion.id)
+      .then((estimate) => {
+        if (active) setAnalysisEstimate(estimate);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => { active = false; };
+  }, [activeVersion, analysisConfigured, analysisProfile, analysisRun]);
+
   return (
     <div className="product-shell">
       <header className="workbench-topbar">
@@ -1290,6 +1318,17 @@ export default function ProductWorkbench() {
                             <div>
                               <strong>人物和事件分析尚未开始</strong>
                               <span>当前使用“{analysisProfile?.name}”，系统会按篇幅自动分批；中断后可以继续。</span>
+                              {analysisEstimate && (
+                                <div className="analysis-cost-preview">
+                                  <span>预计基础调用 {analysisEstimate.planned_call_count} 次；全部触发重试时最多 {analysisEstimate.retry_ceiling_call_count} 次。</span>
+                                  {analysisEstimate.pricing_available && analysisEstimate.cost_currency && analysisEstimate.maximum_cost_without_retries !== null && analysisEstimate.maximum_cost_with_retries !== null ? (
+                                    <strong>按最大输出计算：正常完成不超过 {formatCost(analysisEstimate.maximum_cost_without_retries, analysisEstimate.cost_currency)}；全部重试上限 {formatCost(analysisEstimate.maximum_cost_with_retries, analysisEstimate.cost_currency)}</strong>
+                                  ) : (
+                                    <strong>当前没有可靠模型单价，只估算调用量，不显示金额。</strong>
+                                  )}
+                                  <small>{analysisEstimate.basis}</small>
+                                </div>
+                              )}
                             </div>
                             <div className="analysis-start-actions">
                               <a className="button-link secondary-button" href="/settings">查看分析设置</a>
@@ -1324,6 +1363,11 @@ export default function ProductWorkbench() {
                               <div className="analysis-usage">
                                 <span>输入令牌约 {formatNumber(analysisDiagnostics.prompt_tokens)}</span>
                                 <span>输出令牌约 {formatNumber(analysisDiagnostics.completion_tokens)}</span>
+                                {analysisDiagnostics.cost_complete && analysisDiagnostics.actual_cost !== null && analysisDiagnostics.cost_currency ? (
+                                  <span>实际费用 {formatCost(analysisDiagnostics.actual_cost, analysisDiagnostics.cost_currency)}</span>
+                                ) : analysisDiagnostics.prompt_tokens + analysisDiagnostics.completion_tokens > 0 ? (
+                                  <span>当时未设置完整单价</span>
+                                ) : null}
                               </div>
                             </header>
                             <div className="analysis-stage-list">

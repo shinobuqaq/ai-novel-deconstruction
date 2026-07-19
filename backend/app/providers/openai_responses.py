@@ -12,6 +12,7 @@ from ..services.provider_config import (
     STRUCTURED_STRICT,
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
+    model_cost_snapshot,
     resolve_analysis_profile,
     schema_for_provider,
 )
@@ -197,9 +198,14 @@ class OpenAIResponsesProvider:
                 retryable=False,
             )
 
+        prompt_tokens = 0
+        completion_tokens = 0
         try:
             body = response.json()
             if service.service_type == "OPENAI":
+                usage = body.get("usage") or {}
+                prompt_tokens = int(usage.get("input_tokens") or 0)
+                completion_tokens = int(usage.get("output_tokens") or 0)
                 output_text = next(
                     content["text"]
                     for item in body.get("output", [])
@@ -207,23 +213,35 @@ class OpenAIResponsesProvider:
                     for content in item.get("content", [])
                     if content.get("type") == "output_text"
                 )
-                usage = body.get("usage") or {}
-                prompt_tokens = int(usage.get("input_tokens") or 0)
-                completion_tokens = int(usage.get("output_tokens") or 0)
             else:
-                output_text = body["choices"][0]["message"]["content"]
                 usage = body.get("usage") or {}
                 prompt_tokens = int(usage.get("prompt_tokens") or 0)
                 completion_tokens = int(usage.get("completion_tokens") or 0)
+                output_text = body["choices"][0]["message"]["content"]
             if not isinstance(output_text, str):
                 raise TypeError("OUTPUT_TEXT_MISSING")
             parsed = json.loads(output_text)
         except (ValueError, KeyError, StopIteration, TypeError, json.JSONDecodeError) as exc:
+            cost = model_cost_snapshot(
+                profile,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
                 message="在线 AI 没有返回符合要求的结构化结果，系统会自动重试。",
                 retryable=True,
+                diagnostics={"cost": cost} if cost is not None else {},
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                provider_name=service.id,
+                model=profile.model,
             ) from exc
+        cost = model_cost_snapshot(
+            profile,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
         return ProviderResponse(
             raw_text=output_text,
             parsed=parsed,
@@ -239,6 +257,8 @@ class OpenAIResponsesProvider:
                 "structured_output": structured_mode,
                 "timeout_seconds": profile.timeout_seconds,
                 "max_retries": profile.max_retries,
+                "context_window_tokens": profile.context_window_tokens,
+                "cost": cost,
             },
         )
 

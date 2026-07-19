@@ -205,6 +205,9 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .provider-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .analysis-start, .analysis-failed { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 12px; padding: 22px 20px; border: 1px solid #d8dee5; border-radius: 8px; background: #fff; }
 .analysis-start > div:first-child, .analysis-failed > div { display: grid; gap: 5px; }
+.analysis-cost-preview { display: grid; gap: 4px; margin-top: 7px; padding-top: 9px; border-top: 1px solid #e1e6eb; }
+.analysis-cost-preview strong { color: #344452; font-size: 12px; }
+.analysis-cost-preview small { max-width: 720px; color: #71808e; font-size: 11px; line-height: 1.45; }
 .analysis-start-actions { display: flex; flex: 0 0 auto; gap: 8px; }
 .analysis-running { margin-top: 12px; padding: 22px 20px; border: 1px solid #bbd2d8; border-radius: 8px; background: #f6fbfc; }
 .analysis-running-copy { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
@@ -498,6 +501,12 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .parameter-grid .inline-check { display: inline-flex; justify-self: start; align-items: center; gap: 7px; margin: 0; color: #52616e; font-size: 12px; }
 .parameter-grid .inline-check input { width: 16px; min-height: 16px; margin: 0; }
 .parameter-grid input[type="range"] { padding: 0; accent-color: #277487; }
+.pricing-field { grid-column: 1 / -1; display: grid; gap: 10px; min-width: 0; margin: 0; padding: 16px 0 0; border: 0; border-top: 1px solid #d8dee5; }
+.pricing-field legend { width: 100%; padding: 0; font-weight: 800; }
+.pricing-field legend span { float: right; color: #386b77; font-size: 12px; font-weight: 700; }
+.parameter-grid .pricing-toggle { justify-self: start; }
+.pricing-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.pricing-inputs label { display: grid; gap: 7px; }
 .profile-actions { align-items: center; }
 .profile-actions > small { margin-right: auto; color: #71808e; font-size: 11px; }
 .privacy-list { margin: 20px 0 0; border-top: 1px solid #d8dee5; }

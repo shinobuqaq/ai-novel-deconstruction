@@ -44,6 +44,7 @@ from .repositories import (
 from .schemas import (
     ArtifactRead,
     AnalysisRunRead,
+    AnalysisCostEstimateRead,
     AnalysisRunDiagnosticsRead,
     AnalysisStageDiagnosticRead,
     AnalysisIssueCreate,
@@ -89,6 +90,7 @@ from .services.analysis import (
     ANALYSIS_STAGE,
     analysis_run_progress,
     confirm_analysis_run,
+    estimate_analysis_cost,
     enqueue_deep_analysis,
     enqueue_narrative_synthesis,
     refresh_analysis_run,
@@ -156,6 +158,9 @@ def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
         context_window_tokens=profile.context_window_tokens,
+        input_price_per_million_tokens=profile.input_price_per_million_tokens,
+        output_price_per_million_tokens=profile.output_price_per_million_tokens,
+        price_currency=profile.price_currency,
     )
 
 
@@ -307,6 +312,31 @@ def _analysis_run_diagnostics(
     for attempt in attempts:
         attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
 
+    def cost_summary(usage_rows: list[dict]) -> tuple[float | None, str | None, bool]:
+        billed_rows = [
+            item
+            for item in usage_rows
+            if int(item.get("prompt_tokens") or 0) + int(item.get("completion_tokens") or 0) > 0
+        ]
+        if not billed_rows:
+            return None, None, False
+        cost_rows = [item.get("cost") for item in billed_rows]
+        if not all(isinstance(item, dict) for item in cost_rows):
+            return None, None, False
+        currencies = {
+            str(item.get("currency") or "")
+            for item in cost_rows
+            if isinstance(item, dict)
+        }
+        if len(currencies) != 1:
+            return None, None, False
+        total = sum(
+            float(item.get("total_cost") or 0)
+            for item in cost_rows
+            if isinstance(item, dict)
+        )
+        return round(total, 8), currencies.pop(), True
+
     stage_rows: list[AnalysisStageDiagnosticRead] = []
     for kind, label in _ANALYSIS_STAGE_DIAGNOSTICS:
         stage_tasks = [task for task in tasks if task.kind == kind]
@@ -339,6 +369,7 @@ def _analysis_run_diagnostics(
             stage_status = "PENDING"
 
         usage = [_json_dict(attempt.usage_json) for attempt in stage_attempts]
+        stage_cost, stage_currency, stage_cost_complete = cost_summary(usage)
         diagnostics = [
             _json_dict(attempt.diagnostics_json) for attempt in stage_attempts
         ]
@@ -368,6 +399,9 @@ def _analysis_run_diagnostics(
             completion_tokens=sum(int(item.get("completion_tokens") or 0) for item in usage),
             input_chars=sum(int(item.get("input_chars") or 0) for item in diagnostics),
             output_chars=sum(int(item.get("output_chars") or 0) for item in diagnostics),
+            actual_cost=stage_cost,
+            cost_currency=stage_currency,
+            cost_complete=stage_cost_complete,
             selected_material_count=sum(int(item.get("selected_count") or 0) for item in context_rows),
             selected_material_chars=sum(int(item.get("selected_chars") or 0) for item in context_rows),
             omitted_material_count=sum(int(item.get("omitted_count") or 0) for item in context_rows),
@@ -380,6 +414,9 @@ def _analysis_run_diagnostics(
         (row.label for row in stage_rows if row.status != "SUCCEEDED"),
         "全部分析已经完成",
     )
+    actual_cost, cost_currency, cost_complete = cost_summary(
+        [_json_dict(attempt.usage_json) for attempt in attempts]
+    )
     return AnalysisRunDiagnosticsRead(
         run_id=run.id,
         current_step=current,
@@ -389,6 +426,9 @@ def _analysis_run_diagnostics(
         completion_tokens=sum(row.completion_tokens for row in stage_rows),
         input_chars=sum(row.input_chars for row in stage_rows),
         output_chars=sum(row.output_chars for row in stage_rows),
+        actual_cost=actual_cost,
+        cost_currency=cost_currency,
+        cost_complete=cost_complete,
         stages=stage_rows,
     )
 
@@ -672,6 +712,9 @@ def analysis_profiles_update(
             timeout_seconds=payload.timeout_seconds,
             max_retries=payload.max_retries,
             context_window_tokens=payload.context_window_tokens,
+            input_price_per_million_tokens=payload.input_price_per_million_tokens,
+            output_price_per_million_tokens=payload.output_price_per_million_tokens,
+            price_currency=payload.price_currency,
         )
     except ModelSettingsError as error:
         raise _model_settings_error(error) from error
@@ -1012,6 +1055,25 @@ def narrative_synthesis_start(
             },
         )
     return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/source-versions/{version_id}/analysis/entities-events/estimate",
+    response_model=AnalysisCostEstimateRead,
+)
+def entities_events_estimate(
+    version_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisCostEstimateRead:
+    version = session.get(SourceVersion, version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
+    try:
+        estimate = estimate_analysis_cost(session, request.app.state.settings, version)
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return AnalysisCostEstimateRead.model_validate(estimate)
 
 
 @router.post(

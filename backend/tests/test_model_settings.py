@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+from app.providers.base import ProviderError
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.services.provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
@@ -109,6 +110,9 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
         reasoning_effort="medium",
         timeout_seconds=90,
         max_retries=4,
+        input_price_per_million_tokens=2.0,
+        output_price_per_million_tokens=4.0,
+        price_currency="USD",
     )
     seen: list[httpx.Request] = []
 
@@ -148,7 +152,72 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
     assert response.provider_id == service.id
     assert response.model == "quality-model"
     assert response.parameters["max_retries"] == 4
+    assert response.parameters["cost"] == {
+        "currency": "USD",
+        "input_price_per_million_tokens": 2.0,
+        "output_price_per_million_tokens": 4.0,
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
+        "input_cost": 0.000024,
+        "output_cost": 0.000032,
+        "total_cost": 0.000056,
+    }
     assert [request.url.path for request in seen] == ["/v1/models", "/v1/chat/completions"]
+
+
+def test_invalid_output_preserves_billed_usage_and_price_snapshot(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="计费失败测试",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://provider.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="人物与事件精确提取",
+        service_id=service.id,
+        model="priced-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=1,
+        input_price_per_million_tokens=3.0,
+        output_price_per_million_tokens=9.0,
+        price_currency="USD",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "not-json"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(
+            provider.complete(
+                task_kind="analysis.entities_events",
+                payload={
+                    "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                    "instructions": "只返回 JSON",
+                    "input": "测试文本",
+                    "output_schema": {"type": "object"},
+                },
+            )
+        )
+
+    assert caught.value.code == "PROVIDER_INVALID_OUTPUT"
+    assert caught.value.prompt_tokens == 100
+    assert caught.value.completion_tokens == 20
+    assert caught.value.diagnostics["cost"]["total_cost"] == pytest.approx(0.00048)
 
 
 def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> None:
@@ -157,6 +226,9 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
     assert profile["temperature"] is None
     assert profile["reasoning_effort"] == "auto"
     assert profile["context_window_tokens"] is None
+    assert profile["input_price_per_million_tokens"] is None
+    assert profile["output_price_per_million_tokens"] is None
+    assert profile["price_currency"] == "USD"
 
     response = client.put(
         f"/api/settings/analysis-profiles/{profile['id']}",
@@ -175,6 +247,31 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
     assert response.status_code == 200
     assert response.json()["max_output_tokens"] == 1
     assert response.json()["context_window_tokens"] == 128000
+
+
+def test_analysis_profile_requires_complete_pricing_pair(client) -> None:
+    profile = client.get("/api/settings/models").json()["analysis_profiles"][0]
+
+    response = client.put(
+        f"/api/settings/analysis-profiles/{profile['id']}",
+        json={
+            "name": profile["name"],
+            "service_id": profile["service_id"],
+            "model": "priced-model",
+            "temperature": None,
+            "max_output_tokens": 16_000,
+            "reasoning_effort": "auto",
+            "timeout_seconds": 30,
+            "max_retries": 0,
+            "context_window_tokens": None,
+            "input_price_per_million_tokens": 2.5,
+            "output_price_per_million_tokens": None,
+            "price_currency": "USD",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "MODEL_PRICING_INCOMPLETE"
 
 
 def test_analysis_profile_rejects_context_window_without_input_space(client) -> None:

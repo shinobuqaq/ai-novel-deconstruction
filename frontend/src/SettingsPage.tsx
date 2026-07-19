@@ -69,6 +69,9 @@ export default function SettingsPage() {
     setProfileDraft(profile ? {
       ...profile,
       context_window_tokens: profile.context_window_tokens ?? null,
+      input_price_per_million_tokens: profile.input_price_per_million_tokens ?? null,
+      output_price_per_million_tokens: profile.output_price_per_million_tokens ?? null,
+      price_currency: profile.price_currency ?? "USD",
     } : null);
   }
 
@@ -175,6 +178,9 @@ export default function SettingsPage() {
       timeout_seconds: profileDraft.timeout_seconds,
       max_retries: profileDraft.max_retries,
       context_window_tokens: profileDraft.context_window_tokens,
+      input_price_per_million_tokens: profileDraft.input_price_per_million_tokens,
+      output_price_per_million_tokens: profileDraft.output_price_per_million_tokens,
+      price_currency: profileDraft.price_currency,
     });
     setProfileDraft(saved);
     await loadSettings(saved.service_id);
@@ -457,6 +463,36 @@ export default function SettingsPage() {
                       <input type="number" min="0" max="10" value={profileDraft.max_retries} onChange={(event) => setProfileDraft({ ...profileDraft, max_retries: Number(event.target.value) })} />
                       <small>只对超时、限流和临时故障自动重试。</small>
                     </label>
+                    <fieldset className="pricing-field">
+                      <legend>模型单价与费用估算 <span>{profileDraft.input_price_per_million_tokens === null ? "未设置" : profileDraft.price_currency}</span></legend>
+                      <label className="inline-check pricing-toggle">
+                        <input
+                          type="checkbox"
+                          checked={profileDraft.input_price_per_million_tokens === null}
+                          onChange={(event) => setProfileDraft({
+                            ...profileDraft,
+                            input_price_per_million_tokens: event.target.checked ? null : 0,
+                            output_price_per_million_tokens: event.target.checked ? null : 0,
+                          })}
+                        />
+                        服务没有提供可靠单价
+                      </label>
+                      <div className="pricing-inputs">
+                        <label>输入单价（每百万令牌）
+                          <input type="number" min="0" max="1000000" step="0.000001" disabled={profileDraft.input_price_per_million_tokens === null} value={profileDraft.input_price_per_million_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, input_price_per_million_tokens: Number(event.target.value) })} />
+                        </label>
+                        <label>输出单价（每百万令牌）
+                          <input type="number" min="0" max="1000000" step="0.000001" disabled={profileDraft.output_price_per_million_tokens === null} value={profileDraft.output_price_per_million_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, output_price_per_million_tokens: Number(event.target.value) })} />
+                        </label>
+                        <label>计价币种
+                          <select disabled={profileDraft.input_price_per_million_tokens === null} value={profileDraft.price_currency} onChange={(event) => setProfileDraft({ ...profileDraft, price_currency: event.target.value as "USD" | "CNY" })}>
+                            <option value="USD">美元（USD）</option>
+                            <option value="CNY">人民币（CNY）</option>
+                          </select>
+                        </label>
+                      </div>
+                      <small>单价只用于本机估算和记录；系统不会根据模型名称猜价格。修改单价不会改写以前运行保存的费用。</small>
+                    </fieldset>
                   </div>
                 )}
                 <footer className="settings-actions profile-actions">

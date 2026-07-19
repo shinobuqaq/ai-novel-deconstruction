@@ -362,6 +362,12 @@ async def execute_task(
             if claim.kind == DEEP_ANALYSIS_TASK_KIND
             else "fake.echo.result"
         )
+        usage_payload: dict[str, object] = {
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+        }
+        if isinstance(response.parameters.get("cost"), dict):
+            usage_payload["cost"] = response.parameters["cost"]
         artifact_payload = {
             "task_id": claim.id,
             "response": response.parsed,
@@ -370,10 +376,7 @@ async def execute_task(
                 "model": response.model,
                 "parameters": response.parameters,
             },
-            "usage": {
-                "prompt_tokens": response.prompt_tokens,
-                "completion_tokens": response.completion_tokens,
-            },
+            "usage": usage_payload,
         }
         if claim.kind in ANALYSIS_TASK_KINDS:
             request_input = str(provider_payload.get("input") or "")
@@ -431,13 +434,7 @@ async def execute_task(
             lease_generation=claim.lease_generation,
             result_artifact_id=artifact.id,
             provider_name=response.provider_id or provider.name,
-            usage_json=json.dumps(
-                {
-                    "prompt_tokens": response.prompt_tokens,
-                    "completion_tokens": response.completion_tokens,
-                },
-                sort_keys=True,
-            ),
+            usage_json=json.dumps(usage_payload, sort_keys=True),
             diagnostics_json=json.dumps(
                 _attempt_diagnostics(
                     provider_payload,
@@ -499,6 +496,8 @@ def execute_task_sync(
                 "prompt_tokens": exc.prompt_tokens,
                 "completion_tokens": exc.completion_tokens,
             }
+            if isinstance(exc.diagnostics.get("cost"), dict):
+                failure_usage["cost"] = exc.diagnostics["cost"]
             failure_provider_name = exc.provider_name or failure_provider_name
         else:
             if isinstance(exc, ValueError) and str(exc).startswith(

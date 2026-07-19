@@ -230,6 +230,18 @@ class StaticAnalysisProvider:
             parsed=output,
             prompt_tokens=120,
             completion_tokens=80,
+            parameters={
+                "cost": {
+                    "currency": "CNY",
+                    "input_price_per_million_tokens": 10.0,
+                    "output_price_per_million_tokens": 20.0,
+                    "prompt_tokens": 120,
+                    "completion_tokens": 80,
+                    "input_cost": 0.0012,
+                    "output_cost": 0.0016,
+                    "total_cost": 0.0028,
+                }
+            },
         )
 
 
@@ -300,6 +312,51 @@ def test_analysis_requires_local_provider_configuration(client) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PROVIDER_NOT_CONFIGURED"
+
+
+def test_analysis_estimate_uses_local_batches_and_saved_pricing(client) -> None:
+    imported = _import_confirmed_novel(client)
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="费用估算服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://provider.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="人物与事件精确提取",
+        service_id=service.id,
+        model="priced-model",
+        temperature=None,
+        max_output_tokens=4_000,
+        reasoning_effort="auto",
+        timeout_seconds=60,
+        max_retries=2,
+        context_window_tokens=32_000,
+        input_price_per_million_tokens=2.0,
+        output_price_per_million_tokens=8.0,
+        price_currency="USD",
+    )
+
+    response = client.get(
+        f"/api/source-versions/{imported['version']['id']}/analysis/entities-events/estimate"
+    )
+
+    assert response.status_code == 200
+    estimate = response.json()
+    assert estimate["batch_count"] == 1
+    assert estimate["planned_call_count"] == 3
+    assert estimate["retry_ceiling_call_count"] == 9
+    assert estimate["pricing_available"] is True
+    assert estimate["cost_currency"] == "USD"
+    assert estimate["maximum_cost_without_retries"] > 0
+    assert estimate["maximum_cost_with_retries"] == pytest.approx(
+        estimate["maximum_cost_without_retries"] * 3
+    )
 
 
 def test_provider_config_never_returns_plain_api_key(client) -> None:
@@ -414,6 +471,10 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert diagnostics["retry_count"] == 0
     assert diagnostics["prompt_tokens"] == 360
     assert diagnostics["completion_tokens"] == 240
+    assert diagnostics["actual_cost"] == pytest.approx(0.0084)
+    assert diagnostics["cost_currency"] == "CNY"
+    assert diagnostics["cost_complete"] is True
+    assert all(item["actual_cost"] == pytest.approx(0.0028) for item in diagnostics["stages"])
     assert [item["status"] for item in diagnostics["stages"]] == [
         "SUCCEEDED",
         "SUCCEEDED",

@@ -215,6 +215,9 @@ class AnalysisProfileRead(BaseModel):
     timeout_seconds: float
     max_retries: int
     context_window_tokens: int | None
+    input_price_per_million_tokens: float | None
+    output_price_per_million_tokens: float | None
+    price_currency: str
 
 
 class AnalysisProfileWrite(BaseModel):
@@ -227,6 +230,9 @@ class AnalysisProfileWrite(BaseModel):
     timeout_seconds: float = Field(ge=10, le=1800)
     max_retries: int = Field(ge=0, le=10)
     context_window_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    input_price_per_million_tokens: float | None = Field(default=None, ge=0, le=1_000_000)
+    output_price_per_million_tokens: float | None = Field(default=None, ge=0, le=1_000_000)
+    price_currency: str = Field(default="USD", max_length=3)
 
 
 class ModelSettingsRead(BaseModel):
@@ -277,6 +283,9 @@ class AnalysisStageDiagnosticRead(BaseModel):
     completion_tokens: int
     input_chars: int
     output_chars: int
+    actual_cost: float | None = None
+    cost_currency: str | None = None
+    cost_complete: bool = False
     selected_material_count: int = 0
     selected_material_chars: int = 0
     omitted_material_count: int = 0
@@ -294,7 +303,24 @@ class AnalysisRunDiagnosticsRead(BaseModel):
     completion_tokens: int
     input_chars: int
     output_chars: int
+    actual_cost: float | None = None
+    cost_currency: str | None = None
+    cost_complete: bool = False
     stages: list[AnalysisStageDiagnosticRead]
+
+
+class AnalysisCostEstimateRead(BaseModel):
+    source_version_id: str
+    batch_count: int
+    planned_call_count: int
+    retry_ceiling_call_count: int
+    estimated_input_tokens: int
+    maximum_output_tokens: int
+    maximum_cost_without_retries: float | None
+    maximum_cost_with_retries: float | None
+    cost_currency: str | None
+    pricing_available: bool
+    basis: str
 
 
 class EntityCandidateRead(BaseModel):

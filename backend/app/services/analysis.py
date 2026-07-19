@@ -32,7 +32,12 @@ from ..models import (
     TaskStatus,
 )
 from .source_import import SourceImportError, source_text
-from .provider_config import ENTITIES_EVENTS_PROFILE_ID, ModelSettingsError, resolve_analysis_profile
+from .provider_config import (
+    ENTITIES_EVENTS_PROFILE_ID,
+    ModelSettingsError,
+    model_cost_snapshot,
+    resolve_analysis_profile,
+)
 
 
 ANALYSIS_TASK_KIND = "analysis.entities_events"
@@ -884,6 +889,65 @@ def build_analysis_batches(text: str, units: list[SourceUnit]) -> list[AnalysisB
     if current_start is not None:
         batches.append(AnalysisBatch(current_start, current_end, tuple(current_units)))
     return batches
+
+
+def estimate_analysis_cost(
+    session: Session,
+    settings: Settings,
+    version: SourceVersion,
+) -> dict[str, object]:
+    """Estimate a conservative run ceiling without sending content online."""
+    try:
+        _service, profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
+    except ModelSettingsError as exc:
+        raise SourceImportError(exc.code, exc.message, status_code=409) from exc
+
+    text = source_text(settings, version)
+    units = list(session.scalars(
+        select(SourceUnit)
+        .where(SourceUnit.source_version_id == version.id)
+        .order_by(SourceUnit.ordinal)
+    ))
+    batches = build_analysis_batches(text, units)
+    if not batches:
+        raise SourceImportError("SOURCE_UNITS_MISSING", "没有可分析的章节。", status_code=409)
+
+    context_budget = _synthesis_context_budget(profile, len(text))
+    batch_input_chars = sum(item.end_char - item.start_char for item in batches)
+    estimated_input_tokens = batch_input_chars + context_budget.budget_chars * 2
+    planned_call_count = len(batches) + 2
+    maximum_output_tokens = planned_call_count * profile.max_output_tokens
+    retry_multiplier = profile.max_retries + 1
+    normal_cost = model_cost_snapshot(
+        profile,
+        prompt_tokens=estimated_input_tokens,
+        completion_tokens=maximum_output_tokens,
+    )
+    retry_cost = model_cost_snapshot(
+        profile,
+        prompt_tokens=estimated_input_tokens * retry_multiplier,
+        completion_tokens=maximum_output_tokens * retry_multiplier,
+    )
+    return {
+        "source_version_id": version.id,
+        "batch_count": len(batches),
+        "planned_call_count": planned_call_count,
+        "retry_ceiling_call_count": planned_call_count * retry_multiplier,
+        "estimated_input_tokens": estimated_input_tokens,
+        "maximum_output_tokens": maximum_output_tokens,
+        "maximum_cost_without_retries": (
+            normal_cost["total_cost"] if normal_cost is not None else None
+        ),
+        "maximum_cost_with_retries": (
+            retry_cost["total_cost"] if retry_cost is not None else None
+        ),
+        "cost_currency": profile.price_currency if normal_cost is not None else None,
+        "pricing_available": normal_cost is not None,
+        "basis": (
+            "按当前分批数量、两次全局分析、最大输出设置和字符数近似令牌数计算；"
+            "这是避免低估的保守上限，不是预扣费或最终账单。"
+        ),
+    }
 
 
 def start_entities_events_run(
