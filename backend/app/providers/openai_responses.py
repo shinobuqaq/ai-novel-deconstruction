@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ from ..services.provider_config import (
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
     resolve_analysis_profile,
+    schema_for_provider,
 )
 from .base import ProviderError, ProviderResponse
 
@@ -55,6 +57,7 @@ class OpenAIResponsesProvider:
                 retryable=False,
             )
 
+        wire_schema = schema_for_provider(schema)
         capability_matches = service.capabilities.tested_model == profile.model
         capabilities = service.capabilities if capability_matches else None
         structured_mode = (
@@ -79,7 +82,7 @@ class OpenAIResponsesProvider:
         if structured_mode == STRUCTURED_JSON_ONLY:
             instructions = (
                 f"{instructions}\n输出必须是 JSON 对象，并满足以下结构："
-                f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}"
+                f"{json.dumps(wire_schema, ensure_ascii=False, separators=(',', ':'))}"
             )
 
         if service.service_type == "OPENAI":
@@ -96,7 +99,7 @@ class OpenAIResponsesProvider:
                         "type": "json_schema",
                         "name": "novel_entities_events",
                         "strict": True,
-                        "schema": schema,
+                        "schema": wire_schema,
                     }
                 }
             if effective_reasoning is not None:
@@ -121,7 +124,7 @@ class OpenAIResponsesProvider:
                     "json_schema": {
                         "name": "novel_entities_events",
                         "strict": True,
-                        "schema": schema,
+                        "schema": wire_schema,
                     },
                 }
             if effective_reasoning is not None:
@@ -174,9 +177,14 @@ class OpenAIResponsesProvider:
                 retryable=True,
             )
         if response.status_code >= 400:
+            detail = _response_error_detail(response)
+            message = f"在线 AI 拒绝了请求（{response.status_code}）。"
+            if detail:
+                message += f" 服务返回：{detail}"
+            message += "请检查模型、结构化输出和高级参数。"
             raise ProviderError(
                 code="PROVIDER_BAD_REQUEST",
-                message=f"在线 AI 拒绝了请求（{response.status_code}）。请检查模型和高级参数。",
+                message=message,
                 retryable=False,
             )
 
@@ -224,3 +232,25 @@ class OpenAIResponsesProvider:
                 "max_retries": profile.max_retries,
             },
         )
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    """Extract a short, key-free upstream error explanation for diagnostics."""
+    detail: object = None
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            detail = error.get("message") or error.get("detail") or error.get("code")
+        elif isinstance(error, str):
+            detail = error
+        detail = detail or body.get("message") or body.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        detail = response.text
+    if not isinstance(detail, str):
+        return ""
+    cleaned = re.sub(r"\s+", " ", detail).strip()
+    return cleaned[:400]

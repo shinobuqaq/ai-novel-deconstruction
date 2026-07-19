@@ -15,6 +15,11 @@ from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
 from app.repositories import claim_next_task
 from app.services.analysis import parse_provider_output, persist_analysis_output
+from app.services.provider_config import (
+    ENTITIES_EVENTS_PROFILE_ID,
+    save_analysis_profile,
+    save_model_service,
+)
 from app.services.tasks import execute_task_sync
 
 
@@ -374,3 +379,131 @@ def test_openai_structured_output_is_parsed(tmp_path: Path) -> None:
     assert result.parsed == {"entities": [], "events": []}
     assert result.prompt_tokens == 23
     assert result.completion_tokens == 11
+
+
+def test_provider_removes_schema_document_metadata_before_request(tmp_path: Path) -> None:
+    output_text = json.dumps({"entities": [], "events": []})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        wire_schema = body["text"]["format"]["schema"]
+        assert "$schema" not in wire_schema
+        assert "$id" not in wire_schema
+        assert wire_schema["title"] == "Novel extraction result"
+        assert "title" in wire_schema["properties"]
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output_text}],
+                    }
+                ]
+            },
+        )
+
+    payload = _provider_payload()
+    payload["output_schema"] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "novel-result.schema.json",
+        "title": "Novel extraction result",
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "entities": {"type": "array"},
+            "events": {"type": "array"},
+        },
+        "required": ["entities", "events"],
+        "additionalProperties": False,
+    }
+    provider = OpenAIResponsesProvider(
+        _provider_settings(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(
+        provider.complete(task_kind="analysis.entities_events", payload=payload)
+    )
+
+    assert result.parsed == {"entities": [], "events": []}
+
+
+def test_compatible_provider_removes_schema_document_metadata_before_request(tmp_path: Path) -> None:
+    settings = _provider_settings(tmp_path)
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="兼容接口",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://provider.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="人物与事件精确提取",
+        service_id=service.id,
+        model="gemini-compatible",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        wire_schema = body["response_format"]["json_schema"]["schema"]
+        assert "$schema" not in wire_schema
+        assert "$id" not in wire_schema
+        assert wire_schema["title"] == "Novel extraction result"
+        assert "title" in wire_schema["properties"]
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"entities": [], "events": []}'}}]},
+        )
+
+    payload = _provider_payload()
+    payload["model_profile_id"] = ENTITIES_EVENTS_PROFILE_ID
+    payload["output_schema"] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "novel-result.schema.json",
+        "title": "Novel extraction result",
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "entities": {"type": "array"},
+            "events": {"type": "array"},
+        },
+        "required": ["entities", "events"],
+        "additionalProperties": False,
+    }
+    provider = OpenAIResponsesProvider(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(
+        provider.complete(task_kind="analysis.entities_events", payload=payload)
+    )
+
+    assert result.parsed == {"entities": [], "events": []}
+
+
+def test_provider_exposes_short_upstream_bad_request_reason(tmp_path: Path) -> None:
+    provider = OpenAIResponsesProvider(
+        _provider_settings(tmp_path),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                400,
+                json={"error": {"message": 'Unknown name "$id" at response_schema'}},
+            )
+        ),
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        _run_provider(provider)
+
+    assert caught.value.code == "PROVIDER_BAD_REQUEST"
+    assert 'Unknown name "$id"' in str(caught.value)

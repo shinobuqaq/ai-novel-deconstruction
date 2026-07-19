@@ -258,6 +258,10 @@ def test_selected_model_probe_records_strict_capabilities(client) -> None:
         assert "temperature" not in body
         assert "reasoning_effort" not in body
         assert body["response_format"]["type"] == "json_schema"
+        wire_schema = body["response_format"]["json_schema"]["schema"]
+        assert "$schema" not in wire_schema
+        assert "$id" not in wire_schema
+        assert wire_schema["title"] == "Model capability probe"
         return httpx.Response(
             200,
             json={

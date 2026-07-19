@@ -24,6 +24,26 @@ STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
 STRUCTURED_JSON_ONLY = "JSON_ONLY"
 STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
 
+# JSON Schema files used by the application may contain document metadata such
+# as `$id` and `$schema`. Those keywords are valid JSON Schema, but several
+# OpenAI-compatible gateways (including Gemini adapters) reject them when they
+# are placed inside a structured-output request. Keep the full schema locally
+# and remove only wire-incompatible metadata at the provider boundary.
+_WIRE_SCHEMA_METADATA = {"$schema", "$id", "$comment"}
+
+
+def schema_for_provider(value: object) -> object:
+    """Return a provider-compatible copy of a JSON Schema value."""
+    if isinstance(value, dict):
+        return {
+            key: schema_for_provider(item)
+            for key, item in value.items()
+            if key not in _WIRE_SCHEMA_METADATA
+        }
+    if isinstance(value, list):
+        return [schema_for_provider(item) for item in value]
+    return value
+
 
 class ModelSettingsError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -435,6 +455,9 @@ async def discover_models(
 
 
 PROBE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "model_capability_probe.schema.json",
+    "title": "Model capability probe",
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
     "required": ["ok"],
@@ -457,6 +480,7 @@ def _probe_body(
     reasoning_effort: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     instructions = '只返回 JSON 对象 {"ok": true}，不要输出解释或 Markdown。'
+    wire_schema = schema_for_provider(PROBE_SCHEMA)
     if service.service_type == "OPENAI":
         body: dict[str, Any] = {
             "model": model,
@@ -471,7 +495,7 @@ def _probe_body(
                     "type": "json_schema",
                     "name": "model_capability_probe",
                     "strict": True,
-                    "schema": PROBE_SCHEMA,
+                    "schema": wire_schema,
                 }
             }
         if temperature is not None:
@@ -495,7 +519,7 @@ def _probe_body(
             "json_schema": {
                 "name": "model_capability_probe",
                 "strict": True,
-                "schema": PROBE_SCHEMA,
+                "schema": wire_schema,
             },
         }
     if temperature is not None:
