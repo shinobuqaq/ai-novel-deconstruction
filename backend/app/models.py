@@ -66,6 +66,11 @@ class AnalysisRunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class AnalysisDigestLevel(StrEnum):
+    RANGE = "RANGE"
+    STAGE = "STAGE"
+
+
 class CandidateStatus(StrEnum):
     VALID = "VALID"
     UNCERTAIN = "UNCERTAIN"
@@ -280,6 +285,11 @@ class AnalysisRun(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    hierarchical_digests: Mapped[list["AnalysisDigest"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AnalysisDigest.level, AnalysisDigest.sequence_no",
+    )
     deep_analyses: Mapped[list["DeepAnalysis"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
@@ -397,6 +407,52 @@ class NarrativeSynthesis(Base):
     )
 
     run: Mapped[AnalysisRun] = relationship(back_populates="narrative_synthesis")
+
+
+class AnalysisDigest(Base):
+    """Durable, source-linked summaries used only for long-book navigation."""
+
+    __tablename__ = "analysis_digests"
+    __table_args__ = (
+        Index(
+            "ux_analysis_digest_run_level_sequence",
+            "run_id",
+            "level",
+            "sequence_no",
+            unique=True,
+        ),
+        Index("ux_analysis_digest_task", "created_by_task_id", unique=True),
+        Index("ix_analysis_digests_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("adg")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    level: Mapped[str] = mapped_column(String(20), nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_digest_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_event_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_unit_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="hierarchical_digests")
 
 
 class DeepAnalysis(Base):

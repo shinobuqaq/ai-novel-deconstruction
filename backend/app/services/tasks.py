@@ -21,16 +21,20 @@ from .artifacts import write_json_artifact
 from .analysis import (
     ANALYSIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
+    HIERARCHICAL_DIGEST_TASK_KIND,
     NARRATIVE_SYNTHESIS_TASK_KIND,
     enqueue_deep_analysis,
     enqueue_narrative_synthesis,
     parse_deep_analysis,
+    parse_hierarchical_digest,
     parse_narrative_synthesis,
     parse_provider_output,
     persist_analysis_output,
     persist_deep_analysis,
+    persist_hierarchical_digest,
     persist_narrative_synthesis,
     provider_payload_for_deep_analysis,
+    provider_payload_for_hierarchical_digest,
     provider_payload_for_narrative_synthesis,
     provider_payload_for_claim,
     refresh_analysis_run,
@@ -40,6 +44,7 @@ from .analysis import (
 
 ANALYSIS_TASK_KINDS = {
     ANALYSIS_TASK_KIND,
+    HIERARCHICAL_DIGEST_TASK_KIND,
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
 }
@@ -52,6 +57,10 @@ _OUTPUT_FIELD_LABELS = {
     "character_relations": "人物关系",
     "narrative_phases": "剧情阶段",
     "event_relations": "事件关系",
+    "summary": "范围摘要",
+    "situation": "阶段局面",
+    "key_actions": "关键行动",
+    "character_progressions": "人物变化",
     "fact_versions": "事实",
     "state_changes": "状态变化",
     "actor_knowledge": "人物认知",
@@ -177,6 +186,11 @@ async def execute_task(
             provider_payload = provider_payload_for_narrative_synthesis(
                 session, settings, payload
             )
+    elif claim.kind == HIERARCHICAL_DIGEST_TASK_KIND:
+        with session_factory() as session:
+            provider_payload = provider_payload_for_hierarchical_digest(
+                session, settings, payload
+            )
     elif claim.kind == DEEP_ANALYSIS_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_deep_analysis(
@@ -211,6 +225,7 @@ async def execute_task(
         )
 
     persisted_analysis = None
+    persisted_digest = None
     persisted_narrative = None
     persisted_deep = None
     if claim.kind == ANALYSIS_TASK_KIND:
@@ -247,6 +262,56 @@ async def execute_task(
                 task_payload=payload,
                 output=analysis_output,
             )
+    elif claim.kind == HIERARCHICAL_DIGEST_TASK_KIND:
+        try:
+            digest_output = parse_hierarchical_digest(response.parsed)
+        except StructuredOutputValidationError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message("长篇分层摘要", exc.errors),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_digest = persist_hierarchical_digest(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=digest_output,
+                )
+            except ValueError as exc:
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message="在线 AI 返回的分层摘要引用了范围外的事件或原文证据。",
+                    retryable=True,
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=str(exc),
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                ) from exc
     elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
         try:
             narrative_output = parse_narrative_synthesis(response.parsed)
@@ -356,6 +421,8 @@ async def execute_task(
         artifact_kind = (
             "analysis.entities_events.result"
             if claim.kind == ANALYSIS_TASK_KIND
+            else "analysis.hierarchical_digest.result"
+            if claim.kind == HIERARCHICAL_DIGEST_TASK_KIND
             else "analysis.narrative_synthesis.result"
             if claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND
             else "analysis.deep_insights.result"
@@ -407,6 +474,10 @@ async def execute_task(
             artifact_payload["accepted"] = {
                 "narrative_synthesis_id": persisted_narrative.synthesis_id,
             }
+        if persisted_digest is not None:
+            artifact_payload["accepted"] = {
+                "hierarchical_digest_id": persisted_digest.digest_id,
+            }
         if persisted_deep is not None:
             artifact_payload["accepted"] = {
                 "deep_analysis_id": persisted_deep.analysis_id,
@@ -452,6 +523,8 @@ async def execute_task(
             run = session.get(AnalysisRun, payload.get("run_id"))
             if run is not None:
                 if claim.kind == ANALYSIS_TASK_KIND:
+                    enqueue_narrative_synthesis(session, settings, run)
+                elif claim.kind == HIERARCHICAL_DIGEST_TASK_KIND:
                     enqueue_narrative_synthesis(session, settings, run)
                 elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
                     payload_requests = payload.get("revision_requests", [])

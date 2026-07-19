@@ -275,6 +275,7 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
 
 _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.entities_events", "人物与事件抽取"),
+    ("analysis.hierarchical_digest", "长篇分层整理"),
     ("analysis.narrative_synthesis", "故事结构整理"),
     ("analysis.deep_insights", "事实与核心分析"),
 )
@@ -340,6 +341,8 @@ def _analysis_run_diagnostics(
     stage_rows: list[AnalysisStageDiagnosticRead] = []
     for kind, label in _ANALYSIS_STAGE_DIAGNOSTICS:
         stage_tasks = [task for task in tasks if task.kind == kind]
+        if kind == "analysis.hierarchical_digest" and not stage_tasks:
+            continue
         stage_attempts = [
             attempt
             for task in stage_tasks

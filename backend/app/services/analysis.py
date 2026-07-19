@@ -15,10 +15,12 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import (
+    AnalysisDigest,
+    AnalysisDigestLevel,
+    AnalysisIssue,
     AnalysisRun,
     AnalysisRunStatus,
     AnalysisRunTask,
-    AnalysisIssue,
     CandidateStatus,
     EntityCandidate,
     EventCandidate,
@@ -43,13 +45,16 @@ from .provider_config import (
 ANALYSIS_TASK_KIND = "analysis.entities_events"
 NARRATIVE_SYNTHESIS_TASK_KIND = "analysis.narrative_synthesis"
 DEEP_ANALYSIS_TASK_KIND = "analysis.deep_insights"
+HIERARCHICAL_DIGEST_TASK_KIND = "analysis.hierarchical_digest"
 ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.4.0"
+NARRATIVE_PROMPT_VERSION = "1.5.0"
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.3.0"
+DEEP_PROMPT_VERSION = "1.4.0"
+HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
+HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
 MIN_SYNTHESIS_CONTEXT_CHARS = 24_000
@@ -63,6 +68,10 @@ MAX_DIGEST_PARTICIPANTS = 4
 MAX_DIGEST_EVIDENCE_IDS = 2
 MAX_DIGEST_CHAPTER_TITLES = 4
 KNOWN_CONTEXT_SAFETY_TOKENS = 4_096
+MIN_HIERARCHICAL_SOURCE_CHARS = 120_000
+MAX_RANGE_DIGEST_CHARS = 80_000
+RANGE_DIGEST_TARGET_CHARS = 48_000
+MAX_STAGE_DIGEST_INPUTS = 4
 DEEP_ANALYSIS_COLLECTIONS = (
     "fact_versions",
     "state_changes",
@@ -242,6 +251,23 @@ class NarrativeSynthesisOutput(BaseModel):
     event_relations: list[EventRelationProposal] = Field(max_length=300)
 
 
+class HierarchicalDigestOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=180)
+    summary: str = Field(min_length=1, max_length=1800)
+    situation: str = Field(default="", max_length=1000)
+    goal: str = Field(default="", max_length=800)
+    obstacle: str = Field(default="", max_length=800)
+    key_actions: list[str] = Field(default_factory=list, max_length=12)
+    outcome: str = Field(default="", max_length=1000)
+    change: str = Field(default="", max_length=1000)
+    next_hook: str = Field(default="", max_length=1000)
+    character_progressions: list[str] = Field(default_factory=list, max_length=16)
+    event_ids: list[str] = Field(default_factory=list, max_length=80)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=80)
+
+
 class FactVersionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -390,6 +416,11 @@ class PersistedDeepAnalysis:
 
 
 @dataclass(frozen=True, slots=True)
+class PersistedHierarchicalDigest:
+    digest_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ContextMaterial:
     """One explainable piece of material considered for a model request."""
 
@@ -513,6 +544,204 @@ def _synthesis_context_budget(profile: Any, source_chars: int) -> SynthesisConte
         output_reserve_tokens=output_reserve,
         safety_reserve_tokens=0,
     )
+
+
+def _hierarchy_required(version: SourceVersion, profile: Any) -> bool:
+    budget = _synthesis_context_budget(profile, version.total_chars)
+    return version.total_chars > max(MIN_HIERARCHICAL_SOURCE_CHARS, budget.budget_chars)
+
+
+def _range_digest_specs(
+    chapter_units: list[SourceUnit],
+    *,
+    target_chars: int,
+) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    current: list[tuple[int, SourceUnit]] = []
+    current_chars = 0
+
+    def flush() -> None:
+        nonlocal current, current_chars
+        if not current:
+            return
+        specs.append({
+            "sequence_no": len(specs) + 1,
+            "start_chapter": current[0][0],
+            "end_chapter": current[-1][0],
+            "source_unit_ids": [unit.id for _, unit in current],
+            "start_char": min(unit.start_char for _, unit in current),
+            "end_char": max(unit.end_char for _, unit in current),
+        })
+        current = []
+        current_chars = 0
+
+    for chapter_no, unit in enumerate(chapter_units, start=1):
+        if current and current_chars + unit.char_count > target_chars:
+            flush()
+        current.append((chapter_no, unit))
+        current_chars += unit.char_count
+    flush()
+    return specs
+
+
+def _task_payload(task: Task) -> dict[str, Any]:
+    try:
+        value = json.loads(task.payload_json)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _append_run_task(
+    session: Session,
+    run: AnalysisRun,
+    *,
+    kind: str,
+    payload: dict[str, Any],
+    max_attempts: int,
+) -> Task:
+    task = Task(
+        project_id=run.source_version.document.project_id,
+        kind=kind,
+        payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        max_attempts=max_attempts,
+    )
+    session.add(task)
+    session.flush()
+    next_index = run.total_batches + 1
+    session.add(AnalysisRunTask(run_id=run.id, task_id=task.id, batch_index=next_index))
+    run.total_batches = next_index
+    run.status = AnalysisRunStatus.PENDING.value
+    return task
+
+
+def enqueue_hierarchical_digests(
+    session: Session,
+    settings: Settings,
+    run: AnalysisRun,
+) -> bool:
+    """Advance long-book range -> stage summaries and report readiness."""
+    version = session.get(SourceVersion, run.source_version_id)
+    if version is None:
+        return False
+    try:
+        _service, profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
+    except ModelSettingsError:
+        return False
+    if not _hierarchy_required(version, profile):
+        return True
+
+    foundation_tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            Task.kind == ANALYSIS_TASK_KIND,
+        )
+    ))
+    if not foundation_tasks or any(
+        task.status != TaskStatus.SUCCEEDED.value for task in foundation_tasks
+    ):
+        return False
+
+    digest_tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            Task.kind == HIERARCHICAL_DIGEST_TASK_KIND,
+        )
+        .order_by(AnalysisRunTask.batch_index)
+    ))
+    range_tasks = [
+        task for task in digest_tasks if _task_payload(task).get("level") == AnalysisDigestLevel.RANGE.value
+    ]
+    if not range_tasks:
+        chapter_units = list(session.scalars(
+            select(SourceUnit)
+            .where(
+                SourceUnit.source_version_id == version.id,
+                SourceUnit.unit_type == "CHAPTER",
+            )
+            .order_by(SourceUnit.ordinal)
+        ))
+        context_budget = _synthesis_context_budget(profile, version.total_chars)
+        target_chars = min(
+            MAX_RANGE_DIGEST_CHARS,
+            max(MAX_BATCH_CHARS, min(RANGE_DIGEST_TARGET_CHARS, context_budget.budget_chars // 2)),
+        )
+        for spec in _range_digest_specs(chapter_units, target_chars=target_chars):
+            _append_run_task(
+                session,
+                run,
+                kind=HIERARCHICAL_DIGEST_TASK_KIND,
+                payload={
+                    "run_id": run.id,
+                    "source_version_id": version.id,
+                    "provider_name": "openai",
+                    "model_profile_id": profile.id,
+                    "level": AnalysisDigestLevel.RANGE.value,
+                    **spec,
+                },
+                max_attempts=profile.max_retries + 1,
+            )
+        session.commit()
+        return False
+    if any(task.status != TaskStatus.SUCCEEDED.value for task in range_tasks):
+        return False
+
+    range_digests = list(session.scalars(
+        select(AnalysisDigest)
+        .where(
+            AnalysisDigest.run_id == run.id,
+            AnalysisDigest.level == AnalysisDigestLevel.RANGE.value,
+        )
+        .order_by(AnalysisDigest.sequence_no)
+    ))
+    if len(range_digests) != len(range_tasks):
+        return False
+
+    stage_tasks = [
+        task for task in digest_tasks if _task_payload(task).get("level") == AnalysisDigestLevel.STAGE.value
+    ]
+    if not stage_tasks:
+        for offset in range(0, len(range_digests), MAX_STAGE_DIGEST_INPUTS):
+            group = range_digests[offset:offset + MAX_STAGE_DIGEST_INPUTS]
+            _append_run_task(
+                session,
+                run,
+                kind=HIERARCHICAL_DIGEST_TASK_KIND,
+                payload={
+                    "run_id": run.id,
+                    "source_version_id": version.id,
+                    "provider_name": "openai",
+                    "model_profile_id": profile.id,
+                    "level": AnalysisDigestLevel.STAGE.value,
+                    "sequence_no": offset // MAX_STAGE_DIGEST_INPUTS + 1,
+                    "start_chapter": group[0].start_chapter,
+                    "end_chapter": group[-1].end_chapter,
+                    "source_digest_ids": [item.id for item in group],
+                    "source_unit_ids": [
+                        unit_id
+                        for item in group
+                        for unit_id in json.loads(item.source_unit_ids_json)
+                    ],
+                    "start_char": 0,
+                    "end_char": version.total_chars,
+                },
+                max_attempts=profile.max_retries + 1,
+            )
+        session.commit()
+        return False
+    if any(task.status != TaskStatus.SUCCEEDED.value for task in stage_tasks):
+        return False
+    stage_digest_count = session.scalar(
+        select(func.count(AnalysisDigest.id)).where(
+            AnalysisDigest.run_id == run.id,
+            AnalysisDigest.level == AnalysisDigestLevel.STAGE.value,
+        )
+    ) or 0
+    return stage_digest_count == len(stage_tasks)
 
 
 def _material_json(kind: str, key: str, value: object) -> str:
@@ -707,6 +936,7 @@ def _build_synthesis_context(
 
     extra_priorities = {
         "revision_requests": 12_000,
+        "hierarchical_digests": 11_500,
         "story_overview": 4_500,
         "narrative_phases": 4_000,
         "character_roles": 3_500,
@@ -914,8 +1144,28 @@ def estimate_analysis_cost(
 
     context_budget = _synthesis_context_budget(profile, len(text))
     batch_input_chars = sum(item.end_char - item.start_char for item in batches)
-    estimated_input_tokens = batch_input_chars + context_budget.budget_chars * 2
-    planned_call_count = len(batches) + 2
+    range_digest_count = 0
+    stage_digest_count = 0
+    hierarchy_input_chars = 0
+    if _hierarchy_required(version, profile):
+        chapter_units = [item for item in units if item.unit_type == "CHAPTER"]
+        target_chars = min(
+            MAX_RANGE_DIGEST_CHARS,
+            max(MAX_BATCH_CHARS, min(RANGE_DIGEST_TARGET_CHARS, context_budget.budget_chars // 2)),
+        )
+        range_digest_count = len(
+            _range_digest_specs(chapter_units, target_chars=target_chars)
+        )
+        stage_digest_count = math.ceil(range_digest_count / MAX_STAGE_DIGEST_INPUTS)
+        hierarchy_input_chars = version.total_chars + range_digest_count * 4_000
+    estimated_input_tokens = (
+        batch_input_chars
+        + hierarchy_input_chars
+        + context_budget.budget_chars * 2
+    )
+    planned_call_count = (
+        len(batches) + range_digest_count + stage_digest_count + 2
+    )
     maximum_output_tokens = planned_call_count * profile.max_output_tokens
     retry_multiplier = profile.max_retries + 1
     normal_cost = model_cost_snapshot(
@@ -944,7 +1194,8 @@ def estimate_analysis_cost(
         "cost_currency": profile.price_currency if normal_cost is not None else None,
         "pricing_available": normal_cost is not None,
         "basis": (
-            "按当前分批数量、两次全局分析、最大输出设置和字符数近似令牌数计算；"
+            "按当前分批数量、必要的长篇范围与阶段整理、两次全局分析、最大输出设置"
+            "和字符数近似令牌数计算；"
             "这是避免低估的保守上限，不是预扣费或最终账单。"
         ),
     }
@@ -1115,6 +1366,148 @@ def _deep_prompt() -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _hierarchical_digest_prompt() -> str:
+    path = Path(__file__).resolve().parents[3] / "prompts" / "hierarchical_digest_v1.md"
+    return path.read_text(encoding="utf-8").strip()
+
+
+def provider_payload_for_hierarchical_digest(
+    session: Session,
+    settings: Settings,
+    task_payload: dict,
+) -> dict:
+    from .workbench import build_workbench_projection
+
+    run_id = str(task_payload.get("run_id") or "")
+    version = session.get(SourceVersion, task_payload.get("source_version_id"))
+    if not run_id or version is None:
+        raise ValueError("ANALYSIS_RUN_NOT_FOUND")
+    level = str(task_payload.get("level") or "")
+    if level not in {AnalysisDigestLevel.RANGE.value, AnalysisDigestLevel.STAGE.value}:
+        raise ValueError("ANALYSIS_DIGEST_LEVEL_INVALID")
+
+    start_chapter = int(task_payload.get("start_chapter") or 1)
+    end_chapter = int(task_payload.get("end_chapter") or start_chapter)
+    foundation = build_workbench_projection(session, run_id, include_synthesis=False)
+    source_unit_ids = [str(value) for value in task_payload.get("source_unit_ids", [])]
+    chapter_units = list(session.scalars(
+        select(SourceUnit)
+        .where(
+            SourceUnit.source_version_id == version.id,
+            SourceUnit.id.in_(source_unit_ids),
+        )
+        .order_by(SourceUnit.ordinal)
+    ))
+    if not chapter_units:
+        raise ValueError("ANALYSIS_DIGEST_SOURCE_UNIT_INVALID")
+    chapter_by_unit_id = {
+        unit.id: start_chapter + index
+        for index, unit in enumerate(chapter_units)
+    }
+
+    if level == AnalysisDigestLevel.RANGE.value:
+        start_char = int(task_payload.get("start_char") or chapter_units[0].start_char)
+        end_char = int(task_payload.get("end_char") or chapter_units[-1].end_char)
+        events = [
+            item
+            for item in foundation.get("events", [])
+            if int(item.get("end_char") or 0) > start_char
+            and int(item.get("start_char") or 0) < end_char
+        ]
+        evidence_ids = {
+            evidence_id
+            for event in events
+            for evidence_id in event.get("evidence_ids", [])
+        }
+        evidence_rows = list(session.scalars(
+            select(EvidenceSpan)
+            .where(
+                EvidenceSpan.source_version_id == version.id,
+                EvidenceSpan.id.in_(evidence_ids),
+            )
+            .order_by(EvidenceSpan.start_char)
+        ))
+        text = source_text(settings, version)
+        input_payload = {
+            "authority": "DERIVED_NAVIGATION_ONLY",
+            "level": level,
+            "chapter_range": {
+                "start": start_chapter,
+                "end": end_chapter,
+                "chapters": [
+                    {
+                        "chapter_number": chapter_by_unit_id.get(unit.id),
+                        "title": unit.title,
+                    }
+                    for unit in chapter_units
+                ],
+            },
+            "source_excerpt": text[start_char:end_char],
+            "events": events,
+            "evidence": [
+                {
+                    "id": item.id,
+                    "chapter_number": chapter_by_unit_id.get(item.source_unit_id),
+                    "start_char": item.start_char,
+                    "end_char": item.end_char,
+                    "text": item.text_snapshot,
+                }
+                for item in evidence_rows
+            ],
+        }
+        source_char_start = start_char
+        source_char_end = end_char
+    else:
+        source_digest_ids = [str(value) for value in task_payload.get("source_digest_ids", [])]
+        source_digests = list(session.scalars(
+            select(AnalysisDigest)
+            .where(
+                AnalysisDigest.run_id == run_id,
+                AnalysisDigest.id.in_(source_digest_ids),
+            )
+            .order_by(AnalysisDigest.sequence_no)
+        ))
+        if len(source_digests) != len(source_digest_ids):
+            raise ValueError("ANALYSIS_DIGEST_SOURCE_MISSING")
+        input_payload = {
+            "authority": "DERIVED_NAVIGATION_ONLY",
+            "level": level,
+            "chapter_range": {"start": start_chapter, "end": end_chapter},
+            "source_digests": [
+                {
+                    "id": item.id,
+                    "start_chapter": item.start_chapter,
+                    "end_chapter": item.end_chapter,
+                    **json.loads(item.payload_json),
+                }
+                for item in source_digests
+            ],
+        }
+        source_char_start = 0
+        source_char_end = version.total_chars
+
+    return {
+        "instructions": _hierarchical_digest_prompt(),
+        "input": json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
+        "output_schema": _inline_model_schema(HierarchicalDigestOutput),
+        "model_profile_id": str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
+        "prompt_id": HIERARCHICAL_DIGEST_PROMPT_ID,
+        "prompt_version": HIERARCHICAL_DIGEST_PROMPT_VERSION,
+        "source_version_id": version.id,
+        "source_char_start": source_char_start,
+        "source_char_end": source_char_end,
+        "context_manifest": {
+            "budget_chars": len(json.dumps(input_payload, ensure_ascii=False)),
+            "selected_count": len(input_payload.get("events", input_payload.get("source_digests", []))),
+            "selected_chars": len(json.dumps(input_payload, ensure_ascii=False)),
+            "omitted_count": 0,
+            "omitted_chars": 0,
+            "selected_by_kind": {level.lower(): 1},
+            "omitted_reasons": {},
+        },
+    }
+
+
 def provider_payload_for_narrative_synthesis(
     session: Session,
     settings: Settings,
@@ -1160,6 +1553,28 @@ def provider_payload_for_narrative_synthesis(
         if previous_synthesis is not None
         else None
     )
+    hierarchical_digests = [
+        {
+            "id": item.id,
+            "authority": "DERIVED_NAVIGATION_ONLY",
+            "level": item.level,
+            "sequence_no": item.sequence_no,
+            "start_chapter": item.start_chapter,
+            "end_chapter": item.end_chapter,
+            "source_digest_ids": json.loads(item.source_digest_ids_json),
+            "source_event_ids": json.loads(item.source_event_ids_json),
+            "evidence_ids": json.loads(item.evidence_ids_json),
+            **json.loads(item.payload_json),
+        }
+        for item in session.scalars(
+            select(AnalysisDigest)
+            .where(
+                AnalysisDigest.run_id == run_id,
+                AnalysisDigest.level == AnalysisDigestLevel.STAGE.value,
+            )
+            .order_by(AnalysisDigest.sequence_no)
+        )
+    ]
     selected, context_manifest = _build_synthesis_context(
         foundation=foundation,
         chapters=chapters,
@@ -1168,12 +1583,14 @@ def provider_payload_for_narrative_synthesis(
         source_chars=version.total_chars,
         profile=model_profile,
         extra_values={
+            "hierarchical_digests": hierarchical_digests or None,
             "previous_synthesis": previous_synthesis_payload,
             "revision_requests": task_payload.get("revision_requests", []),
         },
     )
     input_payload = {
         **selected,
+        "hierarchical_digests": selected.get("hierarchical_digests", []),
         "previous_synthesis": selected.get("previous_synthesis"),
         "revision_requests": selected.get("revision_requests", []),
     }
@@ -1261,6 +1678,28 @@ def provider_payload_for_deep_analysis(
         if previous_analysis is not None
         else None
     )
+    hierarchical_digests = [
+        {
+            "id": item.id,
+            "authority": "DERIVED_NAVIGATION_ONLY",
+            "level": item.level,
+            "sequence_no": item.sequence_no,
+            "start_chapter": item.start_chapter,
+            "end_chapter": item.end_chapter,
+            "source_digest_ids": json.loads(item.source_digest_ids_json),
+            "source_event_ids": json.loads(item.source_event_ids_json),
+            "evidence_ids": json.loads(item.evidence_ids_json),
+            **json.loads(item.payload_json),
+        }
+        for item in session.scalars(
+            select(AnalysisDigest)
+            .where(
+                AnalysisDigest.run_id == run_id,
+                AnalysisDigest.level == AnalysisDigestLevel.STAGE.value,
+            )
+            .order_by(AnalysisDigest.sequence_no)
+        )
+    ]
     selected, context_manifest = _build_synthesis_context(
         foundation=foundation,
         chapters=chapters,
@@ -1269,6 +1708,7 @@ def provider_payload_for_deep_analysis(
         source_chars=version.total_chars,
         profile=model_profile,
         extra_values={
+            "hierarchical_digests": hierarchical_digests or None,
             "story_overview": narrative.get("story_overview"),
             "character_roles": narrative.get("character_roles", []),
             "narrative_phases": narrative.get("narrative_phases", []),
@@ -1279,6 +1719,7 @@ def provider_payload_for_deep_analysis(
     )
     input_payload = {
         **selected,
+        "hierarchical_digests": selected.get("hierarchical_digests", []),
         "story_overview": selected.get("story_overview"),
         "character_roles": selected.get("character_roles", []),
         "narrative_phases": selected.get("narrative_phases", []),
@@ -1316,6 +1757,16 @@ def parse_narrative_synthesis(value: dict) -> NarrativeSynthesisOutput:
     except ValidationError as exc:
         raise StructuredOutputValidationError(
             "NARRATIVE_OUTPUT_INVALID",
+            _validation_errors(exc),
+        ) from exc
+
+
+def parse_hierarchical_digest(value: dict) -> HierarchicalDigestOutput:
+    try:
+        return HierarchicalDigestOutput.model_validate(value)
+    except ValidationError as exc:
+        raise StructuredOutputValidationError(
+            "HIERARCHICAL_DIGEST_OUTPUT_INVALID",
             _validation_errors(exc),
         ) from exc
 
@@ -1613,6 +2064,137 @@ def persist_analysis_output(
     )
 
 
+def persist_hierarchical_digest(
+    session: Session,
+    *,
+    task: Task,
+    attempt_id: str,
+    task_payload: dict,
+    output: HierarchicalDigestOutput,
+) -> PersistedHierarchicalDigest:
+    run = session.get(AnalysisRun, task_payload.get("run_id"))
+    version = session.get(SourceVersion, task_payload.get("source_version_id"))
+    if run is None or version is None:
+        raise ValueError("ANALYSIS_RUN_NOT_FOUND")
+    level = str(task_payload.get("level") or "")
+    if level not in {AnalysisDigestLevel.RANGE.value, AnalysisDigestLevel.STAGE.value}:
+        raise ValueError("ANALYSIS_DIGEST_LEVEL_INVALID")
+
+    source_unit_ids = [str(value) for value in task_payload.get("source_unit_ids", [])]
+    source_units = list(session.scalars(
+        select(SourceUnit).where(
+            SourceUnit.source_version_id == version.id,
+            SourceUnit.id.in_(source_unit_ids),
+        )
+    ))
+    if len(source_units) != len(set(source_unit_ids)):
+        raise ValueError("ANALYSIS_DIGEST_SOURCE_UNIT_INVALID")
+
+    from .workbench import build_workbench_projection
+
+    foundation = build_workbench_projection(session, run.id, include_synthesis=False)
+    valid_event_ids = {item["id"] for item in foundation.get("events", [])}
+    if not set(output.event_ids).issubset(valid_event_ids):
+        raise ValueError("ANALYSIS_DIGEST_EVENT_REFERENCE_INVALID")
+
+    source_digest_ids = [str(value) for value in task_payload.get("source_digest_ids", [])]
+    source_digests = list(session.scalars(
+        select(AnalysisDigest).where(
+            AnalysisDigest.run_id == run.id,
+            AnalysisDigest.id.in_(source_digest_ids),
+        )
+    ))
+    if level == AnalysisDigestLevel.RANGE.value:
+        start_char = int(task_payload.get("start_char") or 0)
+        end_char = int(task_payload.get("end_char") or version.total_chars)
+        source_event_ids = {
+            item["id"]
+            for item in foundation.get("events", [])
+            if int(item.get("end_char") or 0) > start_char
+            and int(item.get("start_char") or 0) < end_char
+        }
+        source_evidence_ids = {
+            evidence_id
+            for item in foundation.get("events", [])
+            if item.get("id") in source_event_ids
+            for evidence_id in item.get("evidence_ids", [])
+        }
+    else:
+        if len(source_digests) != len(set(source_digest_ids)):
+            raise ValueError("ANALYSIS_DIGEST_SOURCE_MISSING")
+        source_event_ids = {
+            event_id
+            for item in source_digests
+            for event_id in json.loads(item.source_event_ids_json)
+        }
+        source_evidence_ids = {
+            evidence_id
+            for item in source_digests
+            for evidence_id in json.loads(item.evidence_ids_json)
+        }
+    if not set(output.event_ids).issubset(source_event_ids):
+        raise ValueError("ANALYSIS_DIGEST_EVENT_OUTSIDE_SOURCE")
+    if not set(output.evidence_ids).issubset(source_evidence_ids):
+        raise ValueError("ANALYSIS_DIGEST_EVIDENCE_OUTSIDE_SOURCE")
+    valid_evidence_count = session.scalar(
+        select(func.count(EvidenceSpan.id)).where(
+            EvidenceSpan.source_version_id == version.id,
+            EvidenceSpan.id.in_(source_evidence_ids),
+        )
+    ) or 0
+    if valid_evidence_count != len(source_evidence_ids):
+        raise ValueError("ANALYSIS_DIGEST_EVIDENCE_REFERENCE_INVALID")
+
+    fingerprint_payload = {
+        "level": level,
+        "source_units": sorted(
+            (item.id, item.content_hash) for item in source_units
+        ),
+        "source_digests": sorted(
+            (item.id, item.source_fingerprint) for item in source_digests
+        ),
+        "events": sorted(source_event_ids),
+        "evidence": sorted(source_evidence_ids),
+    }
+    payload_json = json.dumps(output.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    existing = session.scalar(
+        select(AnalysisDigest).where(
+            AnalysisDigest.run_id == run.id,
+            AnalysisDigest.level == level,
+            AnalysisDigest.sequence_no == int(task_payload.get("sequence_no") or 1),
+        )
+    )
+    values = {
+        "source_version_id": version.id,
+        "start_chapter": int(task_payload.get("start_chapter") or 1),
+        "end_chapter": int(task_payload.get("end_chapter") or 1),
+        "payload_json": payload_json,
+        "source_digest_ids_json": json.dumps(source_digest_ids, sort_keys=True),
+        "source_event_ids_json": json.dumps(sorted(source_event_ids), sort_keys=True),
+        "evidence_ids_json": json.dumps(sorted(source_evidence_ids), sort_keys=True),
+        "source_unit_ids_json": json.dumps(source_unit_ids, sort_keys=True),
+        "source_fingerprint": _hash(json.dumps(fingerprint_payload, sort_keys=True)),
+        "prompt_id": HIERARCHICAL_DIGEST_PROMPT_ID,
+        "prompt_version": HIERARCHICAL_DIGEST_PROMPT_VERSION,
+        "created_by_task_id": task.id,
+        "created_by_attempt_id": attempt_id,
+    }
+    if existing is None:
+        existing = AnalysisDigest(
+            run_id=run.id,
+            level=level,
+            sequence_no=int(task_payload.get("sequence_no") or 1),
+            **values,
+        )
+        session.add(existing)
+    else:
+        for key, value in values.items():
+            setattr(existing, key, value)
+    session.commit()
+    session.refresh(existing)
+    return PersistedHierarchicalDigest(existing.id)
+
+
 def enqueue_narrative_synthesis(
     session: Session,
     settings: Settings,
@@ -1646,6 +2228,8 @@ def enqueue_narrative_synthesis(
     try:
         _service, model_profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
     except ModelSettingsError:
+        return None
+    if not enqueue_hierarchical_digests(session, settings, run):
         return None
     task = Task(
         project_id=run.source_version.document.project_id,
