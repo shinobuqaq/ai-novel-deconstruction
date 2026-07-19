@@ -1,4 +1,11 @@
-from app.services.analysis import ContextMaterial, _select_context_materials
+from types import SimpleNamespace
+
+from app.services.analysis import (
+    ContextMaterial,
+    _build_chapter_digests,
+    _build_synthesis_context,
+    _select_context_materials,
+)
 
 
 def test_context_selection_is_bounded_and_explains_omissions() -> None:
@@ -48,3 +55,84 @@ def test_context_selection_is_deterministic_for_equal_priorities() -> None:
 
     assert [item.key for item in first.selected] == [item.key for item in second.selected]
     assert len(first.omitted) == len(second.omitted) == 1
+
+
+def _chapters(count: int) -> list[dict[str, object]]:
+    return [
+        {"chapter_number": index, "title": f"第{index}章 标题{index}"}
+        for index in range(1, count + 1)
+    ]
+
+
+def _event(index: int, chapter: int) -> dict[str, object]:
+    return {
+        "id": f"event-{index}",
+        "title": f"事件{index}",
+        "summary": f"事件{index}的简短经过和结果。",
+        "people": [f"人物{index}"],
+        "related_entities": [],
+        "evidence_ids": [f"evidence-{index}", f"evidence-extra-{index}"],
+        "chapter_ordinals": [chapter],
+        "confidence": 80 + index % 20,
+        "mention_count": index % 3 + 1,
+        "start_char": chapter * 1000,
+    }
+
+
+def test_chapter_digests_cover_the_whole_book_without_gaps() -> None:
+    digests = _build_chapter_digests(_chapters(100), [])
+
+    assert len(digests) == 20
+    assert digests[0]["start_chapter"] == 1
+    assert digests[-1]["end_chapter"] == 100
+    for previous, current in zip(digests, digests[1:]):
+        assert previous["end_chapter"] + 1 == current["start_chapter"]
+    assert sum(int(item["chapter_count"]) for item in digests) == 100
+
+
+def test_chapter_digest_count_adapts_to_book_length() -> None:
+    assert len(_build_chapter_digests(_chapters(10), [])) == 10
+    assert len(_build_chapter_digests(_chapters(100), [])) == 20
+    assert len(_build_chapter_digests(_chapters(600), [])) == 30
+    assert len(_build_chapter_digests(_chapters(1_000), [])) == 40
+    assert len(_build_chapter_digests(_chapters(2_000), [])) == 40
+
+
+def test_chapter_digest_records_omitted_events_and_source_references() -> None:
+    events = [_event(index, 1) for index in range(1, 6)]
+
+    digest = _build_chapter_digests(_chapters(1), events)[0]
+
+    assert digest["event_count"] == 5
+    assert digest["omitted_event_count"] == 4
+    assert digest["authority"] == "DERIVED_NAVIGATION_ONLY"
+    assert digest["main_events"][0]["event_id"] in {item["id"] for item in events}
+    assert digest["main_events"][0]["evidence_ids"]
+
+
+def test_chapter_digest_order_is_stable_when_event_input_changes() -> None:
+    events = [_event(index, (index % 50) + 1) for index in range(1, 80)]
+
+    first = _build_chapter_digests(_chapters(200), events)
+    second = _build_chapter_digests(_chapters(200), list(reversed(events)))
+
+    assert first == second
+
+
+def test_long_book_digest_context_stays_bounded_and_keeps_range_coverage() -> None:
+    chapters = _chapters(1_000)
+    events = [_event(index, (index * 17) % 1_000 + 1) for index in range(1, 401)]
+    selected, manifest = _build_synthesis_context(
+        foundation={"characters": [], "related_entities": [], "events": events},
+        chapters=chapters,
+        evidence_by_id={},
+        chapter_title_by_id={},
+        source_chars=2_000_000,
+        profile=SimpleNamespace(max_output_tokens=16_000),
+    )
+
+    assert manifest["selected_chars"] <= manifest["budget_chars"]
+    assert selected["context"]["chapter_digest_count"] == 40
+    assert selected["context"]["chapter_digest_complete"] is True
+    assert selected["chapter_digests"][0]["start_chapter"] == 1
+    assert selected["chapter_digests"][-1]["end_chapter"] == 1_000

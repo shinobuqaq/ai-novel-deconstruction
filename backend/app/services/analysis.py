@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,13 +42,21 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.3.0"
+NARRATIVE_PROMPT_VERSION = "1.4.0"
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.2.0"
+DEEP_PROMPT_VERSION = "1.3.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
 MIN_SYNTHESIS_CONTEXT_CHARS = 24_000
 MAX_SYNTHESIS_CONTEXT_CHARS = 160_000
+MIN_CHAPTER_DIGEST_COUNT = 20
+MAX_CHAPTER_DIGEST_COUNT = 40
+TARGET_CHAPTERS_PER_DIGEST = 20
+MAX_DIGEST_EVENTS = 1
+MAX_DIGEST_SUMMARY_CHARS = 96
+MAX_DIGEST_PARTICIPANTS = 4
+MAX_DIGEST_EVIDENCE_IDS = 2
+MAX_DIGEST_CHAPTER_TITLES = 4
 DEEP_ANALYSIS_COLLECTIONS = (
     "fact_versions",
     "state_changes",
@@ -513,6 +522,112 @@ def _compact_chapter_catalog(chapters: list[dict[str, object]]) -> str:
     return json.dumps(chapters, ensure_ascii=False, separators=(",", ":"))
 
 
+def _chapter_digest_count(chapter_count: int) -> int:
+    if chapter_count <= MIN_CHAPTER_DIGEST_COUNT:
+        return chapter_count
+    return min(
+        MAX_CHAPTER_DIGEST_COUNT,
+        max(MIN_CHAPTER_DIGEST_COUNT, math.ceil(chapter_count / TARGET_CHAPTERS_PER_DIGEST)),
+    )
+
+
+def _short_text(value: object, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)].rstrip()}…"
+
+
+def _chapter_number(chapter: dict[str, object], fallback: int) -> int:
+    value = chapter.get("chapter_number", chapter.get("ordinal", fallback))
+    try:
+        return int(value or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _compact_range_titles(chapters: list[dict[str, object]]) -> tuple[list[str], int]:
+    titles = [_short_text(item.get("title"), 80) for item in chapters]
+    if len(titles) <= MAX_DIGEST_CHAPTER_TITLES:
+        return titles, 0
+    edge_count = MAX_DIGEST_CHAPTER_TITLES // 2
+    return titles[:edge_count] + titles[-edge_count:], len(titles) - MAX_DIGEST_CHAPTER_TITLES
+
+
+def _event_rank(item: dict[str, object]) -> tuple[int, int, int, int, str]:
+    return (
+        -int(item.get("confidence") or 0),
+        -int(item.get("mention_count") or 0),
+        -len(item.get("evidence_ids", [])),
+        int(item.get("start_char") or 0),
+        str(item.get("id") or item.get("title") or ""),
+    )
+
+
+def _build_chapter_digests(
+    chapters: list[dict[str, object]],
+    events: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Build a compact whole-book navigation layer without promoting it to fact."""
+    if not chapters:
+        return []
+
+    digest_count = _chapter_digest_count(len(chapters))
+    base_size, larger_ranges = divmod(len(chapters), digest_count)
+    digests: list[dict[str, object]] = []
+    cursor = 0
+    for index in range(digest_count):
+        range_size = base_size + (1 if index < larger_ranges else 0)
+        range_chapters = chapters[cursor:cursor + range_size]
+        cursor += range_size
+        start_chapter = _chapter_number(range_chapters[0], cursor - range_size + 1)
+        end_chapter = _chapter_number(range_chapters[-1], cursor)
+        chapter_numbers = set(range(start_chapter, end_chapter + 1))
+        range_events = [
+            item
+            for item in events
+            if chapter_numbers.intersection(
+                int(value)
+                for value in item.get("chapter_ordinals", [])
+                if value is not None
+            )
+        ]
+        selected_events = sorted(
+            sorted(range_events, key=_event_rank)[:MAX_DIGEST_EVENTS],
+            key=lambda item: (
+                int(item.get("start_char") or 0),
+                str(item.get("title") or ""),
+                str(item.get("id") or ""),
+            ),
+        )
+        chapter_titles, omitted_title_count = _compact_range_titles(range_chapters)
+        digests.append({
+            "id": f"chapter-digest-{start_chapter}-{end_chapter}",
+            "authority": "DERIVED_NAVIGATION_ONLY",
+            "start_chapter": start_chapter,
+            "end_chapter": end_chapter,
+            "chapter_count": len(range_chapters),
+            "chapter_titles": chapter_titles,
+            "omitted_chapter_title_count": omitted_title_count,
+            "main_events": [
+                {
+                    "event_id": item.get("id"),
+                    "title": _short_text(item.get("title"), 80),
+                    "summary": _short_text(item.get("summary"), MAX_DIGEST_SUMMARY_CHARS),
+                    "participants": list(dict.fromkeys([
+                        *item.get("people", []),
+                        *item.get("related_entities", []),
+                    ]))[:MAX_DIGEST_PARTICIPANTS],
+                    "evidence_ids": list(item.get("evidence_ids", []))[:MAX_DIGEST_EVIDENCE_IDS],
+                }
+                for item in selected_events
+            ],
+            "event_count": len(range_events),
+            "omitted_event_count": max(0, len(range_events) - len(selected_events)),
+        })
+    return digests
+
+
 def _build_synthesis_context(
     *,
     foundation: dict[str, Any],
@@ -525,6 +640,17 @@ def _build_synthesis_context(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a bounded, source-addressable input for narrative/deep stages."""
     materials: list[ContextMaterial] = []
+    events = list(foundation.get("events", []))
+    chapter_digests = _build_chapter_digests(chapters, events)
+    for item in chapter_digests:
+        materials.append(ContextMaterial(
+            key=str(item["id"]),
+            kind="chapter_digest",
+            text=_material_json("chapter_digest", str(item["id"]), item),
+            priority=11_000,
+            reason="保持长篇章节范围和代表事件覆盖",
+            chapter_ordinal=int(item["start_chapter"]),
+        ))
     chapter_catalog = _material_json("chapter_catalog", "chapter-catalog", chapters)
     materials.append(ContextMaterial(
         key="chapter-catalog",
@@ -578,7 +704,6 @@ def _build_synthesis_context(
             reason="世界设定和关联实体线索",
         ))
 
-    events = list(foundation.get("events", []))
     seen_chapters: set[int] = set()
     for item in events:
         chapter_ordinals = [int(value) for value in item.get("chapter_ordinals", []) if value]
@@ -632,6 +757,7 @@ def _build_synthesis_context(
     )
     selected_values: dict[str, Any] = {
         "chapters": [],
+        "chapter_digests": [],
         "characters": [],
         "events": [],
         "related_entities": [],
@@ -644,6 +770,8 @@ def _build_synthesis_context(
             continue
         if item.kind == "chapter_catalog":
             selected_values["chapters"] = value
+        elif item.kind == "chapter_digest":
+            selected_values["chapter_digests"].append(value)
         elif item.kind.startswith("extra:"):
             selected_values[item.key.removeprefix("extra:")] = value
         elif item.kind == "character":
@@ -663,6 +791,8 @@ def _build_synthesis_context(
         "omitted_chars": selection.omitted_chars,
         "omitted_reasons": selection.manifest()["omitted_reasons"],
         "chapter_count": len(chapters),
+        "chapter_digest_count": len(chapter_digests),
+        "chapter_digest_complete": len(selected_values["chapter_digests"]) == len(chapter_digests),
         "chapter_catalog_complete": bool(selected_values["chapters"])
         and len(selected_values["chapters"]) == len(chapters),
     }
