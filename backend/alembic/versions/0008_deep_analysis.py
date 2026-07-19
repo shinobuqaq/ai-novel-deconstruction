@@ -42,7 +42,17 @@ def upgrade() -> None:
             sa.Column("created_by_attempt_id", sa.String(length=64), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         )
+    else:
+        columns = {item["name"] for item in inspector.get_columns("deep_analyses")}
+        if "revision_no" not in columns:
+            op.add_column(
+                "deep_analyses",
+                sa.Column("revision_no", sa.Integer(), nullable=False, server_default="1"),
+            )
     indexes = {item["name"] for item in sa.inspect(op.get_bind()).get_indexes("deep_analyses")}
+    if "ux_deep_analysis_run" in indexes:
+        op.drop_index("ux_deep_analysis_run", table_name="deep_analyses")
+        indexes.remove("ux_deep_analysis_run")
     if "ux_deep_analysis_run_revision" not in indexes:
         op.create_index(
             "ux_deep_analysis_run_revision",

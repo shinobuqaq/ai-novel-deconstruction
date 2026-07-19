@@ -161,6 +161,7 @@ def _environment() -> dict[str, str]:
                 ["http://127.0.0.1:15173", "http://localhost:15173"],
                 separators=(",", ":"),
             ),
+            "AND_AUTO_CREATE_SCHEMA": "false",
             "VITE_API_URL": API_URL,
             "PYTHONUTF8": "1",
             "PYTHONUNBUFFERED": "1",

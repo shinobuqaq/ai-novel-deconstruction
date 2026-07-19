@@ -471,3 +471,51 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
         for row in task_foreign_keys
     )
     assert foreign_key_errors == []
+
+
+def test_existing_pre_revision_deep_table_is_upgraded_without_data_loss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "old-deep.db"
+    _configure_migration_environment(monkeypatch, database, tmp_path / "workspace")
+    _upgrade("0007_narrative_synthesis")
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE deep_analyses (
+                id VARCHAR(64) PRIMARY KEY,
+                run_id VARCHAR(64) NOT NULL,
+                source_version_id VARCHAR(64) NOT NULL,
+                payload_json TEXT NOT NULL,
+                prompt_id VARCHAR(80) NOT NULL,
+                prompt_version VARCHAR(40) NOT NULL,
+                created_by_task_id VARCHAR(64) NOT NULL,
+                created_by_attempt_id VARCHAR(64) NOT NULL,
+                created_at DATETIME NOT NULL
+            );
+            CREATE UNIQUE INDEX ux_deep_analysis_run ON deep_analyses (run_id);
+            CREATE INDEX ix_deep_analyses_source_version ON deep_analyses (source_version_id);
+            INSERT INTO deep_analyses
+            VALUES ('dpa_old', 'run_old', 'svr_old', '{}', 'deep', '1.0.0', 'tsk_old', 'att_old', '2026-07-20T00:00:00');
+            """
+        )
+        connection.commit()
+
+    _upgrade("head")
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(deep_analyses)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(deep_analyses)")}
+        row = connection.execute(
+            "SELECT id, revision_no, payload_json FROM deep_analyses WHERE id = 'dpa_old'"
+        ).fetchone()
+
+    assert "revision_no" in columns
+    assert "ux_deep_analysis_run" not in indexes
+    assert {
+        "ux_deep_analysis_run_revision",
+        "ux_deep_analysis_task",
+        "ix_deep_analyses_source_version",
+    }.issubset(indexes)
+    assert row == ("dpa_old", 1, "{}")
