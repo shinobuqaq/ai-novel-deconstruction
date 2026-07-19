@@ -208,7 +208,7 @@ function FormalWorkbench({
     const query = searchQuery.trim().toLocaleLowerCase("zh-CN");
     if (!query) return [];
     const entries = [
-      ...viewData.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.goals.join(" ")} ${item.motivations.join(" ")}`, evidenceIds: item.evidence_ids })),
+      ...viewData.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.identities.join(" ")} ${item.goals.join(" ")} ${item.motivations.join(" ")} ${item.abilities.join(" ")} ${item.secrets.join(" ")} ${item.arc_summary}`, evidenceIds: item.evidence_ids })),
       ...viewData.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")}`, evidenceIds: item.evidence_ids })),
       ...viewData.phases.map((item) => ({ key: item.id, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
       ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value}`, evidenceIds: item.evidence_ids })) ?? []),
@@ -474,8 +474,14 @@ function FormalWorkbench({
                   <p>{character.description || "原文中已识别到该人物。"}</p>
                   <small>{character.role_reason}</small>
                   {character.aliases.length > 0 && <small>别名或称谓：{character.aliases.join("、")}</small>}
+                  {character.identities.length > 0 && <small>身份：{character.identities.join("、")}</small>}
                   {character.goals.length > 0 && <small>目标：{character.goals.join("、")}</small>}
+                  {character.motivations.length > 0 && <small>动机：{character.motivations.join("、")}</small>}
+                  {character.abilities.length > 0 && <small>能力：{character.abilities.join("、")}</small>}
+                  {character.secrets.length > 0 && <small>秘密：{character.secrets.join("、")}</small>}
+                  {character.important_experiences.length > 0 && <small>重要经历：{character.important_experiences.join("；")}</small>}
                   {character.current_state && <small>当前状态：{character.current_state}</small>}
+                  {character.arc_summary && <p><strong>人物变化：</strong>{character.arc_summary}</p>}
                   <div className="character-meta">
                     <span>出场活跃度：{character.activity_level}</span>
                     <span>证据 {character.appearance_count} 处</span>

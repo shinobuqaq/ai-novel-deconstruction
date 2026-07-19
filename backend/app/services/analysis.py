@@ -41,7 +41,7 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.0.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.0.0"
+NARRATIVE_PROMPT_VERSION = "1.2.0"
 DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -96,9 +96,14 @@ class CharacterRoleProposal(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     role: Literal["PROTAGONIST", "CORE_SUPPORTING", "IMPORTANT_SUPPORTING", "MINOR"]
     role_reason: str = Field(min_length=1, max_length=600)
+    identities: list[str] = Field(default_factory=list, max_length=8)
     goals: list[str] = Field(default_factory=list, max_length=6)
     motivations: list[str] = Field(default_factory=list, max_length=6)
+    abilities: list[str] = Field(default_factory=list, max_length=8)
+    secrets: list[str] = Field(default_factory=list, max_length=8)
+    important_experiences: list[str] = Field(default_factory=list, max_length=10)
     current_state: str = Field(default="", max_length=600)
+    arc_summary: str = Field(default="", max_length=800)
     evidence_ids: list[str] = Field(min_length=1, max_length=8)
 
 
@@ -534,6 +539,9 @@ def provider_payload_for_narrative_synthesis(
         }
         for item in sorted(evidence_by_id.values(), key=lambda row: row.start_char)
     ]
+    previous_synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+    )
     # The evidence catalog is intentionally bounded by already accepted
     # candidates; it keeps synthesis grounded without resending the whole book.
     input_payload = {
@@ -542,6 +550,12 @@ def provider_payload_for_narrative_synthesis(
         "related_entities": foundation["related_entities"],
         "events": foundation["events"],
         "evidence": evidence,
+        "previous_synthesis": (
+            json.loads(previous_synthesis.payload_json)
+            if previous_synthesis is not None
+            else None
+        ),
+        "revision_requests": task_payload.get("revision_requests", []),
     }
     return {
         "instructions": _narrative_prompt(),
@@ -915,6 +929,9 @@ def enqueue_narrative_synthesis(
     session: Session,
     settings: Settings,
     run: AnalysisRun,
+    *,
+    force: bool = False,
+    revision_requests: list[dict] | None = None,
 ) -> Task | None:
     existing = session.scalar(
         select(Task)
@@ -924,7 +941,7 @@ def enqueue_narrative_synthesis(
             Task.kind == NARRATIVE_SYNTHESIS_TASK_KIND,
         )
     )
-    if existing is not None:
+    if existing is not None and not force:
         return existing
     foundation_tasks = list(session.scalars(
         select(Task)
@@ -951,6 +968,7 @@ def enqueue_narrative_synthesis(
                 "source_version_id": run.source_version_id,
                 "provider_name": "openai",
                 "model_profile_id": model_profile.id,
+                "revision_requests": revision_requests or [],
             },
             ensure_ascii=False,
             sort_keys=True,

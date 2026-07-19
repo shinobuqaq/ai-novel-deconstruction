@@ -995,23 +995,51 @@ def deep_analysis_recompute(
             status_code=409,
             detail={"code": "NO_OPEN_ANALYSIS_ISSUES", "message": "请先标记需要重新检查的问题。"},
         )
-    task = enqueue_deep_analysis(
-        session,
-        request.app.state.settings,
-        run,
-        force=True,
-        revision_requests=[
-            {
-                "issue_id": issue.id,
-                "target_kind": issue.target_kind,
-                "target_id": issue.target_id,
-                "target_label": issue.target_label,
-                "category": issue.category,
-                "note": issue.note,
-            }
-            for issue in issues
-        ],
+    revision_requests = [
+        {
+            "issue_id": issue.id,
+            "target_kind": issue.target_kind,
+            "target_id": issue.target_id,
+            "target_label": issue.target_label,
+            "category": issue.category,
+            "note": issue.note,
+        }
+        for issue in issues
+    ]
+    narrative_targets = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
+    needs_narrative = any(
+        issue.target_kind in narrative_targets for issue in issues
     )
+    if needs_narrative:
+        active_narrative = session.scalar(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run_id,
+                Task.kind == "analysis.narrative_synthesis",
+                Task.status.in_((TaskStatus.PENDING.value, TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value)),
+            )
+        )
+        if active_narrative is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "NARRATIVE_SYNTHESIS_RUNNING", "message": "故事结构正在重新整理，请等待当前结果完成。"},
+            )
+        task = enqueue_narrative_synthesis(
+            session,
+            request.app.state.settings,
+            run,
+            force=True,
+            revision_requests=revision_requests,
+        )
+    else:
+        task = enqueue_deep_analysis(
+            session,
+            request.app.state.settings,
+            run,
+            force=True,
+            revision_requests=revision_requests,
+        )
     if task is None:
         raise HTTPException(
             status_code=409,

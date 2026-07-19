@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.models import EntityCandidate, EventCandidate, Task
+from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, Task, TaskStatus
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
@@ -83,9 +83,14 @@ class StaticAnalysisProvider:
                         "name": character["name"],
                         "role": "PROTAGONIST",
                         "role_reason": "所有已识别行动和决定都围绕林舟展开。",
+                        "identities": ["旧宅归来者"],
                         "goals": ["找到寄信人"],
                         "motivations": ["弄清密信来意"],
+                        "abilities": [],
+                        "secrets": ["暂未揭示"],
+                        "important_experiences": ["雨夜发现密信"],
                         "current_state": "已发现密信并决定追查。",
+                        "arc_summary": "从被动发现转向主动追查。",
                         "evidence_ids": [evidence_id],
                     }
                 ],
@@ -373,6 +378,9 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["story_overview"]["protagonist"] == "林舟"
     assert [item["name"] for item in projection["characters"]] == ["林舟"]
     assert projection["characters"][0]["role"] == "PROTAGONIST"
+    assert projection["characters"][0]["identities"] == ["旧宅归来者"]
+    assert projection["characters"][0]["important_experiences"] == ["雨夜发现密信"]
+    assert projection["characters"][0]["arc_summary"] == "从被动发现转向主动追查。"
     assert projection["events"][0]["people"] == ["林舟"]
     assert projection["events"][0]["chapter_titles"] == ["第一章 归来"]
     assert len(projection["phases"]) == 1
@@ -457,6 +465,33 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     confirmed = client.post(f"/api/analysis-runs/{run['id']}/confirm")
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == "CONFIRMED"
+
+    character_issue = client.post(
+        f"/api/analysis-runs/{run['id']}/issues",
+        json={
+            "target_kind": "CHARACTER",
+            "target_id": projection["characters"][0]["id"],
+            "target_label": "林舟",
+            "category": "UNCLEAR",
+            "note": "角色定位需要重新核对。",
+        },
+    )
+    assert character_issue.status_code == 201
+    narrative_recompute = client.post(f"/api/analysis-runs/{run['id']}/deep/recompute")
+    assert narrative_recompute.status_code == 202
+    with client.app.state.session_factory() as session:
+        narrative_task = session.scalar(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.kind == "analysis.narrative_synthesis",
+                Task.status == TaskStatus.PENDING.value,
+            )
+            .order_by(Task.created_at.desc())
+        )
+        assert narrative_task is not None
+        assert "CHARACTER" in narrative_task.payload_json
 
 
 def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:

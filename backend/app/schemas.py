@@ -311,7 +311,12 @@ class WorkbenchCharacterRead(BaseModel):
     role_reason: str = ""
     goals: list[str] = Field(default_factory=list)
     motivations: list[str] = Field(default_factory=list)
+    identities: list[str] = Field(default_factory=list)
+    abilities: list[str] = Field(default_factory=list)
+    secrets: list[str] = Field(default_factory=list)
+    important_experiences: list[str] = Field(default_factory=list)
     current_state: str = ""
+    arc_summary: str = ""
 
 
 class WorkbenchEventRead(BaseModel):

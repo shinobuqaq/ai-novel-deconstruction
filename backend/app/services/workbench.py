@@ -359,9 +359,14 @@ def build_workbench_projection(
         character.update({
             "role": role.get("role", "UNCLASSIFIED") if role else "UNCLASSIFIED",
             "role_reason": role.get("role_reason", "尚未完成角色定位") if role else "尚未完成角色定位",
+            "identities": role.get("identities", []) if role else [],
             "goals": role.get("goals", []) if role else [],
             "motivations": role.get("motivations", []) if role else [],
+            "abilities": role.get("abilities", []) if role else [],
+            "secrets": role.get("secrets", []) if role else [],
+            "important_experiences": role.get("important_experiences", []) if role else [],
             "current_state": role.get("current_state", "") if role else "",
+            "arc_summary": role.get("arc_summary", "") if role else "",
         })
 
     return {

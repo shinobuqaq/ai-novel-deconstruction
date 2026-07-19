@@ -209,9 +209,14 @@ export type WorkbenchCharacter = {
   confidence: number;
   role: "PROTAGONIST" | "CORE_SUPPORTING" | "IMPORTANT_SUPPORTING" | "MINOR" | "UNCLASSIFIED";
   role_reason: string;
+  identities: string[];
   goals: string[];
   motivations: string[];
+  abilities: string[];
+  secrets: string[];
+  important_experiences: string[];
   current_state: string;
+  arc_summary: string;
 };
 
 export type WorkbenchEvent = {

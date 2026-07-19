@@ -279,7 +279,14 @@ async def execute_task(
                 if claim.kind == ANALYSIS_TASK_KIND:
                     enqueue_narrative_synthesis(session, settings, run)
                 elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
-                    enqueue_deep_analysis(session, settings, run)
+                    payload_requests = payload.get("revision_requests", [])
+                    enqueue_deep_analysis(
+                        session,
+                        settings,
+                        run,
+                        force=bool(payload_requests),
+                        revision_requests=payload_requests,
+                    )
                 refresh_analysis_run(session, run)
     return accepted
 
