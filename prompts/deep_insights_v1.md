@@ -14,7 +14,7 @@
 
 ## 输出要求
 
-- fact_versions：地点、组织、物品、能力、规则、关系和状态等带有效章节区间的事实。若只知道“有人声称”，status 用 REPORTED；存在相反证据用 DISPUTED；无法确定用 UNCERTAIN。
+- fact_versions：地点、组织、物品、能力、规则、关系和状态等带有效章节区间的事实。事实改变时，旧版本用 `valid_to_chapter` 结束并保留，再输出新版本；同一值失效后重新成立时必须输出新的版本，不能把两个区间合成一个；同一时间存在互相矛盾的说法时保留多个重叠版本并使用 DISPUTED 或 UNCERTAIN，不能为了生成顺畅结论而覆盖其中一方。若只知道“有人声称”，status 用 REPORTED；存在相反证据用 DISPUTED；无法确定用 UNCERTAIN。
 - state_changes：人物、物品、地点或组织在某章发生的状态变化，写清 before、after 和触发事件。
 - actor_knowledge：角色在某一章知道、相信、怀疑、误信、隐藏或尚不知道的命题。只写有直接证据的认知，不凭全知视角推断角色知道了什么。
 - world_rules：世界设定、能力、制度、限制、代价和例外。每项都要能回查原文。

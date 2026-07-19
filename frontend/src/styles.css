@@ -326,6 +326,10 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .timeline-list h4, .knowledge-grid h4, .scene-analysis-list h4 { margin: 0; font-size: 13px; }
 .timeline-list p, .knowledge-grid p, .scene-analysis-list p { margin: 0; color: #40515d; font-size: 12px; line-height: 1.55; }
 .knowledge-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.fact-history { margin-top: 12px; border: 1px solid #d8dee5; border-radius: 7px; background: #fff; }
+.fact-history > summary { padding: 12px 14px; color: #40545f; font-size: 12px; font-weight: 800; cursor: pointer; }
+.fact-history[open] > summary { border-bottom: 1px solid #e2e7ea; }
+.fact-history .timeline-list { padding: 4px 14px 12px; }
 .knowledge-grid article { display: grid; gap: 5px; padding: 12px; border: 1px solid #dce2e7; border-radius: 7px; background: #fff; }
 .knowledge-grid article > span { color: #277487; font-size: 10px; font-weight: 800; }
 .knowledge-grid small, .scene-analysis-list small { color: #687985; font-size: 11px; line-height: 1.5; }

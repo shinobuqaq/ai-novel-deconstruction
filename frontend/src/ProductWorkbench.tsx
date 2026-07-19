@@ -89,6 +89,13 @@ const FACT_TYPE_LABELS: Record<string, string> = {
   OTHER: "其他",
 };
 
+const FACT_TIMELINE_LABELS: Record<string, string> = {
+  ACTIVE: "当前仍成立",
+  EXPIRED: "此版本后来失效",
+  REESTABLISHED: "失效后再次成立",
+  CONFLICTING: "冲突说法并存",
+};
+
 const KNOWLEDGE_LABELS: Record<string, string> = {
   KNOWS: "已经知道",
   BELIEVES: "相信",
@@ -231,7 +238,7 @@ function FormalWorkbench({
       ...viewData.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.identities.join(" ")} ${item.goals.join(" ")} ${item.motivations.join(" ")} ${item.abilities.join(" ")} ${item.secrets.join(" ")} ${item.arc_summary}`, evidenceIds: item.evidence_ids })),
       ...viewData.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")} ${item.location} ${item.trigger} ${item.process} ${item.outcome} ${item.impact}`, evidenceIds: item.evidence_ids })),
       ...viewData.phases.map((item) => ({ key: item.id, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
-      ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value} ${item.timeline_note}`, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.world_rules.map((item) => ({ key: item.id, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.foreshadowing.map((item) => ({ key: item.id, section: "伏笔", title: item.title, text: item.setup, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.conflicts.map((item) => ({ key: item.id, section: "冲突", title: item.title, text: `${item.goals} ${item.obstacles} ${item.stakes} ${item.resolution}`, evidenceIds: item.evidence_ids })) ?? []),
@@ -596,9 +603,10 @@ function FormalWorkbench({
                     <div className="formal-card-list compact-list">
                       {pointInTime.facts.map((fact) => (
                         <article className="formal-card" key={fact.id}>
-                          <header><div><span>{FACT_TYPE_LABELS[fact.fact_type] ?? "事实"}</span><h3>{fact.subject}</h3></div><i className={fact.status === "DISPUTED" || fact.status === "UNCERTAIN" ? "needs-review" : ""}>{fact.status === "CONFIRMED" ? "原文确认" : fact.status === "REPORTED" ? "人物转述" : fact.status === "DISPUTED" ? "存在争议" : "尚不确定"}</i></header>
+                          <header><div><span>{FACT_TYPE_LABELS[fact.fact_type] ?? "事实"}</span><h3>{fact.subject}</h3></div><i className={fact.timeline_status === "CONFLICTING" || fact.status === "UNCERTAIN" ? "needs-review" : ""}>{FACT_TIMELINE_LABELS[fact.timeline_status] ?? "事实版本"}</i></header>
                           <p><strong>{fact.predicate}：</strong>{fact.value}</p>
                           <small>有效范围：第 {fact.valid_from_chapter} 章起{fact.valid_to_chapter ? `，至第 ${fact.valid_to_chapter} 章` : "，当前仍成立"}</small>
+                          <small>{fact.timeline_note}</small>
                           {evidenceButtons(fact.evidence_ids)}
                           {fact.counter_evidence_ids.length > 0 && evidenceButtons(fact.counter_evidence_ids, "查看反证")}
                           {markProblemButton("FACT", fact.id, `${fact.subject}：${fact.predicate}`)}
@@ -607,6 +615,26 @@ function FormalWorkbench({
                       {!pointInTime.facts.length && <p className="result-empty">截至这一章，没有可确认且仍然成立的世界事实。</p>}
                     </div>
                   </section>
+
+                  <details className="fact-history">
+                    <summary>查看全部事实版本与变化记录（{viewData.deep_analysis.fact_versions.length} 项）</summary>
+                    <div className="timeline-list">
+                      {[...viewData.deep_analysis.fact_versions]
+                        .sort((left, right) => left.subject.localeCompare(right.subject, "zh-CN") || left.predicate.localeCompare(right.predicate, "zh-CN") || left.valid_from_chapter - right.valid_from_chapter)
+                        .map((fact) => (
+                          <article key={`history-${fact.id}`}>
+                            <span>第 {fact.valid_from_chapter} 章{fact.valid_to_chapter ? `-${fact.valid_to_chapter}` : "起"}</span>
+                            <div>
+                              <h4>{fact.subject} · {fact.predicate}</h4>
+                              <p>{fact.value}</p>
+                              <small>{FACT_TIMELINE_LABELS[fact.timeline_status] ?? "事实版本"}：{fact.timeline_note}</small>
+                              {evidenceButtons(fact.evidence_ids)}
+                              {fact.counter_evidence_ids.length > 0 && evidenceButtons(fact.counter_evidence_ids, "查看反证")}
+                            </div>
+                          </article>
+                        ))}
+                    </div>
+                  </details>
 
                   <section className="insight-group">
                     <header><div><span>每项只显示截至当前章节的最新状态</span><h3>人物与事物状态</h3></div><b>{pointInTime.states.length}</b></header>

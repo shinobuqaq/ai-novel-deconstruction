@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from app.models import EntityCandidate
-from app.services.workbench import _canonical_person, _person_groups
+from app.services.workbench import (
+    _annotate_fact_timeline,
+    _canonical_person,
+    _person_groups,
+)
 
 
 def _person(name: str, aliases: list[str], confidence: int = 80) -> EntityCandidate:
@@ -47,3 +51,22 @@ def test_person_aliases_do_not_form_an_unreviewed_transitive_chain() -> None:
     ])
 
     assert sorted(len(group) for group in groups) == [1, 2]
+
+
+def test_fact_timeline_keeps_expiry_reestablishment_and_conflicts() -> None:
+    facts = [
+        {"id": "f1", "subject": "门", "predicate": "状态", "value": "关闭", "status": "CONFIRMED", "valid_from_chapter": 1, "valid_to_chapter": 2},
+        {"id": "f2", "subject": "门", "predicate": "状态", "value": "开启", "status": "CONFIRMED", "valid_from_chapter": 3, "valid_to_chapter": 4},
+        {"id": "f3", "subject": "门", "predicate": "状态", "value": "关闭", "status": "CONFIRMED", "valid_from_chapter": 5, "valid_to_chapter": None},
+        {"id": "f4", "subject": "密信", "predicate": "来源", "value": "张妍", "status": "CONFIRMED", "valid_from_chapter": 2, "valid_to_chapter": None},
+        {"id": "f5", "subject": "密信", "predicate": "来源", "value": "未知人物", "status": "REPORTED", "valid_from_chapter": 2, "valid_to_chapter": 3},
+    ]
+
+    _annotate_fact_timeline(facts)
+
+    by_id = {item["id"]: item for item in facts}
+    assert by_id["f1"]["timeline_status"] == "EXPIRED"
+    assert by_id["f2"]["timeline_status"] == "EXPIRED"
+    assert by_id["f3"]["timeline_status"] == "REESTABLISHED"
+    assert by_id["f4"]["timeline_status"] == "CONFLICTING"
+    assert by_id["f5"]["timeline_status"] == "CONFLICTING"

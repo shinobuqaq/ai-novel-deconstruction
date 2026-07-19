@@ -430,6 +430,9 @@ class WorkbenchFactVersionRead(BaseModel):
     valid_to_chapter: int | None
     evidence_ids: list[str]
     counter_evidence_ids: list[str]
+    timeline_version: int = 1
+    timeline_status: str = "ACTIVE"
+    timeline_note: str = ""
 
 
 class WorkbenchStateChangeRead(BaseModel):

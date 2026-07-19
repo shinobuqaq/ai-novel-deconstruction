@@ -170,6 +170,58 @@ def _read_object(value: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _ranges_overlap(left: dict, right: dict) -> bool:
+    left_end = left.get("valid_to_chapter") or 10**12
+    right_end = right.get("valid_to_chapter") or 10**12
+    return (
+        int(left.get("valid_from_chapter") or 1) <= int(right_end)
+        and int(right.get("valid_from_chapter") or 1) <= int(left_end)
+    )
+
+
+def _annotate_fact_timeline(facts: list[dict]) -> None:
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for fact in facts:
+        grouped.setdefault(
+            (_normalize(str(fact.get("subject") or "")), _normalize(str(fact.get("predicate") or ""))),
+            [],
+        ).append(fact)
+
+    for group in grouped.values():
+        ordered = sorted(
+            group,
+            key=lambda item: (
+                int(item.get("valid_from_chapter") or 1),
+                int(item.get("valid_to_chapter") or 10**12),
+                str(item.get("id") or ""),
+            ),
+        )
+        seen_values: set[str] = set()
+        for index, fact in enumerate(ordered, start=1):
+            fact["timeline_version"] = index
+            normalized_value = _normalize(str(fact.get("value") or ""))
+            conflicts = [
+                other
+                for other in ordered
+                if other is not fact
+                and _normalize(str(other.get("value") or "")) != normalized_value
+                and _ranges_overlap(fact, other)
+            ]
+            if conflicts or fact.get("status") == "DISPUTED":
+                fact["timeline_status"] = "CONFLICTING"
+                fact["timeline_note"] = "同一时间范围存在不同说法或反面证据，系统保留双方，不自动选定一个真值。"
+            elif normalized_value in seen_values:
+                fact["timeline_status"] = "REESTABLISHED"
+                fact["timeline_note"] = "这一事实曾经失效，后来根据新的原文依据再次成立。"
+            elif fact.get("valid_to_chapter") is not None:
+                fact["timeline_status"] = "EXPIRED"
+                fact["timeline_note"] = "这一版本只在标明的章节范围内成立，后续没有覆盖历史记录。"
+            else:
+                fact["timeline_status"] = "ACTIVE"
+                fact["timeline_note"] = "这一版本从标明章节起成立，当前尚未发现明确失效点。"
+            seen_values.add(normalized_value)
+
+
 def _candidate_query(session: Session, model, run_id: str):
     return session.scalars(
         select(model)
@@ -442,6 +494,7 @@ def build_workbench_projection(
         deep_status = "READY"
         deep_payload = json.loads(deep_analysis.payload_json)
         deep_revision = deep_analysis.revision_no
+        _annotate_fact_timeline(deep_payload.get("fact_versions", []))
         for rule in deep_payload.get("world_rules", []):
             rule_chapters: list[_ChapterRef] = []
             for evidence_id in rule.get("evidence_ids", []):

@@ -330,6 +330,9 @@ export type WorkbenchFactVersion = {
   valid_to_chapter: number | null;
   evidence_ids: string[];
   counter_evidence_ids: string[];
+  timeline_version: number;
+  timeline_status: "ACTIVE" | "EXPIRED" | "REESTABLISHED" | "CONFLICTING";
+  timeline_note: string;
 };
 
 export type WorkbenchStateChange = {
