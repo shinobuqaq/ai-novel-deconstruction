@@ -72,6 +72,10 @@ function confidenceLabel(value: number) {
   return "建议抽查";
 }
 
+function normalizedReferenceName(value: string) {
+  return value.replace(/[【】\[\]()（）\s]/g, "").toLocaleLowerCase();
+}
+
 export default function ProductWorkbench() {
   const [health, setHealth] = useState("checking");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -427,6 +431,12 @@ export default function ProductWorkbench() {
     counts[event.event_type] = (counts[event.event_type] ?? 0) + 1;
     return counts;
   }, {});
+  const personReferenceNames = useMemo(() => new Set(
+    entities
+      .filter((entity) => entity.entity_type === "PERSON")
+      .flatMap((entity) => [entity.name, ...entity.aliases])
+      .map(normalizedReferenceName),
+  ), [entities]);
 
   return (
     <div className="product-shell">
@@ -710,24 +720,29 @@ export default function ProductWorkbench() {
                                     </div>
                                   </article>
                                 ))}
-                                {analysisView === "events" && filteredEvents.map((event, index) => (
-                                  <article className="result-item event-item" key={event.id}>
-                                    <header>
-                                      <div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div>
-                                      <i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "建议抽查" : confidenceLabel(event.confidence)}</i>
-                                    </header>
-                                    <p>{event.summary}</p>
-                                    {event.participants.length > 0 && <small>相关人物：{event.participants.join("、")}</small>}
-                                    <small>当前批次顺序 {index + 1} · 原文依据 {event.evidence_ids.length} 处 · 置信度 {event.confidence}%</small>
-                                    <div className="evidence-buttons">
-                                      {event.evidence_ids.map((evidenceId, index) => (
-                                        <button type="button" className="secondary-button" key={evidenceId} disabled={busy === `evidence-${evidenceId}`} onClick={() => void handleOpenEvidence(evidenceId)}>
-                                          {busy === `evidence-${evidenceId}` ? "正在打开" : `查看原文${event.evidence_ids.length > 1 ? ` ${index + 1}` : ""}`}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </article>
-                                ))}
+                                {analysisView === "events" && filteredEvents.map((event, index) => {
+                                  const people = event.participants.filter((item) => personReferenceNames.has(normalizedReferenceName(item)));
+                                  const relatedItems = event.participants.filter((item) => !personReferenceNames.has(normalizedReferenceName(item)));
+                                  return (
+                                    <article className="result-item event-item" key={event.id}>
+                                      <header>
+                                        <div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div>
+                                        <i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "建议抽查" : confidenceLabel(event.confidence)}</i>
+                                      </header>
+                                      <p>{event.summary}</p>
+                                      {people.length > 0 && <small>参与人物：{people.join("、")}</small>}
+                                      {relatedItems.length > 0 && <small>相关地点、组织或事物：{relatedItems.join("、")}</small>}
+                                      <small>当前批次顺序 {index + 1} · 原文依据 {event.evidence_ids.length} 处 · 置信度 {event.confidence}%</small>
+                                      <div className="evidence-buttons">
+                                        {event.evidence_ids.map((evidenceId, evidenceIndex) => (
+                                          <button type="button" className="secondary-button" key={evidenceId} disabled={busy === `evidence-${evidenceId}`} onClick={() => void handleOpenEvidence(evidenceId)}>
+                                            {busy === `evidence-${evidenceId}` ? "正在打开" : `查看原文${event.evidence_ids.length > 1 ? ` ${evidenceIndex + 1}` : ""}`}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </article>
+                                  );
+                                })}
                                 {analysisView === "entities" && !filteredEntities.length && <p className="result-empty">没有符合当前分类或搜索条件的实体候选。</p>}
                                 {analysisView === "events" && !filteredEvents.length && <p className="result-empty">没有符合当前分类或搜索条件的事件候选。</p>}
                               </div>
