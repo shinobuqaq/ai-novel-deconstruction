@@ -214,6 +214,7 @@ class AnalysisProfileRead(BaseModel):
     reasoning_effort: str
     timeout_seconds: float
     max_retries: int
+    context_window_tokens: int | None
 
 
 class AnalysisProfileWrite(BaseModel):
@@ -225,6 +226,7 @@ class AnalysisProfileWrite(BaseModel):
     reasoning_effort: str = Field(max_length=20)
     timeout_seconds: float = Field(ge=10, le=1800)
     max_retries: int = Field(ge=0, le=10)
+    context_window_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
 
 
 class ModelSettingsRead(BaseModel):

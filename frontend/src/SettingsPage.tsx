@@ -65,7 +65,11 @@ export default function SettingsPage() {
       setSelectedServiceId(selected.id);
       setDraft(serviceDraft(selected));
     }
-    setProfileDraft(loaded.analysis_profiles[0] ?? null);
+    const profile = loaded.analysis_profiles[0];
+    setProfileDraft(profile ? {
+      ...profile,
+      context_window_tokens: profile.context_window_tokens ?? null,
+    } : null);
   }
 
   useEffect(() => {
@@ -170,6 +174,7 @@ export default function SettingsPage() {
       reasoning_effort: profileDraft.reasoning_effort,
       timeout_seconds: profileDraft.timeout_seconds,
       max_retries: profileDraft.max_retries,
+      context_window_tokens: profileDraft.context_window_tokens,
     });
     setProfileDraft(saved);
     await loadSettings(saved.service_id);
@@ -438,6 +443,11 @@ export default function SettingsPage() {
                     <label>最大输出长度
                       <input type="number" min="1" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
                       <small>限制单次模型返回的最大内容量；实际可用上限由所选模型决定。</small>
+                    </label>
+                    <label>模型上下文长度 <span>{profileDraft.context_window_tokens === null ? "自动" : profileDraft.context_window_tokens}</span>
+                      <span className="inline-check"><input type="checkbox" checked={profileDraft.context_window_tokens === null} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: event.target.checked ? null : Math.max(32768, profileDraft.max_output_tokens + 1000) })} />未提供可靠数值</span>
+                      <input type="number" min={profileDraft.max_output_tokens + 1000} max="10000000" step="1" disabled={profileDraft.context_window_tokens === null} value={profileDraft.context_window_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: Number(event.target.value) })} />
+                      <small>服务明确提供时可填写；系统会先扣除回复空间再安排小说材料。自动模式不会根据模型名称猜测。</small>
                     </label>
                     <label>单次超时（秒）
                       <input type="number" min="10" max="1800" value={profileDraft.timeout_seconds} onChange={(event) => setProfileDraft({ ...profileDraft, timeout_seconds: Number(event.target.value) })} />

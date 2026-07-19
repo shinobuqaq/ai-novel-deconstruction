@@ -136,3 +136,33 @@ def test_long_book_digest_context_stays_bounded_and_keeps_range_coverage() -> No
     assert selected["context"]["chapter_digest_complete"] is True
     assert selected["chapter_digests"][0]["start_chapter"] == 1
     assert selected["chapter_digests"][-1]["end_chapter"] == 1_000
+
+
+def test_known_model_context_window_controls_input_budget() -> None:
+    selected, manifest = _build_synthesis_context(
+        foundation={"characters": [], "related_entities": [], "events": []},
+        chapters=_chapters(50),
+        evidence_by_id={},
+        chapter_title_by_id={},
+        source_chars=500_000,
+        profile=SimpleNamespace(max_output_tokens=8_000, context_window_tokens=64_000),
+    )
+
+    assert manifest["budget_chars"] == 64_000 - 8_000 - 4_096
+    assert selected["context"]["budget_source"] == "MODEL_CONTEXT_WINDOW"
+    assert selected["context"]["context_window_tokens"] == 64_000
+    assert selected["context"]["output_reserve_tokens"] == 8_000
+
+
+def test_unknown_model_context_window_uses_conservative_auto_budget() -> None:
+    selected, _manifest = _build_synthesis_context(
+        foundation={"characters": [], "related_entities": [], "events": []},
+        chapters=_chapters(50),
+        evidence_by_id={},
+        chapter_title_by_id={},
+        source_chars=500_000,
+        profile=SimpleNamespace(max_output_tokens=8_000, context_window_tokens=None),
+    )
+
+    assert selected["context"]["budget_source"] == "CONSERVATIVE_AUTO"
+    assert selected["context"]["context_window_tokens"] is None

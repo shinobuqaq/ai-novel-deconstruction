@@ -155,6 +155,7 @@ def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
         reasoning_effort=profile.reasoning_effort,
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
+        context_window_tokens=profile.context_window_tokens,
     )
 
 
@@ -670,6 +671,7 @@ def analysis_profiles_update(
             reasoning_effort=payload.reasoning_effort,
             timeout_seconds=payload.timeout_seconds,
             max_retries=payload.max_retries,
+            context_window_tokens=payload.context_window_tokens,
         )
     except ModelSettingsError as error:
         raise _model_settings_error(error) from error

@@ -156,6 +156,7 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
     profile = initial["analysis_profiles"][0]
     assert profile["temperature"] is None
     assert profile["reasoning_effort"] == "auto"
+    assert profile["context_window_tokens"] is None
 
     response = client.put(
         f"/api/settings/analysis-profiles/{profile['id']}",
@@ -168,10 +169,35 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
             "reasoning_effort": "auto",
             "timeout_seconds": 30,
             "max_retries": 0,
+            "context_window_tokens": 128000,
         },
     )
     assert response.status_code == 200
     assert response.json()["max_output_tokens"] == 1
+    assert response.json()["context_window_tokens"] == 128000
+
+
+def test_analysis_profile_rejects_context_window_without_input_space(client) -> None:
+    profile = client.get("/api/settings/models").json()["analysis_profiles"][0]
+
+    response = client.put(
+        f"/api/settings/analysis-profiles/{profile['id']}",
+        json={
+            "name": profile["name"],
+            "service_id": profile["service_id"],
+            "model": "small-window-model",
+            "temperature": None,
+            "max_output_tokens": 16_000,
+            "reasoning_effort": "auto",
+            "timeout_seconds": 30,
+            "max_retries": 0,
+            "context_window_tokens": 16_999,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "CONTEXT_WINDOW_TOO_SMALL"
+    assert "分析输入空间" in response.json()["detail"]["message"]
 
 
 def test_version_one_defaults_migrate_to_auto_without_changing_manual_values(client) -> None:

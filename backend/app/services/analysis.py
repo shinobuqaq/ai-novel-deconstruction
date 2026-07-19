@@ -57,6 +57,7 @@ MAX_DIGEST_SUMMARY_CHARS = 96
 MAX_DIGEST_PARTICIPANTS = 4
 MAX_DIGEST_EVIDENCE_IDS = 2
 MAX_DIGEST_CHAPTER_TITLES = 4
+KNOWN_CONTEXT_SAFETY_TOKENS = 4_096
 DEEP_ANALYSIS_COLLECTIONS = (
     "fact_versions",
     "state_changes",
@@ -455,7 +456,16 @@ def _normalized_name(value: str) -> str:
     return re.sub(r"\s+", "", value).casefold()[:240]
 
 
-def _synthesis_context_budget(profile: Any, source_chars: int) -> int:
+@dataclass(frozen=True, slots=True)
+class SynthesisContextBudget:
+    budget_chars: int
+    source: str
+    context_window_tokens: int | None
+    output_reserve_tokens: int
+    safety_reserve_tokens: int
+
+
+def _synthesis_context_budget(profile: Any, source_chars: int) -> SynthesisContextBudget:
     """Choose a request budget without turning the novel into a hard limit.
 
     The output reservation comes from the selected analysis profile. When a
@@ -463,11 +473,41 @@ def _synthesis_context_budget(profile: Any, source_chars: int) -> int:
     budget and grow it for larger output profiles, while keeping a ceiling so
     a single synthesis request cannot silently consume an entire long book.
     """
-    output_reserve = max(8_000, int(getattr(profile, "max_output_tokens", 16_000)))
-    budget = max(MIN_SYNTHESIS_CONTEXT_CHARS, min(MAX_SYNTHESIS_CONTEXT_CHARS, output_reserve * 3))
-    if source_chars > budget:
-        return budget
-    return max(MIN_SYNTHESIS_CONTEXT_CHARS, min(MAX_SYNTHESIS_CONTEXT_CHARS, source_chars + 8_000))
+    output_reserve = max(1, int(getattr(profile, "max_output_tokens", 16_000)))
+    context_window = getattr(profile, "context_window_tokens", None)
+    if context_window is not None:
+        context_window = int(context_window)
+        remaining_tokens = max(1, context_window - output_reserve)
+        safety_reserve = min(
+            KNOWN_CONTEXT_SAFETY_TOKENS,
+            max(0, remaining_tokens - 1_000),
+        )
+        available_tokens = max(1, remaining_tokens - safety_reserve)
+        return SynthesisContextBudget(
+            budget_chars=min(MAX_SYNTHESIS_CONTEXT_CHARS, available_tokens),
+            source="MODEL_CONTEXT_WINDOW",
+            context_window_tokens=context_window,
+            output_reserve_tokens=output_reserve,
+            safety_reserve_tokens=safety_reserve,
+        )
+
+    automatic_reserve = max(8_000, output_reserve)
+    budget = max(
+        MIN_SYNTHESIS_CONTEXT_CHARS,
+        min(MAX_SYNTHESIS_CONTEXT_CHARS, automatic_reserve * 3),
+    )
+    if source_chars <= budget:
+        budget = max(
+            MIN_SYNTHESIS_CONTEXT_CHARS,
+            min(MAX_SYNTHESIS_CONTEXT_CHARS, source_chars + 8_000),
+        )
+    return SynthesisContextBudget(
+        budget_chars=budget,
+        source="CONSERVATIVE_AUTO",
+        context_window_tokens=None,
+        output_reserve_tokens=output_reserve,
+        safety_reserve_tokens=0,
+    )
 
 
 def _material_json(kind: str, key: str, value: object) -> str:
@@ -751,9 +791,10 @@ def _build_synthesis_context(
             chapter_ordinal=chapter_ordinal,
         ))
 
+    context_budget = _synthesis_context_budget(profile, source_chars)
     selection = _select_context_materials(
         materials,
-        budget_chars=_synthesis_context_budget(profile, source_chars),
+        budget_chars=context_budget.budget_chars,
     )
     selected_values: dict[str, Any] = {
         "chapters": [],
@@ -784,6 +825,10 @@ def _build_synthesis_context(
             selected_values["evidence"].append(value)
     selected_values["context"] = {
         "selection_mode": "预算内相关材料选择",
+        "budget_source": context_budget.source,
+        "context_window_tokens": context_budget.context_window_tokens,
+        "output_reserve_tokens": context_budget.output_reserve_tokens,
+        "safety_reserve_tokens": context_budget.safety_reserve_tokens,
         "budget_chars": selection.budget_chars,
         "selected_count": len(selection.selected),
         "selected_chars": selection.selected_chars,

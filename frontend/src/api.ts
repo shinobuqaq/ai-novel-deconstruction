@@ -133,6 +133,7 @@ export type AnalysisProfile = {
   reasoning_effort: "auto" | "none" | "low" | "medium" | "high";
   timeout_seconds: number;
   max_retries: number;
+  context_window_tokens: number | null;
 };
 
 export type ModelSettings = {

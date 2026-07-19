@@ -92,6 +92,7 @@ class AnalysisProfile:
     reasoning_effort: str
     timeout_seconds: float
     max_retries: int
+    context_window_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,11 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=float(item.get("timeout_seconds", 180)),
                 max_retries=int(item.get("max_retries", 2)),
+                context_window_tokens=(
+                    int(item["context_window_tokens"])
+                    if item.get("context_window_tokens") is not None
+                    else None
+                ),
             )
         )
     if not profiles:
@@ -348,6 +354,7 @@ def save_analysis_profile(
     reasoning_effort: str,
     timeout_seconds: float,
     max_retries: int,
+    context_window_tokens: int | None = None,
 ) -> AnalysisProfile:
     current = read_model_settings(settings)
     if not any(item.id == service_id for item in current.services):
@@ -365,6 +372,14 @@ def save_analysis_profile(
         raise ModelSettingsError("TIMEOUT_INVALID", "超时时间必须在 10 到 1800 秒之间。")
     if not 0 <= max_retries <= 10:
         raise ModelSettingsError("MAX_RETRIES_INVALID", "重试次数必须在 0 到 10 之间。")
+    if context_window_tokens is not None:
+        if not 1 <= context_window_tokens <= 10_000_000:
+            raise ModelSettingsError("CONTEXT_WINDOW_INVALID", "模型上下文长度必须在 1 到 10000000 之间。")
+        if context_window_tokens < max_output_tokens + 1_000:
+            raise ModelSettingsError(
+                "CONTEXT_WINDOW_TOO_SMALL",
+                "模型上下文长度至少要比最大输出长度多 1000，才能留出分析输入空间。",
+            )
     existing = next((item for item in current.analysis_profiles if item.id == profile_id), None)
     saved = AnalysisProfile(
         id=profile_id,
@@ -377,6 +392,7 @@ def save_analysis_profile(
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
+        context_window_tokens=context_window_tokens,
     )
     profiles = tuple(saved if item.id == profile_id else item for item in current.analysis_profiles)
     if existing is None:
@@ -810,6 +826,7 @@ def write_openai_config(
         reasoning_effort=profile.reasoning_effort,
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
+        context_window_tokens=profile.context_window_tokens,
     )
 
     # Keep the old file current for older branches and local rollback.
