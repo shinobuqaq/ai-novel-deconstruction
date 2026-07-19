@@ -48,6 +48,41 @@ MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
 MIN_SYNTHESIS_CONTEXT_CHARS = 24_000
 MAX_SYNTHESIS_CONTEXT_CHARS = 160_000
+DEEP_ANALYSIS_COLLECTIONS = (
+    "fact_versions",
+    "state_changes",
+    "actor_knowledge",
+    "world_rules",
+    "foreshadowing",
+    "conflicts",
+    "scene_analysis",
+    "claims",
+    "entity_resolutions",
+)
+
+
+def deep_revision_scope(revision_requests: list[dict] | None) -> list[str]:
+    if not revision_requests:
+        return list(DEEP_ANALYSIS_COLLECTIONS)
+    broad_targets = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
+    if any(str(item.get("target_kind") or "").upper() in broad_targets for item in revision_requests):
+        return list(DEEP_ANALYSIS_COLLECTIONS)
+    target_collections = {
+        "FACT": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
+        "STATE": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
+        "KNOWLEDGE": {"actor_knowledge", "claims"},
+        "WORLD": {"fact_versions", "world_rules", "claims", "entity_resolutions"},
+        "FORESHADOWING": {"foreshadowing", "claims"},
+        "CONFLICT": {"conflicts", "claims"},
+        "PACING": {"scene_analysis", "claims"},
+        "SCENE": {"scene_analysis", "claims"},
+        "CLAIM": {"claims"},
+        "ENTITY": {"world_rules", "fact_versions", "entity_resolutions", "claims"},
+    }
+    scope: set[str] = set()
+    for item in revision_requests:
+        scope.update(target_collections.get(str(item.get("target_kind") or "").upper(), set()))
+    return [item for item in DEEP_ANALYSIS_COLLECTIONS if item in (scope or set(DEEP_ANALYSIS_COLLECTIONS))]
 
 
 class StructuredOutputValidationError(ValueError):
@@ -506,6 +541,7 @@ def _build_synthesis_context(
         "character_roles": 3_500,
         "previous_synthesis": 1_000,
         "previous_analysis": 1_000,
+        "revision_scope": 12_000,
     }
     for key, value in (extra_values or {}).items():
         if value is None:
@@ -999,6 +1035,7 @@ def provider_payload_for_deep_analysis(
             "narrative_phases": narrative.get("narrative_phases", []),
             "previous_analysis": previous_analysis_payload,
             "revision_requests": task_payload.get("revision_requests", []),
+            "revision_scope": task_payload.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
         },
     )
     input_payload = {
@@ -1008,6 +1045,7 @@ def provider_payload_for_deep_analysis(
         "narrative_phases": selected.get("narrative_phases", []),
         "previous_analysis": selected.get("previous_analysis"),
         "revision_requests": selected.get("revision_requests", []),
+        "revision_scope": selected.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
     }
     return {
         "instructions": _deep_prompt(),
@@ -1529,6 +1567,7 @@ def enqueue_deep_analysis(
                 "provider_name": "openai",
                 "model_profile_id": model_profile.id,
                 "revision_requests": revision_requests or [],
+                "revision_scope": deep_revision_scope(revision_requests),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1660,6 +1699,19 @@ def persist_deep_analysis(
         resolved_names.update(normalized_names)
 
     payload = output.model_dump(mode="json")
+    revision_scope = set(task_payload.get("revision_scope") or DEEP_ANALYSIS_COLLECTIONS)
+    if task_payload.get("revision_requests") and revision_scope != set(DEEP_ANALYSIS_COLLECTIONS):
+        previous = session.scalar(
+            select(DeepAnalysis)
+            .where(DeepAnalysis.run_id == run.id)
+            .order_by(DeepAnalysis.revision_no.desc())
+        )
+        if previous is None:
+            raise ValueError("DEEP_ANALYSIS_PREVIOUS_REVISION_MISSING")
+        previous_payload = json.loads(previous.payload_json)
+        for collection in DEEP_ANALYSIS_COLLECTIONS:
+            if collection not in revision_scope:
+                payload[collection] = previous_payload.get(collection, [])
     item_specs = (
         ("fact_versions", "fct", lambda item: f"{item['subject']}:{item['predicate']}:{item['value']}:{item['valid_from_chapter']}"),
         ("state_changes", "stc", lambda item: f"{item['subject']}:{item['aspect']}:{item['chapter_ordinal']}:{item['after']}"),

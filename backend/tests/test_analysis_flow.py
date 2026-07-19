@@ -196,7 +196,7 @@ class StaticAnalysisProvider:
                         "obstacles": "寄信人没有现身。",
                         "stakes": "林舟无法判断密信是否带来危险。",
                         "escalation": [],
-                        "resolution": "尚未解决。",
+                        "resolution": "模型试图改写未受影响的冲突。" if is_revision else "尚未解决。",
                         "status": "OPEN",
                         "event_ids": [event["id"]],
                         "evidence_ids": [evidence_id],
@@ -497,6 +497,13 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         )
     assert revision_claim is not None
     assert revision_claim.kind == "analysis.deep_insights"
+    revision_payload = json.loads(revision_claim.payload_json)
+    assert revision_payload["revision_scope"] == [
+        "fact_versions",
+        "state_changes",
+        "actor_knowledge",
+        "claims",
+    ]
     assert execute_task_sync(
         client.app.state.session_factory,
         client.app.state.settings,
@@ -518,6 +525,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert first_revision.json()["deep_revision"] == 1
     latest_revision = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert latest_revision.json()["deep_revision"] == 2
+    assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
     missing_revision = client.get(
         f"/api/analysis-runs/{run['id']}/workbench?deep_revision=999"
     )
