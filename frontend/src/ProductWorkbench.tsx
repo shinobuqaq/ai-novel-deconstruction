@@ -55,6 +55,23 @@ const EVENT_LABELS: Record<string, string> = {
   OTHER: "其他",
 };
 
+const ENTITY_TYPES: Array<EntityCandidate["entity_type"] | "ALL"> = [
+  "ALL",
+  "PERSON",
+  "ORGANIZATION",
+  "PLACE",
+  "OBJECT",
+  "OTHER",
+];
+
+const EVENT_TYPES = ["ALL", "ACTION", "DISCOVERY", "CONFLICT", "DECISION", "STATE_CHANGE", "OTHER"];
+
+function confidenceLabel(value: number) {
+  if (value >= 85) return "依据较充分";
+  if (value >= 65) return "依据一般";
+  return "建议抽查";
+}
+
 export default function ProductWorkbench() {
   const [health, setHealth] = useState("checking");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -72,6 +89,9 @@ export default function ProductWorkbench() {
   const [entities, setEntities] = useState<EntityCandidate[]>([]);
   const [events, setEvents] = useState<EventCandidate[]>([]);
   const [analysisView, setAnalysisView] = useState<"entities" | "events">("entities");
+  const [entityFilter, setEntityFilter] = useState<EntityCandidate["entity_type"] | "ALL">("ALL");
+  const [eventFilter, setEventFilter] = useState("ALL");
+  const [resultSearch, setResultSearch] = useState("");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -318,19 +338,6 @@ export default function ProductWorkbench() {
     }
   }
 
-  async function handleConfirmAnalysis() {
-    if (!analysisRun) return;
-    try {
-      setBusy("confirm-analysis");
-      setError("");
-      await loadAnalysisResults(await api.confirmAnalysis(analysisRun.id));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy("");
-    }
-  }
-
   async function handleOpenEvidence(evidenceId: string) {
     try {
       setBusy(`evidence-${evidenceId}`);
@@ -400,6 +407,26 @@ export default function ProductWorkbench() {
   const evidenceParts = evidenceContext
     ? evidenceContext.context_text.split(evidenceContext.evidence.text_snapshot)
     : [];
+
+  const normalizedSearch = resultSearch.trim().toLocaleLowerCase();
+  const filteredEntities = entities.filter((entity) => {
+    const matchesType = entityFilter === "ALL" || entity.entity_type === entityFilter;
+    const searchText = [entity.name, entity.description, ...entity.aliases].join(" ").toLocaleLowerCase();
+    return matchesType && (!normalizedSearch || searchText.includes(normalizedSearch));
+  });
+  const filteredEvents = events.filter((event) => {
+    const matchesType = eventFilter === "ALL" || event.event_type === eventFilter;
+    const searchText = [event.title, event.summary, ...event.participants].join(" ").toLocaleLowerCase();
+    return matchesType && (!normalizedSearch || searchText.includes(normalizedSearch));
+  });
+  const entityCounts = entities.reduce<Record<string, number>>((counts, entity) => {
+    counts[entity.entity_type] = (counts[entity.entity_type] ?? 0) + 1;
+    return counts;
+  }, {});
+  const eventCounts = events.reduce<Record<string, number>>((counts, event) => {
+    counts[event.event_type] = (counts[event.event_type] ?? 0) + 1;
+    return counts;
+  }, {});
 
   return (
     <div className="product-shell">
@@ -624,31 +651,56 @@ export default function ProductWorkbench() {
                         {analysisRun && ["REVIEW", "CONFIRMED"].includes(analysisRun.status) && (
                           <div className="analysis-results">
                             <div className="result-summary">
-                              <div><span>人物与实体</span><strong>{entities.length}</strong></div>
-                              <div><span>关键事件</span><strong>{events.length}</strong></div>
+                              <div><span>实体候选</span><strong>{entities.length}</strong></div>
+                              <div><span>事件候选</span><strong>{events.length}</strong></div>
                               <div><span>原文证据</span><strong>{entities.reduce((sum, item) => sum + item.evidence_ids.length, 0) + events.reduce((sum, item) => sum + item.evidence_ids.length, 0)}</strong></div>
-                              <div><span>分析状态</span><strong>{analysisRun.status === "CONFIRMED" ? "已确认" : "待确认"}</strong></div>
+                              <div><span>整理状态</span><strong>候选整理中</strong></div>
+                            </div>
+
+                            <div className="result-notice">
+                              <strong>这是自动提取的候选，不是最终人物表或剧情表。</strong>
+                              <span>系统正在继续补人物归一、剧情阶段和跨章事件。现在只适合浏览和回查原文，不需要你确认这批结果。</span>
                             </div>
 
                             <div className="analysis-tabs" role="tablist" aria-label="分析结果">
                               <button type="button" role="tab" aria-selected={analysisView === "entities"} className={analysisView === "entities" ? "active" : ""} onClick={() => setAnalysisView("entities")}>
-                                人物与实体 <span>{entities.length}</span>
+                                实体候选 <span>{entities.length}</span>
                               </button>
                               <button type="button" role="tab" aria-selected={analysisView === "events"} className={analysisView === "events" ? "active" : ""} onClick={() => setAnalysisView("events")}>
-                                剧情与事件 <span>{events.length}</span>
+                                事件候选 <span>{events.length}</span>
                               </button>
                             </div>
 
                             <div className="result-browser">
                               <div className="result-list">
-                                {analysisView === "entities" && entities.map((entity) => (
+                                <div className="result-toolbar">
+                                  <input
+                                    aria-label="搜索当前结果"
+                                    value={resultSearch}
+                                    onChange={(event) => setResultSearch(event.target.value)}
+                                    placeholder={analysisView === "entities" ? "搜索名称、别名或说明" : "搜索事件、摘要或参与人物"}
+                                  />
+                                  <div className="result-filters" role="group" aria-label="结果分类">
+                                    {analysisView === "entities" ? ENTITY_TYPES.map((type) => (
+                                      <button type="button" key={type} className={entityFilter === type ? "active" : ""} onClick={() => setEntityFilter(type)}>
+                                        {type === "ALL" ? "全部" : ENTITY_LABELS[type]} <span>{type === "ALL" ? entities.length : entityCounts[type] ?? 0}</span>
+                                      </button>
+                                    )) : EVENT_TYPES.map((type) => (
+                                      <button type="button" key={type} className={eventFilter === type ? "active" : ""} onClick={() => setEventFilter(type)}>
+                                        {type === "ALL" ? "全部" : EVENT_LABELS[type]} <span>{type === "ALL" ? events.length : eventCounts[type] ?? 0}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                                {analysisView === "entities" && filteredEntities.map((entity) => (
                                   <article className="result-item" key={entity.id}>
                                     <header>
                                       <div><span>{ENTITY_LABELS[entity.entity_type]}</span><h3>{entity.name}</h3></div>
-                                      {entity.status === "UNCERTAIN" && <i>建议抽查</i>}
+                                      <i className={entity.status === "UNCERTAIN" ? "needs-review" : ""}>{entity.status === "UNCERTAIN" ? "建议抽查" : confidenceLabel(entity.confidence)}</i>
                                     </header>
                                     <p>{entity.description || "原文中已识别到该对象。"}</p>
                                     {entity.aliases.length > 0 && <small>其他称呼：{entity.aliases.join("、")}</small>}
+                                    <small>原文依据 {entity.evidence_ids.length} 处 · 置信度 {entity.confidence}%</small>
                                     <div className="evidence-buttons">
                                       {entity.evidence_ids.map((evidenceId, index) => (
                                         <button type="button" className="secondary-button" key={evidenceId} disabled={busy === `evidence-${evidenceId}`} onClick={() => void handleOpenEvidence(evidenceId)}>
@@ -658,14 +710,15 @@ export default function ProductWorkbench() {
                                     </div>
                                   </article>
                                 ))}
-                                {analysisView === "events" && events.map((event) => (
+                                {analysisView === "events" && filteredEvents.map((event, index) => (
                                   <article className="result-item event-item" key={event.id}>
                                     <header>
                                       <div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div>
-                                      {event.status === "UNCERTAIN" && <i>建议抽查</i>}
+                                      <i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "建议抽查" : confidenceLabel(event.confidence)}</i>
                                     </header>
                                     <p>{event.summary}</p>
                                     {event.participants.length > 0 && <small>相关人物：{event.participants.join("、")}</small>}
+                                    <small>当前批次顺序 {index + 1} · 原文依据 {event.evidence_ids.length} 处 · 置信度 {event.confidence}%</small>
                                     <div className="evidence-buttons">
                                       {event.evidence_ids.map((evidenceId, index) => (
                                         <button type="button" className="secondary-button" key={evidenceId} disabled={busy === `evidence-${evidenceId}`} onClick={() => void handleOpenEvidence(evidenceId)}>
@@ -675,8 +728,8 @@ export default function ProductWorkbench() {
                                     </div>
                                   </article>
                                 ))}
-                                {analysisView === "entities" && !entities.length && <p className="result-empty">这次没有找到有可靠原文依据的人物或实体。</p>}
-                                {analysisView === "events" && !events.length && <p className="result-empty">这次没有找到有可靠原文依据的关键事件。</p>}
+                                {analysisView === "entities" && !filteredEntities.length && <p className="result-empty">没有符合当前分类或搜索条件的实体候选。</p>}
+                                {analysisView === "events" && !filteredEvents.length && <p className="result-empty">没有符合当前分类或搜索条件的事件候选。</p>}
                               </div>
 
                               <article className={`evidence-reader ${evidenceContext ? "open" : ""}`}>
@@ -704,17 +757,8 @@ export default function ProductWorkbench() {
                               </article>
                             </div>
 
-                            <footer className="analysis-confirm">
-                              {analysisRun.status === "CONFIRMED" ? (
-                                <div><strong>人物和事件已确认</strong><span>下一阶段将继续整理事实、人物状态和世界设定。</span></div>
-                              ) : (
-                                <>
-                                  <div><strong>请先浏览结果并抽查原文</strong><span>确认后才会进入事实与设定分析。</span></div>
-                                  <button type="button" disabled={busy === "confirm-analysis"} onClick={() => void handleConfirmAnalysis()}>
-                                    {busy === "confirm-analysis" ? "正在确认" : "确认人物和事件结果"}
-                                  </button>
-                                </>
-                              )}
+                            <footer className="analysis-confirm analysis-internal-state">
+                              <div><strong>当前阶段：内部整理中</strong><span>这批候选会继续进入人物归一、剧情阶段和跨章事件整理；完成后再安排你的第一次正式验收。</span></div>
                             </footer>
                           </div>
                         )}
