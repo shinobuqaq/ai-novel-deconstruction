@@ -286,6 +286,69 @@ def build_workbench_projection(
         deep_status = "READY"
         deep_payload = json.loads(deep_analysis.payload_json)
         deep_revision = deep_analysis.revision_no
+        for rule in deep_payload.get("world_rules", []):
+            rule_chapters: list[_ChapterRef] = []
+            for evidence_id in rule.get("evidence_ids", []):
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence is not None:
+                    rule_chapters.extend(
+                        _chapters_for_range(chapters, evidence.start_char, evidence.end_char)
+                    )
+            rule["discovered_chapter"] = min(
+                (chapter.ordinal for chapter in rule_chapters),
+                default=1,
+            )
+
+    resolution_by_name: dict[str, str] = {}
+    if deep_payload is not None:
+        for resolution in deep_payload.get("entity_resolutions", []):
+            canonical = resolution.get("canonical_name", "")
+            for name in resolution.get("merged_names", []):
+                resolution_by_name[_normalize(name)] = canonical
+    if resolution_by_name:
+        for event in events:
+            event["related_entities"] = _unique([
+                resolution_by_name.get(_normalize(name), name)
+                for name in event["related_entities"]
+            ])
+
+    grouped_related: dict[tuple[str, str], list[EntityCandidate]] = {}
+    for entity in related_entities:
+        canonical = resolution_by_name.get(_normalize(entity.name), entity.name)
+        grouped_related.setdefault((entity.entity_type, _normalize(canonical)), []).append(entity)
+    related_projection: list[dict] = []
+    for (entity_type, normalized_canonical), group in grouped_related.items():
+        canonical = resolution_by_name.get(_normalize(group[0].name), group[0].name)
+        aliases = _unique([
+            alias
+            for entity in group
+            for alias in [
+                *(name for name in [entity.name] if name != canonical),
+                *_read_json(entity.aliases_json),
+            ]
+            if alias != canonical
+        ])
+        related_projection.append({
+            "id": f"ent_{_hash(f'{run_id}:{entity_type}:{normalized_canonical}')[:32]}",
+            "run_id": run_id,
+            "source_version_id": run.source_version_id,
+            "name": canonical,
+            "entity_type": entity_type,
+            "aliases": aliases,
+            "description": max((entity.description for entity in group), key=len),
+            "evidence_ids": _unique([
+                evidence_id
+                for entity in group
+                for evidence_id in _read_json(entity.evidence_ids_json)
+            ]),
+            "status": (
+                "UNCERTAIN"
+                if any(entity.status == CandidateStatus.UNCERTAIN.value for entity in group)
+                else "VALID"
+            ),
+            "confidence": max(entity.confidence for entity in group),
+        })
+    related_projection.sort(key=lambda item: (item["entity_type"], item["name"]))
 
     for character in characters:
         role = role_by_name.get(_normalize(character["name"]))
@@ -302,21 +365,7 @@ def build_workbench_projection(
         "source_version_id": run.source_version_id,
         "status": run.status,
         "characters": characters,
-        "related_entities": [
-            {
-                "id": entity.id,
-                "run_id": entity.run_id,
-                "source_version_id": entity.source_version_id,
-                "name": entity.name,
-                "entity_type": entity.entity_type,
-                "aliases": _read_json(entity.aliases_json),
-                "description": entity.description,
-                "evidence_ids": _read_json(entity.evidence_ids_json),
-                "status": entity.status,
-                "confidence": entity.confidence,
-            }
-            for entity in sorted(related_entities, key=lambda item: (item.entity_type, item.name))
-        ],
+        "related_entities": related_projection,
         "events": events,
         "phases": phases,
         "narrative_status": narrative_status,

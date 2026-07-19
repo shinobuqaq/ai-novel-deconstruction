@@ -420,6 +420,7 @@ class WorkbenchWorldRuleRead(BaseModel):
     costs: list[str]
     exceptions: list[str]
     evidence_ids: list[str]
+    discovered_chapter: int
 
 
 class WorkbenchForeshadowingRead(BaseModel):

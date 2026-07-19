@@ -320,6 +320,7 @@ export type WorkbenchWorldRule = {
   costs: string[];
   exceptions: string[];
   evidence_ids: string[];
+  discovered_chapter: number;
 };
 
 export type WorkbenchForeshadowing = {

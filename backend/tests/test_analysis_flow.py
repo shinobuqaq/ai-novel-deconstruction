@@ -147,7 +147,16 @@ class StaticAnalysisProvider:
                         "evidence_ids": [evidence_id],
                     }
                 ],
-                "world_rules": [],
+                "world_rules": [
+                    {
+                        "title": "密信留下追查线索",
+                        "description": "写明收信人的密信可以成为追查寄信人的直接线索。",
+                        "limitations": ["寄信人身份仍需核实"],
+                        "costs": [],
+                        "exceptions": [],
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
                 "foreshadowing": [
                     {
                         "title": "密信来源",
@@ -195,6 +204,7 @@ class StaticAnalysisProvider:
                         "confidence": 88,
                     }
                 ],
+                "entity_resolutions": [],
             }
         return ProviderResponse(
             raw_text=json.dumps(output, ensure_ascii=False),
@@ -371,6 +381,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["deep_status"] == "READY"
     assert projection["deep_analysis"]["fact_versions"][0]["status"] == "CONFIRMED"
     assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
+    assert projection["deep_analysis"]["world_rules"][0]["discovered_chapter"] == 1
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",

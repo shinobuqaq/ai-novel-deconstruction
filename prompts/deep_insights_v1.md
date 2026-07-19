@@ -22,5 +22,6 @@
 - conflicts：冲突双方、目标、障碍、赌注、升级、结果和当前状态。没有明确对抗关系时不要制造冲突。
 - scene_analysis：按章节或明显场景说明功能、信息释放、行动/对话比例和节奏。无法可靠区分场景时按章节输出，并将不确定性体现在内容中。
 - claims：输出少量最重要的 FACT、INFERENCE、PATTERN、INTERPRETATION 或 COMPARATIVE 主张。不要把所有摘要句都写成主张。
+- entity_resolutions：只处理组织、地点、物品和其他实体的重复名称或简称。merged_names 必须全部来自输入中的 related_entities 且类型一致，canonical_name 必须是 merged_names 中最清楚的一个名称。只有原文证据足以确认是同一对象时才合并；相似、上下级关系或同类对象不能合并。人物别名不在这个字段处理。
 
 宁可少输出、保留 UNCERTAIN 或证据不足，也不要为了填满列表而编造结果。

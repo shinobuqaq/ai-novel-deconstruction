@@ -186,7 +186,7 @@ function FormalWorkbench({
   }, [data, searchQuery]);
   const pointInTime = useMemo(() => {
     const deep = data.deep_analysis;
-    if (!deep) return { facts: [], states: [], knowledge: [] };
+    if (!deep) return { facts: [], states: [], knowledge: [], rules: [] };
     const facts = deep.fact_versions.filter((item) => (
       item.valid_from_chapter <= stateChapter
       && (item.valid_to_chapter === null || item.valid_to_chapter >= stateChapter)
@@ -207,7 +207,12 @@ function FormalWorkbench({
         if (!current || current.chapter_ordinal <= item.chapter_ordinal) knowledgeByKey.set(key, item);
       }
     }
-    return { facts, states: [...stateByKey.values()], knowledge: [...knowledgeByKey.values()] };
+    return {
+      facts,
+      states: [...stateByKey.values()],
+      knowledge: [...knowledgeByKey.values()],
+      rules: deep.world_rules.filter((item) => item.discovered_chapter <= stateChapter),
+    };
   }, [data.deep_analysis, stateChapter]);
   const evidenceButtons = (evidenceIds: string[], label = "查看原文") => (
     <div className="evidence-buttons">
@@ -487,12 +492,12 @@ function FormalWorkbench({
                   </section>
 
                   <section className="insight-group">
-                    <header><div><span>设定、限制与例外</span><h3>世界规则</h3></div><b>{data.deep_analysis.world_rules.length}</b></header>
+                    <header><div><span>截至第 {stateChapter} 章已经出现的设定、限制与例外</span><h3>世界规则</h3></div><b>{pointInTime.rules.length}</b></header>
                     <div className="formal-card-list compact-list">
-                      {data.deep_analysis.world_rules.map((rule) => (
-                        <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>
+                      {pointInTime.rules.map((rule) => (
+                        <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div><i>第 {rule.discovered_chapter} 章起可知</i></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>
                       ))}
-                      {!data.deep_analysis.world_rules.length && <p className="result-empty">当前章节尚未明确建立世界规则。</p>}
+                      {!pointInTime.rules.length && <p className="result-empty">截至这一章，原文尚未明确建立世界规则。</p>}
                     </div>
                   </section>
                 </>

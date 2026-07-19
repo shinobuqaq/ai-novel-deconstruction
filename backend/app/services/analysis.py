@@ -246,6 +246,16 @@ class AnalysisClaimProposal(BaseModel):
     confidence: int = Field(ge=0, le=100)
 
 
+class EntityResolutionProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_name: str = Field(min_length=1, max_length=120)
+    merged_names: list[str] = Field(min_length=2, max_length=10)
+    entity_type: Literal["ORGANIZATION", "PLACE", "OBJECT", "OTHER"]
+    reason: str = Field(min_length=1, max_length=600)
+    evidence_ids: list[str] = Field(min_length=1, max_length=12)
+
+
 class DeepAnalysisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,6 +267,7 @@ class DeepAnalysisOutput(BaseModel):
     conflicts: list[ConflictProposal] = Field(max_length=160)
     scene_analysis: list[SceneAnalysisProposal] = Field(max_length=500)
     claims: list[AnalysisClaimProposal] = Field(max_length=300)
+    entity_resolutions: list[EntityResolutionProposal] = Field(default_factory=list, max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1145,6 +1156,7 @@ def persist_deep_analysis(
         *output.conflicts,
         *output.scene_analysis,
         *output.claims,
+        *output.entity_resolutions,
     ]
     for item in evidence_items:
         evidence_ids = set(item.evidence_ids)
@@ -1182,6 +1194,25 @@ def persist_deep_analysis(
     )
     if not referenced_event_ids.issubset(valid_event_ids):
         raise ValueError("DEEP_ANALYSIS_EVENT_REFERENCE_INVALID")
+    related_by_name = {
+        _normalized_name(item["name"]): item
+        for item in foundation["related_entities"]
+    }
+    resolved_names: set[str] = set()
+    for resolution in output.entity_resolutions:
+        normalized_names = [_normalized_name(name) for name in resolution.merged_names]
+        if (
+            len(set(normalized_names)) != len(normalized_names)
+            or _normalized_name(resolution.canonical_name) not in normalized_names
+            or any(name not in related_by_name for name in normalized_names)
+            or any(
+                related_by_name[name]["entity_type"] != resolution.entity_type
+                for name in normalized_names
+            )
+            or resolved_names.intersection(normalized_names)
+        ):
+            raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")
+        resolved_names.update(normalized_names)
 
     payload = output.model_dump(mode="json")
     item_specs = (
@@ -1193,6 +1224,7 @@ def persist_deep_analysis(
         ("conflicts", "cnf", lambda item: item["title"]),
         ("scene_analysis", "scn", lambda item: f"{item['chapter_ordinal']}:{item['function']}:{item['summary']}"),
         ("claims", "clm", lambda item: f"{item['claim_kind']}:{item['scope']}:{item['claim_text']}"),
+        ("entity_resolutions", "ers", lambda item: f"{item['entity_type']}:{item['canonical_name']}:{':'.join(item['merged_names'])}"),
     )
     for collection, prefix, identity in item_specs:
         for index, item in enumerate(payload[collection], start=1):
