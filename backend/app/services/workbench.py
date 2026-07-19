@@ -40,6 +40,87 @@ def _unique(values: list[str]) -> list[str]:
     return result
 
 
+_GENERIC_PERSON_ALIASES = {
+    "他", "她", "它", "此人", "那人", "男人", "女人", "少年", "少女",
+    "老人", "老师", "先生", "女士", "同学", "老板", "经理", "主任",
+    "局长", "队长", "医生", "警察", "服务员", "司机",
+}
+_TITLE_SUFFIXES = (
+    "老师", "先生", "女士", "同学", "老板", "经理", "主任", "局长",
+    "队长", "医生", "警官", "师傅", "大人", "前辈",
+)
+
+
+def _specific_person_name(value: str) -> int:
+    normalized = _normalize(value)
+    if not normalized or normalized in _GENERIC_PERSON_ALIASES:
+        return 0
+    if any(normalized.endswith(suffix) for suffix in _TITLE_SUFFIXES):
+        return 1
+    if 2 <= len(normalized) <= 6:
+        return 3
+    return 2
+
+
+def _person_groups(entities: list[EntityCandidate]) -> list[list[EntityCandidate]]:
+    people = [item for item in entities if item.entity_type == "PERSON"]
+    aliases = [
+        {
+            normalized
+            for alias in _read_json(item.aliases_json)
+            if (normalized := _normalize(alias))
+            and normalized not in _GENERIC_PERSON_ALIASES
+        }
+        for item in people
+    ]
+    parents = list(range(len(people)))
+    sizes = [1] * len(people)
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for left in range(len(people)):
+        left_name = _normalize(people[left].name)
+        for right in range(left + 1, len(people)):
+            right_name = _normalize(people[right].name)
+            if not left_name or not right_name:
+                continue
+            directly_linked = (
+                left_name in aliases[right]
+                or right_name in aliases[left]
+            )
+            if not directly_linked:
+                continue
+            left_root = find(left)
+            right_root = find(right)
+            # Do not create an unreviewed transitive alias chain. A third name
+            # remains separate until a later evidence-backed resolution step.
+            if left_root == right_root or sizes[left_root] > 1 or sizes[right_root] > 1:
+                continue
+            parents[right_root] = left_root
+            sizes[left_root] += sizes[right_root]
+
+    grouped: dict[int, list[EntityCandidate]] = {}
+    for index, person in enumerate(people):
+        grouped.setdefault(find(index), []).append(person)
+    return list(grouped.values())
+
+
+def _canonical_person(group: list[EntityCandidate]) -> EntityCandidate:
+    return max(
+        group,
+        key=lambda item: (
+            _specific_person_name(item.name),
+            item.confidence,
+            len(item.description),
+            -len(item.name),
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ChapterRef:
     ordinal: int
@@ -115,17 +196,18 @@ def build_workbench_projection(
         )
     }
 
+    person_groups = _person_groups(entities)
     person_names: set[str] = set()
-    person_by_name: dict[str, EntityCandidate] = {}
-    for entity in entities:
-        if entity.entity_type != "PERSON":
-            continue
-        names = [entity.name, *_read_json(entity.aliases_json)]
+    for group in person_groups:
+        names = [
+            name
+            for entity in group
+            for name in [entity.name, *_read_json(entity.aliases_json)]
+        ]
         for name in names:
             normalized = _normalize(name)
             if normalized:
                 person_names.add(normalized)
-                person_by_name.setdefault(normalized, entity)
 
     related_entities = [entity for entity in entities if entity.entity_type != "PERSON"]
 
@@ -182,8 +264,20 @@ def build_workbench_projection(
     events.sort(key=lambda item: (item["start_char"], item["title"]))
 
     characters: list[dict] = []
-    for entity in sorted((item for item in entities if item.entity_type == "PERSON"), key=lambda item: item.name):
-        evidence_ids = _read_json(entity.evidence_ids_json)
+    for group in sorted(person_groups, key=lambda items: _canonical_person(items).name):
+        entity = _canonical_person(group)
+        group_names = _unique([
+            name
+            for item in group
+            for name in [item.name, *_read_json(item.aliases_json)]
+        ])
+        aliases = [name for name in group_names if _normalize(name) != _normalize(entity.name)]
+        normalized_group_names = {_normalize(name) for name in group_names}
+        evidence_ids = _unique([
+            evidence_id
+            for item in group
+            for evidence_id in _read_json(item.evidence_ids_json)
+        ])
         refs = [
             evidence_by_id[item]
             for item in evidence_ids
@@ -192,7 +286,7 @@ def build_workbench_projection(
         character_event_ids = [
             event["id"]
             for event in events
-            if any(_normalize(person) in {_normalize(entity.name), *(_normalize(alias) for alias in _read_json(entity.aliases_json))} for person in event["people"])
+            if any(_normalize(person) in normalized_group_names for person in event["people"])
         ]
         chapter_refs: list[_ChapterRef] = []
         for evidence in refs:
@@ -203,8 +297,8 @@ def build_workbench_projection(
         characters.append({
             "id": f"chr_{_hash(f'{run_id}:{entity.normalized_name}')[:32]}",
             "name": entity.name,
-            "aliases": _read_json(entity.aliases_json),
-            "description": entity.description,
+            "aliases": aliases,
+            "description": max((item.description for item in group), key=len),
             "evidence_ids": evidence_ids,
             "event_ids": character_event_ids,
             "first_chapter_ordinal": chapter_refs[0].ordinal if chapter_refs else None,
@@ -213,8 +307,17 @@ def build_workbench_projection(
             "last_chapter_title": chapter_refs[-1].title if chapter_refs else None,
             "appearance_count": appearance_count,
             "activity_level": activity_level,
-            "status": entity.status,
-            "confidence": entity.confidence,
+            "status": (
+                "UNCERTAIN"
+                if len(group) > 1 or any(item.status == CandidateStatus.UNCERTAIN.value for item in group)
+                else "VALID"
+            ),
+            "confidence": max(item.confidence for item in group),
+            "identity_notes": (
+                [f"依据直接别名关系合并展示：{'、'.join(item.name for item in group)}。建议通过原文依据抽查身份。"]
+                if len(group) > 1
+                else []
+            ),
         })
 
     synthesis = session.scalar(
@@ -355,7 +458,14 @@ def build_workbench_projection(
     related_projection.sort(key=lambda item: (item["entity_type"], item["name"]))
 
     for character in characters:
-        role = role_by_name.get(_normalize(character["name"]))
+        role = next(
+            (
+                role_by_name[name]
+                for name in [_normalize(character["name"]), *(_normalize(alias) for alias in character["aliases"])]
+                if name in role_by_name
+            ),
+            None,
+        )
         character.update({
             "role": role.get("role", "UNCLASSIFIED") if role else "UNCLASSIFIED",
             "role_reason": role.get("role_reason", "尚未完成角色定位") if role else "尚未完成角色定位",

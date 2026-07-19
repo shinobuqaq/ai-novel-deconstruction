@@ -482,6 +482,7 @@ function FormalWorkbench({
                   </header>
                   <p>{character.description || "原文中已识别到该人物。"}</p>
                   <small>{character.role_reason}</small>
+                  {character.identity_notes.map((note) => <small className="identity-note" key={note}>{note}</small>)}
                   {character.aliases.length > 0 && <small>别名或称谓：{character.aliases.join("、")}</small>}
                   {character.identities.length > 0 && <small>身份：{character.identities.join("、")}</small>}
                   {character.goals.length > 0 && <small>目标：{character.goals.join("、")}</small>}

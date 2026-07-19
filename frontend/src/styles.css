@@ -264,6 +264,7 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .phase-card h3, .formal-card h3 { margin: 0; overflow-wrap: anywhere; font-size: 16px; }
 .phase-card p, .formal-card p { margin: 0; color: #34424e; font-size: 13px; line-height: 1.65; }
 .phase-card small, .formal-card small { color: #687985; font-size: 11px; line-height: 1.5; }
+.formal-card .identity-note { padding: 7px 9px; border-left: 3px solid #c69b45; background: #fff9ec; color: #725820; }
 .formal-card header > div { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .formal-card header > div > span { flex: 0 0 auto; padding: 3px 6px; border-radius: 4px; background: #e6f0f2; }
 .formal-card header i { flex: 0 0 auto; color: #4d7180; font-size: 11px; font-style: normal; }

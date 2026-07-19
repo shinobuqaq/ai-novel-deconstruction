@@ -243,6 +243,7 @@ export type WorkbenchCharacter = {
   important_experiences: string[];
   current_state: string;
   arc_summary: string;
+  identity_notes: string[];
 };
 
 export type WorkbenchEvent = {

@@ -399,7 +399,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/artifacts/{completed_task['result_artifact_id']}/content"
     ).json()
     assert artifact["request"]["prompt_id"] == "entities_events"
-    assert artifact["request"]["prompt_version"] == "1.0.0"
+    assert artifact["request"]["prompt_version"] == "1.1.0"
     assert artifact["request"]["source_version_id"] == version_id
     assert len(artifact["request"]["input_sha256"]) == 64
     assert "参与事件的人物" in artifact["request"]["instructions"]

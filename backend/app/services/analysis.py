@@ -39,7 +39,7 @@ NARRATIVE_SYNTHESIS_TASK_KIND = "analysis.narrative_synthesis"
 DEEP_ANALYSIS_TASK_KIND = "analysis.deep_insights"
 ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
-ANALYSIS_PROMPT_VERSION = "1.0.0"
+ANALYSIS_PROMPT_VERSION = "1.1.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.2.0"
 DEEP_PROMPT_ID = "deep_insights"
@@ -1039,7 +1039,9 @@ def persist_narrative_synthesis(
     }
     valid_event_ids = {item["id"] for item in foundation["events"]}
     valid_character_names = {
-        _normalized_name(item["name"]) for item in foundation["characters"]
+        _normalized_name(name)
+        for item in foundation["characters"]
+        for name in [item["name"], *item.get("aliases", [])]
     }
     all_evidence_ids: list[str] = []
     for item in [output.story_overview, *output.character_roles, *output.character_relations, *output.narrative_phases, *output.event_relations]:
@@ -1188,7 +1190,9 @@ def persist_deep_analysis(
     valid_evidence_ids = {item["id"] for item in visible_input.get("evidence", [])}
     valid_event_ids = {item["id"] for item in foundation["events"]}
     valid_character_names = {
-        _normalized_name(item["name"]) for item in foundation["characters"]
+        _normalized_name(name)
+        for item in foundation["characters"]
+        for name in [item["name"], *item.get("aliases", [])]
     }
     chapter_count = len(visible_input.get("chapters", []))
 

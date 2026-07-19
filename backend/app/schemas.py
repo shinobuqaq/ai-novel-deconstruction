@@ -343,6 +343,7 @@ class WorkbenchCharacterRead(BaseModel):
     important_experiences: list[str] = Field(default_factory=list)
     current_state: str = ""
     arc_summary: str = ""
+    identity_notes: list[str] = Field(default_factory=list)
 
 
 class WorkbenchEventRead(BaseModel):
