@@ -153,12 +153,31 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert progress["completed_batches"] == 1
     assert progress["failed_batches"] == 0
 
+    completed_task = client.get(f"/api/tasks/{claim.id}").json()
+    artifact = client.get(
+        f"/api/artifacts/{completed_task['result_artifact_id']}/content"
+    ).json()
+    assert artifact["request"]["prompt_id"] == "entities_events"
+    assert artifact["request"]["prompt_version"] == "1.0.0"
+    assert artifact["request"]["source_version_id"] == version_id
+    assert len(artifact["request"]["input_sha256"]) == 64
+    assert "参与事件的人物" in artifact["request"]["instructions"]
+
     entities = client.get(f"/api/analysis-runs/{run['id']}/entities").json()
     events = client.get(f"/api/analysis-runs/{run['id']}/events").json()
     assert [item["name"] for item in entities] == ["林舟"]
     assert [item["title"] for item in events] == ["林舟发现密信"]
     assert entities[0]["status"] == "VALID"
     assert events[0]["status"] == "VALID"
+
+    workbench = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert workbench.status_code == 200
+    projection = workbench.json()
+    assert [item["name"] for item in projection["characters"]] == ["林舟"]
+    assert projection["events"][0]["people"] == ["林舟"]
+    assert projection["events"][0]["chapter_titles"] == ["第一章 归来"]
+    assert len(projection["phases"]) == 1
+    assert projection["phases"][0]["event_ids"] == [projection["events"][0]["id"]]
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

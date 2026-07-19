@@ -47,6 +47,7 @@ from .schemas import (
     EvidenceContextRead,
     EvidenceSpanRead,
     EventCandidateRead,
+    WorkbenchRead,
     ModelCatalogRead,
     ModelConnectionRead,
     ModelProbeRead,
@@ -80,6 +81,7 @@ from .services.analysis import (
     refresh_analysis_run,
     start_entities_events_run,
 )
+from .services.workbench import build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
     ModelService,
@@ -754,6 +756,23 @@ def analysis_events_list(
         .order_by(EventCandidate.start_char, EventCandidate.title)
     )
     return [_event_candidate_read(item) for item in candidates]
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/workbench",
+    response_model=WorkbenchRead,
+)
+def analysis_workbench_get(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> WorkbenchRead:
+    try:
+        projection = build_workbench_projection(session, run_id)
+    except ValueError as error:
+        if str(error) == "ANALYSIS_RUN_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
+        raise
+    return WorkbenchRead.model_validate(projection)
 
 
 @router.post(

@@ -33,6 +33,8 @@ from .provider_config import ENTITIES_EVENTS_PROFILE_ID, ModelSettingsError, res
 
 ANALYSIS_TASK_KIND = "analysis.entities_events"
 ANALYSIS_STAGE = "ENTITIES_EVENTS"
+ANALYSIS_PROMPT_ID = "entities_events"
+ANALYSIS_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
 CHUNK_OVERLAP_CHARS = 600
 
@@ -216,6 +218,11 @@ def _schema() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _analysis_prompt() -> str:
+    path = Path(__file__).resolve().parents[3] / "prompts" / "entities_events_v1.md"
+    return path.read_text(encoding="utf-8").strip()
+
+
 def provider_payload_for_claim(
     session: Session,
     settings: Settings,
@@ -228,17 +235,17 @@ def provider_payload_for_claim(
     start = int(task_payload["start_char"])
     end = int(task_payload["end_char"])
     excerpt = text[start:end]
-    instructions = (
-        "你是中文小说信息抽取器。只根据给定原文识别明确出现的人物、地点、组织、重要物品和关键事件。"
-        "不要补写原文没有的信息，不要把推测写成事实。每个候选必须附上1到3段从原文逐字复制的短引文；"
-        "引文是后续定位的唯一依据。事件应是会改变剧情、信息、关系或状态的具体发生项，忽略普通修辞和无关动作。"
-        "输出必须严格符合给定 JSON Schema。"
-    )
+    instructions = _analysis_prompt()
     return {
         "instructions": instructions,
         "input": f"原文在全书中的字符范围：{start}-{end}\n\n{excerpt}",
         "output_schema": _schema(),
         "model_profile_id": str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
+        "prompt_id": ANALYSIS_PROMPT_ID,
+        "prompt_version": ANALYSIS_PROMPT_VERSION,
+        "source_version_id": version.id,
+        "source_char_start": start,
+        "source_char_end": end,
     }
 
 

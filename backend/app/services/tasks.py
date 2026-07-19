@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -112,6 +113,23 @@ async def execute_task(
                 "completion_tokens": response.completion_tokens,
             },
         }
+        if claim.kind == ANALYSIS_TASK_KIND:
+            request_input = str(provider_payload.get("input") or "")
+            output_schema = provider_payload.get("output_schema") or {}
+            artifact_payload["request"] = {
+                "prompt_id": provider_payload.get("prompt_id"),
+                "prompt_version": provider_payload.get("prompt_version"),
+                "instructions": provider_payload.get("instructions"),
+                "source_version_id": provider_payload.get("source_version_id"),
+                "source_char_start": provider_payload.get("source_char_start"),
+                "source_char_end": provider_payload.get("source_char_end"),
+                "input_chars": len(request_input),
+                "input_sha256": hashlib.sha256(request_input.encode("utf-8")).hexdigest(),
+                "output_schema_sha256": hashlib.sha256(
+                    json.dumps(output_schema, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+                "model_profile_id": provider_payload.get("model_profile_id"),
+            }
         if persisted_analysis is not None:
             artifact_payload["accepted"] = {
                 "entity_ids": list(persisted_analysis.entity_ids),

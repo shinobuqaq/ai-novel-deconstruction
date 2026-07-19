@@ -192,6 +192,61 @@ export type EventCandidate = {
   confidence: number;
 };
 
+export type WorkbenchCharacter = {
+  id: string;
+  name: string;
+  aliases: string[];
+  description: string;
+  evidence_ids: string[];
+  event_ids: string[];
+  first_chapter_ordinal: number | null;
+  first_chapter_title: string | null;
+  last_chapter_ordinal: number | null;
+  last_chapter_title: string | null;
+  appearance_count: number;
+  activity_level: string;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+};
+
+export type WorkbenchEvent = {
+  id: string;
+  title: string;
+  event_type: string;
+  summary: string;
+  people: string[];
+  related_entities: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  start_char: number;
+  end_char: number;
+  mention_count: number;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+};
+
+export type WorkbenchPhase = {
+  id: string;
+  title: string;
+  summary: string;
+  event_ids: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  people: string[];
+};
+
+export type Workbench = {
+  run_id: string;
+  source_version_id: string;
+  status: string;
+  characters: WorkbenchCharacter[];
+  related_entities: EntityCandidate[];
+  events: WorkbenchEvent[];
+  phases: WorkbenchPhase[];
+};
+
 export type EvidenceContext = {
   evidence: {
     id: string;
@@ -321,6 +376,8 @@ export const api = {
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
+  analysisWorkbench: (runId: string) =>
+    request<Workbench>(`/api/analysis-runs/${runId}/workbench`),
   confirmAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/confirm`, { method: "POST" }),
   evidenceContext: (evidenceId: string) =>

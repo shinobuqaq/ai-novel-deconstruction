@@ -290,3 +290,58 @@ class EventCandidateRead(BaseModel):
     end_char: int
     status: str
     confidence: int
+
+
+class WorkbenchCharacterRead(BaseModel):
+    id: str
+    name: str
+    aliases: list[str]
+    description: str
+    evidence_ids: list[str]
+    event_ids: list[str]
+    first_chapter_ordinal: int | None
+    first_chapter_title: str | None
+    last_chapter_ordinal: int | None
+    last_chapter_title: str | None
+    appearance_count: int
+    activity_level: str
+    status: str
+    confidence: int
+
+
+class WorkbenchEventRead(BaseModel):
+    id: str
+    title: str
+    event_type: str
+    summary: str
+    people: list[str]
+    related_entities: list[str]
+    evidence_ids: list[str]
+    chapter_ordinals: list[int]
+    chapter_titles: list[str]
+    start_char: int
+    end_char: int
+    mention_count: int
+    status: str
+    confidence: int
+
+
+class WorkbenchPhaseRead(BaseModel):
+    id: str
+    title: str
+    summary: str
+    event_ids: list[str]
+    evidence_ids: list[str]
+    chapter_ordinals: list[int]
+    chapter_titles: list[str]
+    people: list[str]
+
+
+class WorkbenchRead(BaseModel):
+    run_id: str
+    source_version_id: str
+    status: str
+    characters: list[WorkbenchCharacterRead]
+    related_entities: list[EntityCandidateRead]
+    events: list[WorkbenchEventRead]
+    phases: list[WorkbenchPhaseRead]

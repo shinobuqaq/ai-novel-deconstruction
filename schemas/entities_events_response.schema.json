@@ -30,7 +30,7 @@
           "title": {"type": "string", "minLength": 1, "maxLength": 150},
           "event_type": {"type": "string", "enum": ["ACTION", "DISCOVERY", "CONFLICT", "DECISION", "STATE_CHANGE", "OTHER"]},
           "summary": {"type": "string", "minLength": 1, "maxLength": 800},
-          "participants": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 20},
+          "participants": {"type": "array", "description": "实际参与事件的人物名称；地点、组织、物品、能力和程序不要放在这里。", "items": {"type": "string", "maxLength": 120}, "maxItems": 20},
           "evidence_quotes": {"type": "array", "items": {"type": "string", "minLength": 2, "maxLength": 500}, "minItems": 1, "maxItems": 3},
           "confidence": {"type": "integer", "minimum": 0, "maximum": 100}
         },
