@@ -358,6 +358,7 @@ class EventCandidate(Base):
     event_type: Mapped[str] = mapped_column(String(60), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     participants_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     start_char: Mapped[int] = mapped_column(Integer, nullable=False)
     end_char: Mapped[int] = mapped_column(Integer, nullable=False)

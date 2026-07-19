@@ -48,6 +48,12 @@ ANALYSIS_OUTPUT = {
             "event_type": "DISCOVERY",
             "summary": "林舟在桌上发现一封写着自己名字的密信。",
             "participants": ["林舟"],
+            "narrative_mode": "ACTUAL",
+            "location": "旧宅",
+            "trigger": "林舟回到旧宅并进入房间。",
+            "process": "林舟看见桌上放着一封写有自己名字的密信。",
+            "outcome": "林舟确认有人专门给自己留下了密信。",
+            "impact": "林舟决定追查寄信人的身份和目的。",
             "evidence_quotes": ["桌上放着一封写着他名字的密信"],
             "confidence": 94,
         }
@@ -399,7 +405,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/artifacts/{completed_task['result_artifact_id']}/content"
     ).json()
     assert artifact["request"]["prompt_id"] == "entities_events"
-    assert artifact["request"]["prompt_version"] == "1.1.0"
+    assert artifact["request"]["prompt_version"] == "1.2.0"
     assert artifact["request"]["source_version_id"] == version_id
     assert len(artifact["request"]["input_sha256"]) == 64
     assert "参与事件的人物" in artifact["request"]["instructions"]
@@ -423,6 +429,11 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["characters"][0]["arc_summary"] == "从被动发现转向主动追查。"
     assert projection["events"][0]["people"] == ["林舟"]
     assert projection["events"][0]["chapter_titles"] == ["第一章 归来"]
+    assert projection["events"][0]["narrative_mode"] == "ACTUAL"
+    assert projection["events"][0]["location"] == "旧宅"
+    assert projection["events"][0]["trigger"] == "林舟回到旧宅并进入房间。"
+    assert projection["events"][0]["outcome"] == "林舟确认有人专门给自己留下了密信。"
+    assert projection["events"][0]["boundary_status"] == "EXACT_SPAN"
     assert len(projection["phases"]) == 1
     assert projection["phases"][0]["event_ids"] == [projection["events"][0]["id"]]
     assert projection["phases"][0]["title"] == "雨夜归来与密信出现"

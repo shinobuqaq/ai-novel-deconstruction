@@ -261,6 +261,14 @@ export type WorkbenchEvent = {
   mention_count: number;
   status: "VALID" | "UNCERTAIN";
   confidence: number;
+  narrative_mode: "ACTUAL" | "MEMORY" | "REPORT" | "LIE" | "MISUNDERSTANDING" | "HYPOTHESIS" | "REPEATED_MENTION" | "UNCERTAIN";
+  location: string;
+  trigger: string;
+  process: string;
+  outcome: string;
+  impact: string;
+  boundary_status: "EXACT_SPAN" | "MULTI_SPAN" | "UNRESOLVED";
+  boundary_note: string;
 };
 
 export type WorkbenchPhase = {

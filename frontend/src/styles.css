@@ -278,6 +278,13 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .phase-event-list div { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #edf0f2; }
 .phase-event-list span { color: #6e7c87; font-size: 10px; }
 .phase-event-list strong { color: #344452; font-size: 12px; }
+.event-nature { display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border-left: 3px solid #5f929d; background: #edf5f6; }
+.event-nature strong { flex: 0 0 auto; color: #245e6a; font-size: 11px; }
+.event-nature span { color: #5f707b; font-size: 10px; line-height: 1.5; }
+.event-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border: 1px solid #e0e5e8; }
+.event-detail-grid div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; padding: 9px 10px; border-bottom: 1px solid #edf0f2; }
+.event-detail-grid dt { color: #687985; font-size: 10px; font-weight: 800; }
+.event-detail-grid dd { margin: 0; color: #34424e; font-size: 11px; line-height: 1.5; }
 .related-entity-summary { margin-top: 12px; padding: 14px; border: 1px solid #dce2e7; border-radius: 7px; background: #fff; }
 .related-entity-summary header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .related-entity-summary h3 { margin: 0; font-size: 14px; }

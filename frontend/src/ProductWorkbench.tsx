@@ -59,6 +59,17 @@ const EVENT_LABELS: Record<string, string> = {
   OTHER: "其他",
 };
 
+const NARRATIVE_MODE_LABELS: Record<string, string> = {
+  ACTUAL: "真实发生",
+  MEMORY: "回忆",
+  REPORT: "传闻或转述",
+  LIE: "谎言",
+  MISUNDERSTANDING: "误解",
+  HYPOTHESIS: "推测",
+  REPEATED_MENTION: "重复提及",
+  UNCERTAIN: "性质待确认",
+};
+
 const ROLE_LABELS: Record<string, string> = {
   PROTAGONIST: "主角",
   CORE_SUPPORTING: "核心配角",
@@ -218,7 +229,7 @@ function FormalWorkbench({
     if (!query) return [];
     const entries = [
       ...viewData.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.identities.join(" ")} ${item.goals.join(" ")} ${item.motivations.join(" ")} ${item.abilities.join(" ")} ${item.secrets.join(" ")} ${item.arc_summary}`, evidenceIds: item.evidence_ids })),
-      ...viewData.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")}`, evidenceIds: item.evidence_ids })),
+      ...viewData.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")} ${item.location} ${item.trigger} ${item.process} ${item.outcome} ${item.impact}`, evidenceIds: item.evidence_ids })),
       ...viewData.phases.map((item) => ({ key: item.id, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
       ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value}`, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.world_rules.map((item) => ({ key: item.id, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
@@ -537,8 +548,16 @@ function FormalWorkbench({
                 <article className="formal-card event-formal-card" key={event.id}>
                   <header><div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div><i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "待抽查" : event.chapter_titles.join("、") || "章节待定"}</i></header>
                   <p>{event.summary}</p>
+                  <div className="event-nature"><strong>{NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</strong><span>{event.boundary_note}</span></div>
                   {event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}
                   {event.related_entities.length > 0 && <small>相关地点、组织或事物：{event.related_entities.join("、")}</small>}
+                  {event.location && <small>发生地点：{event.location}</small>}
+                  <dl className="event-detail-grid">
+                    {event.trigger && <div><dt>起因</dt><dd>{event.trigger}</dd></div>}
+                    {event.process && <div><dt>过程</dt><dd>{event.process}</dd></div>}
+                    {event.outcome && <div><dt>结果</dt><dd>{event.outcome}</dd></div>}
+                    {event.impact && <div><dt>后续影响</dt><dd>{event.impact}</dd></div>}
+                  </dl>
                   <div className="character-meta"><span>{event.chapter_titles.join("、") || "章节待定"}</span><span>原文依据 {event.evidence_ids.length} 处</span><span>置信度 {event.confidence}%</span>{event.mention_count > 1 && <span>合并 {event.mention_count} 次提及</span>}</div>
                   {evidenceButtons(event.evidence_ids)}
                   {markProblemButton("EVENT", event.id, event.title)}
@@ -550,9 +569,9 @@ function FormalWorkbench({
 
           {!searchQuery.trim() && view === "timeline" && (
             <div className="deep-analysis-view">
-              <div className="workbench-callout"><strong>按故事推进顺序查看</strong><span>同一事件的重复提及会合并显示；回忆、传闻和误解仍需更多事件边界能力才能完整区分。</span></div>
+              <div className="workbench-callout"><strong>按原文推进顺序查看</strong><span>事件会标明真实发生、回忆、传闻、谎言、误解、推测或重复提及；多段依据不会被错误拼成一段连续正文。</span></div>
               <div className="event-timeline">
-                {viewData.events.map((event, index) => <article key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}{evidenceButtons(event.evidence_ids)}</div></article>)}
+                {viewData.events.map((event, index) => <article key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}{evidenceButtons(event.evidence_ids)}</div></article>)}
                 {!viewData.events.length && <p className="result-empty">当前没有整理出事件时间线。</p>}
               </div>
               {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><strong>{relation.source_title} → {relation.target_title}</strong><span>{relation.relation}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}

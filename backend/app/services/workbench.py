@@ -162,6 +162,14 @@ def _read_json(value: str) -> list[str]:
     return [str(item) for item in parsed if isinstance(item, str)]
 
 
+def _read_object(value: str) -> dict:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _candidate_query(session: Session, model, run_id: str):
     return session.scalars(
         select(model)
@@ -223,16 +231,49 @@ def build_workbench_projection(
     # Only exact normalized title/type matches are merged here. The projection is
     # intentionally conservative; semantic merge suggestions belong in the next
     # review stage and must remain reversible.
-    grouped_events: dict[tuple[str, str], list[EventCandidate]] = {}
+    grouped_events: dict[tuple[str, str, str], list[EventCandidate]] = {}
     for event in event_candidates:
-        grouped_events.setdefault((_normalize(event.title), event.event_type), []).append(event)
+        details = _read_object(event.details_json)
+        narrative_mode = str(details.get("narrative_mode") or "UNCERTAIN")
+        grouped_events.setdefault(
+            (_normalize(event.title), event.event_type, narrative_mode),
+            [],
+        ).append(event)
 
     events: list[dict] = []
     event_id_by_candidate: dict[str, str] = {}
-    for (normalized_title, event_type), group in grouped_events.items():
+    for (normalized_title, event_type, narrative_mode), group in grouped_events.items():
         group = sorted(group, key=lambda item: (item.start_char, item.id))
-        canonical_id = f"cev_{_hash(f'{run_id}:{normalized_title}:{event_type}')[:32]}"
+        canonical_id = f"cev_{_hash(f'{run_id}:{normalized_title}:{event_type}:{narrative_mode}')[:32]}"
         evidence_ids = _unique([item for event in group for item in _read_json(event.evidence_ids_json)])
+        event_details = [_read_object(item.details_json) for item in group]
+
+        def longest_detail(name: str) -> str:
+            values = [str(item.get(name) or "") for item in event_details]
+            return max(values, key=len, default="")
+
+        evidence_spans = [evidence_by_id[item] for item in evidence_ids if item in evidence_by_id]
+        if not evidence_spans:
+            boundary_status = "UNRESOLVED"
+            boundary_note = "事件边界缺少可用的原文依据。"
+        elif len(evidence_spans) == 1:
+            boundary_status = "EXACT_SPAN"
+            boundary_note = "事件边界由一段连续原文依据定位。"
+        else:
+            ordered_spans = sorted(evidence_spans, key=lambda item: item.start_char)
+            largest_gap = max(
+                (
+                    current.start_char - previous.end_char
+                    for previous, current in zip(ordered_spans, ordered_spans[1:])
+                ),
+                default=0,
+            )
+            boundary_status = "MULTI_SPAN" if largest_gap > 1 else "EXACT_SPAN"
+            boundary_note = (
+                "该事件由多段分离的原文依据共同描述，页面没有把中间文字误算成事件正文。"
+                if boundary_status == "MULTI_SPAN"
+                else "事件边界由相邻的多段原文依据共同定位。"
+            )
         people: list[str] = []
         related: list[str] = []
         chapter_refs: list[_ChapterRef] = []
@@ -260,6 +301,14 @@ def build_workbench_projection(
             "mention_count": len(group),
             "status": "UNCERTAIN" if any(item.status == CandidateStatus.UNCERTAIN.value for item in group) else "VALID",
             "confidence": max(item.confidence for item in group),
+            "narrative_mode": narrative_mode,
+            "location": longest_detail("location"),
+            "trigger": longest_detail("trigger"),
+            "process": longest_detail("process"),
+            "outcome": longest_detail("outcome"),
+            "impact": longest_detail("impact"),
+            "boundary_status": boundary_status,
+            "boundary_note": boundary_note,
         })
     events.sort(key=lambda item: (item["start_char"], item["title"]))
 

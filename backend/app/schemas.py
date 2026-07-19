@@ -361,6 +361,14 @@ class WorkbenchEventRead(BaseModel):
     mention_count: int
     status: str
     confidence: int
+    narrative_mode: str = "UNCERTAIN"
+    location: str = ""
+    trigger: str = ""
+    process: str = ""
+    outcome: str = ""
+    impact: str = ""
+    boundary_status: str = "UNRESOLVED"
+    boundary_note: str = ""
 
 
 class WorkbenchPhaseRead(BaseModel):

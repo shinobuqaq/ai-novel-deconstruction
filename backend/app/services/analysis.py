@@ -39,7 +39,7 @@ NARRATIVE_SYNTHESIS_TASK_KIND = "analysis.narrative_synthesis"
 DEEP_ANALYSIS_TASK_KIND = "analysis.deep_insights"
 ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
-ANALYSIS_PROMPT_VERSION = "1.1.0"
+ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.2.0"
 DEEP_PROMPT_ID = "deep_insights"
@@ -84,6 +84,21 @@ class EventProposal(BaseModel):
     event_type: Literal["ACTION", "DISCOVERY", "CONFLICT", "DECISION", "STATE_CHANGE", "OTHER"]
     summary: str = Field(min_length=1, max_length=800)
     participants: list[str] = Field(default_factory=list, max_length=20)
+    narrative_mode: Literal[
+        "ACTUAL",
+        "MEMORY",
+        "REPORT",
+        "LIE",
+        "MISUNDERSTANDING",
+        "HYPOTHESIS",
+        "REPEATED_MENTION",
+        "UNCERTAIN",
+    ] = "UNCERTAIN"
+    location: str = Field(default="", max_length=200)
+    trigger: str = Field(default="", max_length=600)
+    process: str = Field(default="", max_length=1000)
+    outcome: str = Field(default="", max_length=800)
+    impact: str = Field(default="", max_length=800)
     evidence_quotes: list[str] = Field(min_length=1, max_length=3)
     confidence: int = Field(ge=0, le=100)
 
@@ -906,7 +921,9 @@ def persist_analysis_output(
             rejected_events += 1
         event_start = min((item[0] for item in positions), default=batch_start)
         event_end = max((item[1] for item in positions), default=batch_start)
-        identity_key = _hash(f"{_normalized_name(proposal.title)}:{event_start}:{event_end}")
+        identity_key = _hash(
+            f"{_normalized_name(proposal.title)}:{proposal.narrative_mode}:{event_start}:{event_end}"
+        )
         candidate = session.scalar(
             select(EventCandidate).where(
                 EventCandidate.run_id == run.id,
@@ -924,6 +941,18 @@ def persist_analysis_output(
                 event_type=proposal.event_type,
                 summary=proposal.summary.strip(),
                 participants_json=json.dumps(proposal.participants, ensure_ascii=False),
+                details_json=json.dumps(
+                    {
+                        "narrative_mode": proposal.narrative_mode,
+                        "location": proposal.location.strip(),
+                        "trigger": proposal.trigger.strip(),
+                        "process": proposal.process.strip(),
+                        "outcome": proposal.outcome.strip(),
+                        "impact": proposal.impact.strip(),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 evidence_ids_json=json.dumps(evidence_ids, ensure_ascii=False),
                 start_char=event_start,
                 end_char=event_end,
@@ -936,6 +965,18 @@ def persist_analysis_output(
         else:
             candidate.evidence_ids_json = _merge_json_list(candidate.evidence_ids_json, evidence_ids)
             candidate.participants_json = _merge_json_list(candidate.participants_json, proposal.participants)
+            candidate.details_json = json.dumps(
+                {
+                    "narrative_mode": proposal.narrative_mode,
+                    "location": proposal.location.strip(),
+                    "trigger": proposal.trigger.strip(),
+                    "process": proposal.process.strip(),
+                    "outcome": proposal.outcome.strip(),
+                    "impact": proposal.impact.strip(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
             candidate.confidence = max(candidate.confidence, proposal.confidence)
             candidate.status = _stronger_candidate_status(candidate.status, status)
             if status != CandidateStatus.REJECTED.value:

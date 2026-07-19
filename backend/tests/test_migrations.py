@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0010_task_attempt_diagnostics",)
+    assert revision == ("0011_event_details",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -288,6 +288,10 @@ def test_migrated_schema_contains_task_attempt_constraints(
             row[1]
             for row in connection.execute("PRAGMA index_list(analysis_issues)")
         }
+        event_candidate_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(event_candidates)")
+        }
 
     assert {
         "current_attempt_id",
@@ -407,6 +411,7 @@ def test_migrated_schema_contains_task_attempt_constraints(
         "ix_analysis_issues_run_id",
         "ix_analysis_issues_run_status",
     }.issubset(issue_indexes)
+    assert "details_json" in event_candidate_columns
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -463,7 +468,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0010_task_attempt_diagnostics",)
+    assert revision_after == ("0011_event_details",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"
