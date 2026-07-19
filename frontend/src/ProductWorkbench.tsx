@@ -158,6 +158,8 @@ type FormalWorkbenchProps = {
   onSelectChapter: (chapterId: string) => void;
   busy: string;
   onAnalysisRunChange: (run: AnalysisRun) => void;
+  onStartDeepAnalysis: () => void;
+  onConfirmAnalysis: () => void;
 }
 
 function FormalWorkbench({
@@ -174,6 +176,8 @@ function FormalWorkbench({
   onSelectChapter,
   busy,
   onAnalysisRunChange,
+  onStartDeepAnalysis,
+  onConfirmAnalysis,
 }: FormalWorkbenchProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [stateChapter, setStateChapter] = useState(data.chapters.at(-1)?.ordinal ?? 1);
@@ -451,8 +455,12 @@ function FormalWorkbench({
                     <div><dt>主角</dt><dd>{viewData.story_overview.protagonist}</dd></div>
                     <div><dt>当前目标</dt><dd>{viewData.story_overview.protagonist_goal || "证据不足"}</dd></div>
                     <div><dt>核心冲突</dt><dd>{viewData.story_overview.central_conflict || "证据不足"}</dd></div>
+                    <div><dt>开局局面</dt><dd>{viewData.story_overview.opening_situation || "证据不足"}</dd></div>
                     <div><dt>当前局面</dt><dd>{viewData.story_overview.current_situation || "证据不足"}</dd></div>
+                    <div><dt>当前结果</dt><dd>{viewData.story_overview.current_result || "证据不足"}</dd></div>
                   </dl>
+                  {viewData.story_overview.development_path.length > 0 && <section className="story-progression"><strong>故事如何发展</strong><ol>{viewData.story_overview.development_path.map((item, index) => <li key={`${index}-${item}`}><span>{index + 1}</span><p>{item}</p></li>)}</ol></section>}
+                  {viewData.story_overview.turning_points.length > 0 && <section className="turning-points"><strong>关键转折</strong>{viewData.story_overview.turning_points.map((item) => <span key={item}>{item}</span>)}</section>}
                   {viewData.story_overview.unresolved_questions.length > 0 && <div className="overview-questions"><strong>未解决问题</strong>{viewData.story_overview.unresolved_questions.map((item) => <span key={item}>{item}</span>)}</div>}
                   {evidenceButtons(viewData.story_overview.evidence_ids)}
                 </article>
@@ -731,9 +739,9 @@ function FormalWorkbench({
         ) : viewData.narrative_status !== "READY" ? (
           <div><strong>完整故事结构尚未完成</strong><span>当前内容仅供内部检查，不能作为正式拆解结果确认。</span></div>
         ) : viewData.deep_status !== "READY" ? (
-          <div><strong>深层拆解仍在生成</strong><span>系统正在整理事实状态、世界设定、伏笔、冲突和节奏，当前不需要用户确认。</span></div>
+          <><div><strong>第一阶段结果可以确认</strong><span>请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : "确认故事结构并继续"}</button></>
         ) : (
-          <div><strong>核心拆解已经生成</strong><span>所有重要结论均保留原文依据；证据不足或存在反证的内容会明确标出。</span></div>
+          <><div><strong>核心拆解已经生成</strong><span>所有重要结论均保留原文依据；证据不足或存在反证的内容会明确标出。</span></div>{analysisStatus === "REVIEW" && <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirmAnalysis}>{busy === "confirm-analysis" ? "正在保存确认" : "确认本次完整拆解"}</button>}</>
         )}
       </footer>
     </section>
@@ -994,6 +1002,32 @@ export default function ProductWorkbench() {
       setBusy("start-analysis");
       setError("");
       await loadAnalysisResults(await api.startAnalysis(activeVersion.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleStartDeepAnalysis() {
+    if (!analysisRun) return;
+    try {
+      setBusy("start-deep-analysis");
+      setError("");
+      await loadAnalysisResults(await api.startDeepAnalysis(analysisRun.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleConfirmAnalysis() {
+    if (!analysisRun) return;
+    try {
+      setBusy("confirm-analysis");
+      setError("");
+      await loadAnalysisResults(await api.confirmAnalysis(analysisRun.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1331,6 +1365,8 @@ export default function ProductWorkbench() {
                             onSelectChapter={setSelectedChapter}
                             busy={busy}
                             onAnalysisRunChange={(run) => void loadAnalysisResults(run)}
+                            onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
+                            onConfirmAnalysis={() => void handleConfirmAnalysis()}
                           />
                         )}
 

@@ -41,7 +41,7 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.2.0"
+NARRATIVE_PROMPT_VERSION = "1.3.0"
 DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.1.0"
 MAX_BATCH_CHARS = 18_000
@@ -118,7 +118,11 @@ class StoryOverviewProposal(BaseModel):
     protagonist: str = Field(min_length=1, max_length=120)
     protagonist_goal: str = Field(default="", max_length=600)
     central_conflict: str = Field(default="", max_length=1000)
+    opening_situation: str = Field(default="", max_length=1000)
+    development_path: list[str] = Field(default_factory=list, max_length=12)
+    turning_points: list[str] = Field(default_factory=list, max_length=8)
     current_situation: str = Field(default="", max_length=1000)
+    current_result: str = Field(default="", max_length=1000)
     unresolved_questions: list[str] = Field(default_factory=list, max_length=8)
     evidence_ids: list[str] = Field(min_length=1, max_length=12)
 
@@ -1390,7 +1394,8 @@ def refresh_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
             session.commit()
             return run
         if not any(task.kind == DEEP_ANALYSIS_TASK_KIND for task in tasks):
-            run.status = AnalysisRunStatus.PENDING.value
+            run.status = AnalysisRunStatus.REVIEW.value
+            run.finished_at = datetime.now(timezone.utc)
             session.commit()
             return run
         if run.status != AnalysisRunStatus.CONFIRMED.value:

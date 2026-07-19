@@ -80,7 +80,15 @@ class StaticAnalysisProvider:
                     "protagonist": character["name"],
                     "protagonist_goal": "找到密信的寄信人并弄清来意。",
                     "central_conflict": "密信来源不明，林舟掌握的信息不足。",
+                    "opening_situation": "林舟在雨夜独自回到旧宅，原本只准备暂时安顿。",
+                    "development_path": [
+                        "林舟进入旧宅并发现写着自己名字的密信。",
+                        "密信来源不明，使平静的归来变成需要追查的谜团。",
+                        "林舟决定天亮后主动寻找寄信人。",
+                    ],
+                    "turning_points": ["密信出现改变了林舟回到旧宅后的行动目标。"],
                     "current_situation": "林舟已经决定主动追查，但尚未找到寄信人。",
+                    "current_result": "林舟掌握了密信这一线索，并从被动发现转为主动追查。",
                     "unresolved_questions": ["寄信人是谁？", "密信为何写给林舟？"],
                     "evidence_ids": [evidence_id],
                 },
@@ -359,11 +367,23 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     progress = client.get(
         f"/api/source-versions/{version_id}/analysis/entities-events"
     ).json()
-    assert progress["status"] == "PENDING"
+    assert progress["status"] == "REVIEW"
     assert progress["completed_batches"] == 2
     assert progress["failed_batches"] == 0
+    assert progress["total_batches"] == 2
 
-    assert progress["total_batches"] == 3
+    foundation_workbench = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert foundation_workbench["narrative_status"] == "READY"
+    assert foundation_workbench["deep_status"] == "NOT_GENERATED"
+
+    continue_analysis = client.post(
+        f"/api/analysis-runs/{run['id']}/deep/start"
+    )
+    assert continue_analysis.status_code == 202
+    assert continue_analysis.json()["status"] == "PENDING"
+    assert continue_analysis.json()["total_batches"] == 3
 
     with client.app.state.session_factory() as session:
         deep_claim = claim_next_task(
@@ -422,6 +442,8 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     projection = workbench.json()
     assert projection["narrative_status"] == "READY"
     assert projection["story_overview"]["protagonist"] == "林舟"
+    assert len(projection["story_overview"]["development_path"]) == 3
+    assert projection["story_overview"]["current_result"].startswith("林舟掌握了密信")
     assert [item["name"] for item in projection["characters"]] == ["林舟"]
     assert projection["characters"][0]["role"] == "PROTAGONIST"
     assert projection["characters"][0]["identities"] == ["旧宅归来者"]

@@ -295,7 +295,11 @@ export type WorkbenchStoryOverview = {
   protagonist: string;
   protagonist_goal: string;
   central_conflict: string;
+  opening_situation: string;
+  development_path: string[];
+  turning_points: string[];
   current_situation: string;
+  current_result: string;
   unresolved_questions: string[];
   evidence_ids: string[];
 };

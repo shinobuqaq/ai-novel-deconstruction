@@ -395,7 +395,11 @@ class WorkbenchStoryOverviewRead(BaseModel):
     protagonist: str
     protagonist_goal: str
     central_conflict: str
+    opening_situation: str = ""
+    development_path: list[str] = Field(default_factory=list)
+    turning_points: list[str] = Field(default_factory=list)
     current_situation: str
+    current_result: str = ""
     unresolved_questions: list[str]
     evidence_ids: list[str]
 
