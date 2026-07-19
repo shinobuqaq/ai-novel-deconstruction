@@ -20,11 +20,28 @@ from ..repositories import (
 from .artifacts import write_json_artifact
 from .analysis import (
     ANALYSIS_TASK_KIND,
+    DEEP_ANALYSIS_TASK_KIND,
+    NARRATIVE_SYNTHESIS_TASK_KIND,
+    enqueue_deep_analysis,
+    enqueue_narrative_synthesis,
+    parse_deep_analysis,
+    parse_narrative_synthesis,
     parse_provider_output,
     persist_analysis_output,
+    persist_deep_analysis,
+    persist_narrative_synthesis,
+    provider_payload_for_deep_analysis,
+    provider_payload_for_narrative_synthesis,
     provider_payload_for_claim,
     refresh_analysis_run,
 )
+
+
+ANALYSIS_TASK_KINDS = {
+    ANALYSIS_TASK_KIND,
+    NARRATIVE_SYNTHESIS_TASK_KIND,
+    DEEP_ANALYSIS_TASK_KIND,
+}
 
 
 async def execute_task(
@@ -33,19 +50,29 @@ async def execute_task(
     claim: ClaimedTask,
     provider_registry: ProviderRegistry,
 ) -> bool:
-    if claim.kind not in {"fake.echo", ANALYSIS_TASK_KIND}:
+    if claim.kind not in {"fake.echo", *ANALYSIS_TASK_KINDS}:
         raise ValueError(f"UNSUPPORTED_TASK_KIND:{claim.kind}")
 
     payload = json.loads(claim.payload_json)
     provider_name = (
         str(payload.get("provider_name") or "openai")
-        if claim.kind == ANALYSIS_TASK_KIND
+        if claim.kind in ANALYSIS_TASK_KINDS
         else settings.provider_name
     )
     provider = provider_registry.resolve(provider_name)
     if claim.kind == ANALYSIS_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_claim(session, settings, payload)
+    elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
+        with session_factory() as session:
+            provider_payload = provider_payload_for_narrative_synthesis(
+                session, settings, payload
+            )
+    elif claim.kind == DEEP_ANALYSIS_TASK_KIND:
+        with session_factory() as session:
+            provider_payload = provider_payload_for_deep_analysis(
+                session, settings, payload
+            )
     else:
         provider_payload = payload
     try:
@@ -66,6 +93,8 @@ async def execute_task(
         )
 
     persisted_analysis = None
+    persisted_narrative = None
+    persisted_deep = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
             analysis_output = parse_provider_output(response.parsed)
@@ -90,6 +119,67 @@ async def execute_task(
                 task_payload=payload,
                 output=analysis_output,
             )
+    elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
+        try:
+            narrative_output = parse_narrative_synthesis(response.parsed)
+        except ValueError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message="在线 AI 返回的故事总览和剧情结构不完整。",
+                retryable=True,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_narrative = persist_narrative_synthesis(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=narrative_output,
+                )
+            except ValueError as exc:
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message="在线 AI 返回的故事结构引用了不存在的人物、事件或原文证据。",
+                    retryable=True,
+                ) from exc
+    elif claim.kind == DEEP_ANALYSIS_TASK_KIND:
+        try:
+            deep_output = parse_deep_analysis(response.parsed)
+        except ValueError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message="在线 AI 返回的事实状态和核心拆解结构不完整。",
+                retryable=True,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_deep = persist_deep_analysis(
+                    session,
+                    settings,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=deep_output,
+                )
+            except ValueError as exc:
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message="在线 AI 返回的深层拆解引用了不存在的章节、人物、事件或原文证据。",
+                    retryable=True,
+                ) from exc
 
     with session_factory() as session:
         if not task_claim_is_current(session, claim=claim):
@@ -98,6 +188,10 @@ async def execute_task(
         artifact_kind = (
             "analysis.entities_events.result"
             if claim.kind == ANALYSIS_TASK_KIND
+            else "analysis.narrative_synthesis.result"
+            if claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND
+            else "analysis.deep_insights.result"
+            if claim.kind == DEEP_ANALYSIS_TASK_KIND
             else "fake.echo.result"
         )
         artifact_payload = {
@@ -113,7 +207,7 @@ async def execute_task(
                 "completion_tokens": response.completion_tokens,
             },
         }
-        if claim.kind == ANALYSIS_TASK_KIND:
+        if claim.kind in ANALYSIS_TASK_KINDS:
             request_input = str(provider_payload.get("input") or "")
             output_schema = provider_payload.get("output_schema") or {}
             artifact_payload["request"] = {
@@ -136,6 +230,14 @@ async def execute_task(
                 "event_ids": list(persisted_analysis.event_ids),
                 "rejected_entities": persisted_analysis.rejected_entities,
                 "rejected_events": persisted_analysis.rejected_events,
+            }
+        if persisted_narrative is not None:
+            artifact_payload["accepted"] = {
+                "narrative_synthesis_id": persisted_narrative.synthesis_id,
+            }
+        if persisted_deep is not None:
+            artifact_payload["accepted"] = {
+                "deep_analysis_id": persisted_deep.analysis_id,
             }
         artifact = write_json_artifact(
             session,
@@ -170,10 +272,14 @@ async def execute_task(
         )
         if not accepted:
             acknowledge_task_cancellation(session, claim=claim)
-    if accepted and claim.kind == ANALYSIS_TASK_KIND:
+    if accepted and claim.kind in ANALYSIS_TASK_KINDS:
         with session_factory() as session:
             run = session.get(AnalysisRun, payload.get("run_id"))
             if run is not None:
+                if claim.kind == ANALYSIS_TASK_KIND:
+                    enqueue_narrative_synthesis(session, settings, run)
+                elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
+                    enqueue_deep_analysis(session, settings, run)
                 refresh_analysis_run(session, run)
     return accepted
 

@@ -59,11 +59,146 @@ class StaticAnalysisProvider:
     name = "openai"
 
     async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
-        assert task_kind == "analysis.entities_events"
-        assert "林舟推开旧宅的木门" in payload["input"]
+        if task_kind == "analysis.entities_events":
+            assert "林舟推开旧宅的木门" in payload["input"]
+            output = ANALYSIS_OUTPUT
+        elif task_kind == "analysis.narrative_synthesis":
+            foundation = json.loads(payload["input"])
+            character = foundation["characters"][0]
+            event = foundation["events"][0]
+            evidence_id = event["evidence_ids"][0]
+            output = {
+                "story_overview": {
+                    "premise": "林舟在雨夜回到旧宅，意外发现一封写给自己的密信。",
+                    "synopsis": "林舟回到旧宅后发现神秘密信，并决定在天亮后寻找寄信人。",
+                    "protagonist": character["name"],
+                    "protagonist_goal": "找到密信的寄信人并弄清来意。",
+                    "central_conflict": "密信来源不明，林舟掌握的信息不足。",
+                    "current_situation": "林舟已经决定主动追查，但尚未找到寄信人。",
+                    "unresolved_questions": ["寄信人是谁？", "密信为何写给林舟？"],
+                    "evidence_ids": [evidence_id],
+                },
+                "character_roles": [
+                    {
+                        "name": character["name"],
+                        "role": "PROTAGONIST",
+                        "role_reason": "所有已识别行动和决定都围绕林舟展开。",
+                        "goals": ["找到寄信人"],
+                        "motivations": ["弄清密信来意"],
+                        "current_state": "已发现密信并决定追查。",
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "character_relations": [],
+                "narrative_phases": [
+                    {
+                        "title": "雨夜归来与密信出现",
+                        "situation": "林舟在雨夜回到旧宅，平静的归来被密信打破。",
+                        "goal": "弄清密信从何而来。",
+                        "obstacle": "寄信人没有现身，线索有限。",
+                        "key_actions": ["林舟进入旧宅", "林舟发现密信"],
+                        "outcome": "林舟决定天亮后寻找寄信人。",
+                        "change": "林舟从被动发现转为主动追查。",
+                        "next_hook": "寄信人的身份和目的仍然未知。",
+                        "event_ids": [event["id"]],
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "event_relations": [],
+            }
+        else:
+            assert task_kind == "analysis.deep_insights"
+            foundation = json.loads(payload["input"])
+            character = foundation["characters"][0]
+            event = foundation["events"][0]
+            evidence_id = foundation["evidence"][0]["id"]
+            is_revision = bool(foundation.get("revision_requests"))
+            output = {
+                "fact_versions": [
+                    {
+                        "subject": character["name"],
+                        "predicate": "当前目标",
+                        "value": "找到密信的寄信人并核对其来意" if is_revision else "找到密信的寄信人",
+                        "fact_type": "STATUS",
+                        "status": "CONFIRMED",
+                        "valid_from_chapter": 2,
+                        "valid_to_chapter": None,
+                        "evidence_ids": [evidence_id],
+                        "counter_evidence_ids": [],
+                    }
+                ],
+                "state_changes": [
+                    {
+                        "subject": character["name"],
+                        "aspect": "行动方向",
+                        "before": "被动回到旧宅",
+                        "after": "决定主动寻找寄信人",
+                        "chapter_ordinal": 2,
+                        "event_id": event["id"],
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "actor_knowledge": [
+                    {
+                        "actor": character["name"],
+                        "proposition": "知道桌上有一封写着自己名字的密信",
+                        "state": "KNOWS",
+                        "chapter_ordinal": 1,
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "world_rules": [],
+                "foreshadowing": [
+                    {
+                        "title": "密信来源",
+                        "setup": "密信的寄信人和目的尚未揭示。",
+                        "lifecycle": "OPEN",
+                        "setup_chapter": 1,
+                        "payoff_chapter": None,
+                        "event_ids": [event["id"]],
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "conflicts": [
+                    {
+                        "title": "寻找密信寄信人",
+                        "conflict_type": "PERSON_V_WORLD",
+                        "participants": [character["name"]],
+                        "goals": "找到寄信人并弄清来意。",
+                        "obstacles": "寄信人没有现身。",
+                        "stakes": "林舟无法判断密信是否带来危险。",
+                        "escalation": [],
+                        "resolution": "尚未解决。",
+                        "status": "OPEN",
+                        "event_ids": [event["id"]],
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "scene_analysis": [
+                    {
+                        "chapter_ordinal": 1,
+                        "function": "REVELATION",
+                        "summary": "归来场景通过密信释放新的追查线索。",
+                        "information_released": ["存在写给林舟的密信"],
+                        "action_dialogue_balance": "BALANCED",
+                        "pace": "STEADY",
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "claims": [
+                    {
+                        "claim_kind": "INFERENCE",
+                        "claim_text": "密信促使林舟主动追查寄信人。" if is_revision else "密信把林舟从回到旧宅的被动局面推向主动追查。",
+                        "scope": "前两章",
+                        "evidence_ids": [evidence_id],
+                        "counter_evidence_ids": [],
+                        "confidence": 88,
+                    }
+                ],
+            }
         return ProviderResponse(
-            raw_text=json.dumps(ANALYSIS_OUTPUT, ensure_ascii=False),
-            parsed=ANALYSIS_OUTPUT,
+            raw_text=json.dumps(output, ensure_ascii=False),
+            parsed=output,
             prompt_tokens=120,
             completion_tokens=80,
         )
@@ -154,8 +289,54 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     progress = client.get(
         f"/api/source-versions/{version_id}/analysis/entities-events"
     ).json()
-    assert progress["status"] == "REVIEW"
+    assert progress["status"] == "PENDING"
     assert progress["completed_batches"] == 1
+    assert progress["failed_batches"] == 0
+    assert progress["total_batches"] == 2
+
+    with client.app.state.session_factory() as session:
+        narrative_claim = claim_next_task(
+            session,
+            worker_id="narrative-test-worker",
+            lease_seconds=60,
+        )
+    assert narrative_claim is not None
+    assert narrative_claim.kind == "analysis.narrative_synthesis"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        narrative_claim,
+        registry,
+    )
+
+    progress = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert progress["status"] == "PENDING"
+    assert progress["completed_batches"] == 2
+    assert progress["failed_batches"] == 0
+    assert progress["total_batches"] == 3
+
+    with client.app.state.session_factory() as session:
+        deep_claim = claim_next_task(
+            session,
+            worker_id="deep-analysis-test-worker",
+            lease_seconds=60,
+        )
+    assert deep_claim is not None
+    assert deep_claim.kind == "analysis.deep_insights"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        deep_claim,
+        registry,
+    )
+
+    progress = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert progress["status"] == "REVIEW"
+    assert progress["completed_batches"] == 3
     assert progress["failed_batches"] == 0
 
     completed_task = client.get(f"/api/tasks/{claim.id}").json()
@@ -178,11 +359,57 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     workbench = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert workbench.status_code == 200
     projection = workbench.json()
+    assert projection["narrative_status"] == "READY"
+    assert projection["story_overview"]["protagonist"] == "林舟"
     assert [item["name"] for item in projection["characters"]] == ["林舟"]
+    assert projection["characters"][0]["role"] == "PROTAGONIST"
     assert projection["events"][0]["people"] == ["林舟"]
     assert projection["events"][0]["chapter_titles"] == ["第一章 归来"]
     assert len(projection["phases"]) == 1
     assert projection["phases"][0]["event_ids"] == [projection["events"][0]["id"]]
+    assert projection["phases"][0]["title"] == "雨夜归来与密信出现"
+    assert projection["deep_status"] == "READY"
+    assert projection["deep_analysis"]["fact_versions"][0]["status"] == "CONFIRMED"
+    assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
+
+    issue = client.post(
+        f"/api/analysis-runs/{run['id']}/issues",
+        json={
+            "target_kind": "FACT",
+            "target_id": projection["deep_analysis"]["fact_versions"][0]["id"],
+            "target_label": "林舟当前目标",
+            "category": "UNCLEAR",
+            "note": "目标描述需要更具体。",
+        },
+    )
+    assert issue.status_code == 201
+    assert issue.json()["status"] == "OPEN"
+    recompute = client.post(f"/api/analysis-runs/{run['id']}/deep/recompute")
+    assert recompute.status_code == 202
+    assert recompute.json()["status"] == "PENDING"
+
+    with client.app.state.session_factory() as session:
+        revision_claim = claim_next_task(
+            session,
+            worker_id="deep-revision-test-worker",
+            lease_seconds=60,
+        )
+    assert revision_claim is not None
+    assert revision_claim.kind == "analysis.deep_insights"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        revision_claim,
+        registry,
+    )
+    issues = client.get(f"/api/analysis-runs/{run['id']}/issues").json()
+    assert issues[0]["status"] == "RESOLVED"
+    revisions = client.get(f"/api/analysis-runs/{run['id']}/deep/revisions").json()
+    assert [item["revision_no"] for item in revisions] == [1, 2]
+    diff = client.get(f"/api/analysis-runs/{run['id']}/deep/diff").json()
+    assert diff["from_revision"] == 1
+    assert diff["to_revision"] == 2
+    assert diff["changed_counts"]["fact_versions"] == 1
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

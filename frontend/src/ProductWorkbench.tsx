@@ -1,7 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AnalysisIssue,
   AnalysisRun,
   api,
+  DeepAnalysisDiff,
+  DeepAnalysisRevision,
   EntityCandidate,
   EvidenceContext,
   ModelSettings,
@@ -55,16 +58,63 @@ const EVENT_LABELS: Record<string, string> = {
   OTHER: "其他",
 };
 
+const ROLE_LABELS: Record<string, string> = {
+  PROTAGONIST: "主角",
+  CORE_SUPPORTING: "核心配角",
+  IMPORTANT_SUPPORTING: "重要配角",
+  MINOR: "次要人物",
+  UNCLASSIFIED: "尚未定位",
+};
+
+const FACT_TYPE_LABELS: Record<string, string> = {
+  PLACE: "地点",
+  ORGANIZATION: "组织",
+  OBJECT: "物品",
+  ABILITY: "能力",
+  RULE: "规则",
+  RELATION: "关系",
+  STATUS: "状态",
+  OTHER: "其他",
+};
+
+const KNOWLEDGE_LABELS: Record<string, string> = {
+  KNOWS: "已经知道",
+  BELIEVES: "相信",
+  SUSPECTS: "有所怀疑",
+  MISTAKEN: "存在误解",
+  HIDDEN: "主动隐瞒",
+  UNKNOWN: "尚不知道",
+};
+
+const FORESHADOWING_LABELS: Record<string, string> = {
+  PLANTED: "已经提出",
+  REINFORCED: "再次强化",
+  MISDIRECTED: "形成误导",
+  TRANSFORMED: "发生变形",
+  PAYOFF: "已经回收",
+  INVALIDATED: "已经失效",
+  OPEN: "尚未回收",
+};
+
+const CLAIM_STATUS_LABELS: Record<string, string> = {
+  SUPPORTED: "证据支持",
+  MIXED: "支持与反证并存",
+  CONTRADICTED: "存在明确反证",
+  INSUFFICIENT_EVIDENCE: "证据不足",
+};
+
+type WorkbenchView = "overview" | "characters" | "plot" | "events" | "facts" | "analysis";
+
 type FormalWorkbenchProps = {
   data: Workbench;
   analysisStatus: AnalysisRun["status"];
-  view: "overview" | "characters" | "plot" | "events";
-  onViewChange: (view: "overview" | "characters" | "plot" | "events") => void;
+  view: WorkbenchView;
+  onViewChange: (view: WorkbenchView) => void;
   evidenceContext: EvidenceContext | null;
   onOpenEvidence: (evidenceId: string) => void;
   onCloseEvidence: () => void;
   busy: string;
-  onConfirm: () => void;
+  onAnalysisRunChange: (run: AnalysisRun) => void;
 }
 
 function FormalWorkbench({
@@ -76,34 +126,172 @@ function FormalWorkbench({
   onOpenEvidence,
   onCloseEvidence,
   busy,
-  onConfirm,
+  onAnalysisRunChange,
 }: FormalWorkbenchProps) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [stateChapter, setStateChapter] = useState(data.chapters.at(-1)?.ordinal ?? 1);
+  const [issues, setIssues] = useState<AnalysisIssue[]>([]);
+  const [revisions, setRevisions] = useState<DeepAnalysisRevision[]>([]);
+  const [revisionDiff, setRevisionDiff] = useState<DeepAnalysisDiff | null>(null);
+  const [issueTarget, setIssueTarget] = useState<{ kind: string; id: string | null; label: string } | null>(null);
+  const [issueCategory, setIssueCategory] = useState("INCORRECT");
+  const [issueNote, setIssueNote] = useState("");
+  const [issueBusy, setIssueBusy] = useState("");
+  const [issueError, setIssueError] = useState("");
   const evidenceParts = evidenceContext
     ? evidenceContext.context_text.split(evidenceContext.evidence.text_snapshot)
     : [];
-  const evidenceButtons = (evidenceIds: string[]) => (
+  useEffect(() => {
+    setSearchQuery("");
+    setStateChapter(data.chapters.at(-1)?.ordinal ?? 1);
+  }, [data.run_id, data.chapters]);
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      api.analysisIssues(data.run_id),
+      api.deepAnalysisRevisions(data.run_id),
+    ]).then(async ([nextIssues, nextRevisions]) => {
+      if (!active) return;
+      setIssues(nextIssues);
+      setRevisions(nextRevisions);
+      if (nextRevisions.length > 1) {
+        const diff = await api.deepAnalysisDiff(data.run_id);
+        if (active) setRevisionDiff(diff);
+      } else {
+        setRevisionDiff(null);
+      }
+    }).catch(() => {
+      if (active) {
+        setIssues([]);
+        setRevisions([]);
+        setRevisionDiff(null);
+      }
+    });
+    return () => { active = false; };
+  }, [data.run_id, data.deep_revision]);
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase("zh-CN");
+    if (!query) return [];
+    const entries = [
+      ...data.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.goals.join(" ")} ${item.motivations.join(" ")}`, evidenceIds: item.evidence_ids })),
+      ...data.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")}`, evidenceIds: item.evidence_ids })),
+      ...data.phases.map((item) => ({ key: item.id, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
+      ...(data.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(data.deep_analysis?.world_rules.map((item) => ({ key: item.id, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(data.deep_analysis?.foreshadowing.map((item) => ({ key: item.id, section: "伏笔", title: item.title, text: item.setup, evidenceIds: item.evidence_ids })) ?? []),
+      ...(data.deep_analysis?.conflicts.map((item) => ({ key: item.id, section: "冲突", title: item.title, text: `${item.goals} ${item.obstacles} ${item.stakes} ${item.resolution}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(data.deep_analysis?.claims.map((item) => ({ key: item.id, section: "分析结论", title: item.claim_text, text: item.scope, evidenceIds: item.evidence_ids })) ?? []),
+    ];
+    return entries.filter((item) => `${item.title} ${item.text}`.toLocaleLowerCase("zh-CN").includes(query));
+  }, [data, searchQuery]);
+  const pointInTime = useMemo(() => {
+    const deep = data.deep_analysis;
+    if (!deep) return { facts: [], states: [], knowledge: [] };
+    const facts = deep.fact_versions.filter((item) => (
+      item.valid_from_chapter <= stateChapter
+      && (item.valid_to_chapter === null || item.valid_to_chapter >= stateChapter)
+    ));
+    const stateByKey = new Map<string, (typeof deep.state_changes)[number]>();
+    for (const item of deep.state_changes) {
+      if (item.chapter_ordinal <= stateChapter) {
+        const key = `${item.subject}\u0000${item.aspect}`;
+        const current = stateByKey.get(key);
+        if (!current || current.chapter_ordinal <= item.chapter_ordinal) stateByKey.set(key, item);
+      }
+    }
+    const knowledgeByKey = new Map<string, (typeof deep.actor_knowledge)[number]>();
+    for (const item of deep.actor_knowledge) {
+      if (item.chapter_ordinal <= stateChapter) {
+        const key = `${item.actor}\u0000${item.proposition}`;
+        const current = knowledgeByKey.get(key);
+        if (!current || current.chapter_ordinal <= item.chapter_ordinal) knowledgeByKey.set(key, item);
+      }
+    }
+    return { facts, states: [...stateByKey.values()], knowledge: [...knowledgeByKey.values()] };
+  }, [data.deep_analysis, stateChapter]);
+  const evidenceButtons = (evidenceIds: string[], label = "查看原文") => (
     <div className="evidence-buttons">
       {evidenceIds.map((evidenceId, index) => (
         <button type="button" className="secondary-button" key={evidenceId} disabled={busy === `evidence-${evidenceId}`} onClick={() => onOpenEvidence(evidenceId)}>
-          {busy === `evidence-${evidenceId}` ? "正在打开" : `查看原文${evidenceIds.length > 1 ? ` ${index + 1}` : ""}`}
+          {busy === `evidence-${evidenceId}` ? "正在打开" : `${label}${evidenceIds.length > 1 ? ` ${index + 1}` : ""}`}
         </button>
       ))}
     </div>
   );
+  const markProblemButton = (kind: string, id: string | null, label: string) => (
+    <button type="button" className="text-action" onClick={() => { setIssueTarget({ kind, id, label }); setIssueNote(""); }}>
+      标记问题
+    </button>
+  );
+
+  async function submitIssue(event: FormEvent) {
+    event.preventDefault();
+    if (!issueTarget || !issueNote.trim()) return;
+    try {
+      setIssueBusy("create");
+      setIssueError("");
+      const created = await api.createAnalysisIssue(data.run_id, {
+        target_kind: issueTarget.kind,
+        target_id: issueTarget.id,
+        target_label: issueTarget.label,
+        category: issueCategory,
+        note: issueNote.trim(),
+      });
+      setIssues((current) => [created, ...current]);
+      setIssueTarget(null);
+      setIssueNote("");
+    } catch (reason) {
+      setIssueError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIssueBusy("");
+    }
+  }
+
+  async function resolveIssue(issueId: string) {
+    try {
+      setIssueBusy(issueId);
+      setIssueError("");
+      const resolved = await api.resolveAnalysisIssue(issueId);
+      setIssues((current) => current.map((item) => item.id === resolved.id ? resolved : item));
+    } catch (reason) {
+      setIssueError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIssueBusy("");
+    }
+  }
+
+  async function recomputeFromIssues() {
+    try {
+      setIssueBusy("recompute");
+      setIssueError("");
+      onAnalysisRunChange(await api.recomputeDeepAnalysis(data.run_id));
+    } catch (reason) {
+      setIssueError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIssueBusy("");
+    }
+  }
 
   return (
     <section className="formal-workbench" aria-label="人物剧情事件工作台">
       <div className="formal-workbench-heading">
         <div>
-          <p>第 2 步已完成自动整理</p>
-          <h2>人物、剧情与事件</h2>
-          <span>下面是根据原文证据整理出的可浏览结果。每项内容都能回到来源章节。</span>
+          <p>{data.narrative_status === "READY" ? "故事结构已整理" : "基础人物与事件已整理"}</p>
+          <h2>小说拆解工作台</h2>
+          <span>{data.narrative_status === "READY" ? "先看故事总览，再进入人物、剧情和事件；每项重要内容都能回到原文。" : "基础抽取已完成，完整故事总览和人物角色定位尚未生成。"}</span>
         </div>
         <div className="formal-workbench-counts">
           <div><strong>{data.characters.length}</strong><span>人物</span></div>
           <div><strong>{data.events.length}</strong><span>事件</span></div>
           <div><strong>{data.phases.length}</strong><span>剧情阶段</span></div>
+          <div><strong>{data.deep_analysis?.fact_versions.length ?? 0}</strong><span>事实</span></div>
         </div>
+      </div>
+
+      <div className="workbench-search">
+        <label htmlFor="workbench-search-input">搜索整个拆解结果</label>
+        <input id="workbench-search-input" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索人物、事件、设定、伏笔或分析结论" />
+        {searchQuery.trim() && <span>找到 {searchResults.length} 项</span>}
       </div>
 
       <nav className="formal-workbench-tabs" aria-label="工作台版块">
@@ -112,22 +300,54 @@ function FormalWorkbench({
           ["characters", "人物"],
           ["plot", "剧情阶段"],
           ["events", "事件时间线"],
+          ["facts", "事实与状态"],
+          ["analysis", "核心分析"],
         ] as const).map(([key, label]) => (
           <button type="button" key={key} className={view === key ? "active" : ""} onClick={() => onViewChange(key)}>
             {label}
-            <span>{key === "characters" ? data.characters.length : key === "plot" ? data.phases.length : key === "events" ? data.events.length : ""}</span>
+            <span>{key === "characters" ? data.characters.length : key === "plot" ? data.phases.length : key === "events" ? data.events.length : key === "facts" ? data.deep_analysis?.fact_versions.length ?? 0 : key === "analysis" ? (data.deep_analysis?.foreshadowing.length ?? 0) + (data.deep_analysis?.conflicts.length ?? 0) : ""}</span>
           </button>
         ))}
       </nav>
 
       <div className="formal-workbench-body">
         <div className="formal-workbench-content">
-          {view === "overview" && (
+          {searchQuery.trim() && (
+            <section className="search-results">
+              <header><h3>搜索结果</h3><span>{searchResults.length} 项</span></header>
+              {searchResults.map((item) => (
+                <article key={`${item.section}-${item.key}`}>
+                  <span>{item.section}</span>
+                  <h4>{item.title}</h4>
+                  <p>{item.text}</p>
+                  {evidenceButtons(item.evidenceIds)}
+                </article>
+              ))}
+              {!searchResults.length && <p className="result-empty">没有找到相关内容，可以换一个人物名、地点或情节关键词。</p>}
+            </section>
+          )}
+
+          {!searchQuery.trim() && view === "overview" && (
             <>
               <div className="workbench-callout">
-                <strong>这一步已经从“候选平铺”升级为可浏览的正式投影。</strong>
-                <span>人物保留别名和出现范围；事件按时间排序；剧情阶段只由带章节位置的事件组成。语义上仍有争议的结果会保留“待抽查”，不会被悄悄合并。</span>
+                <strong>{data.story_overview ? "先用故事骨架理解这部分小说" : "完整故事骨架尚未生成"}</strong>
+                <span>{data.story_overview ? "总览、人物角色和剧情阶段由原文证据整理而来；仍有争议的内容会标明，不会被悄悄当成确定事实。" : "当前页面只保留基础抽取结果，系统会在叙事综合完成后显示故事总览。"}</span>
               </div>
+              {data.story_overview && (
+                <article className="overview-story-card">
+                  <span className="section-kicker">故事总览</span>
+                  <h3>{data.story_overview.premise}</h3>
+                  <p>{data.story_overview.synopsis}</p>
+                  <dl className="overview-facts">
+                    <div><dt>主角</dt><dd>{data.story_overview.protagonist}</dd></div>
+                    <div><dt>当前目标</dt><dd>{data.story_overview.protagonist_goal || "证据不足"}</dd></div>
+                    <div><dt>核心冲突</dt><dd>{data.story_overview.central_conflict || "证据不足"}</dd></div>
+                    <div><dt>当前局面</dt><dd>{data.story_overview.current_situation || "证据不足"}</dd></div>
+                  </dl>
+                  {data.story_overview.unresolved_questions.length > 0 && <div className="overview-questions"><strong>未解决问题</strong>{data.story_overview.unresolved_questions.map((item) => <span key={item}>{item}</span>)}</div>}
+                  {evidenceButtons(data.story_overview.evidence_ids)}
+                </article>
+              )}
               <div className="phase-overview-list">
                 {data.phases.map((phase, index) => (
                   <article className="phase-card" key={phase.id}>
@@ -137,7 +357,7 @@ function FormalWorkbench({
                     {evidenceButtons(phase.evidence_ids)}
                   </article>
                 ))}
-                {!data.phases.length && <p className="result-empty">当前没有足够的事件组成剧情阶段。</p>}
+                {!data.phases.length && <p className="result-empty">当前没有生成可读的剧情阶段。</p>}
               </div>
               <div className="related-entity-summary">
                 <header><h3>地点、组织与重要事物</h3><span>{data.related_entities.length} 个</span></header>
@@ -146,16 +366,19 @@ function FormalWorkbench({
             </>
           )}
 
-          {view === "characters" && (
+          {!searchQuery.trim() && view === "characters" && (
             <div className="formal-card-list">
               {data.characters.map((character) => (
                 <article className="formal-card" key={character.id}>
                   <header>
-                    <div><span>人物</span><h3>{character.name}</h3></div>
+                    <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
                     <i className={character.status === "UNCERTAIN" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "待抽查" : `置信度 ${character.confidence}%`}</i>
                   </header>
                   <p>{character.description || "原文中已识别到该人物。"}</p>
+                  <small>{character.role_reason}</small>
                   {character.aliases.length > 0 && <small>别名或称谓：{character.aliases.join("、")}</small>}
+                  {character.goals.length > 0 && <small>目标：{character.goals.join("、")}</small>}
+                  {character.current_state && <small>当前状态：{character.current_state}</small>}
                   <div className="character-meta">
                     <span>出场活跃度：{character.activity_level}</span>
                     <span>证据 {character.appearance_count} 处</span>
@@ -163,32 +386,39 @@ function FormalWorkbench({
                     <span>{character.event_ids.length} 个相关事件</span>
                   </div>
                   {evidenceButtons(character.evidence_ids)}
+                  {markProblemButton("CHARACTER", character.id, character.name)}
                 </article>
               ))}
               {!data.characters.length && <p className="result-empty">当前没有整理出人物档案。</p>}
+              {data.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{data.character_relations.length} 条</span></header>{data.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><strong>{relation.source_name} ↔ {relation.target_name}</strong><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化：{relation.changes.join("；")}</small>}{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
             </div>
           )}
 
-          {view === "plot" && (
+          {!searchQuery.trim() && view === "plot" && (
             <div className="formal-card-list">
               {data.phases.map((phase, index) => (
                 <article className="formal-card phase-detail-card" key={phase.id}>
                   <header><div><span>阶段 {index + 1}</span><h3>{phase.title}</h3></div><i>{phase.chapter_titles.join("、") || "章节待定"}</i></header>
-                  <p>{phase.summary}</p>
+                  <p>{phase.situation}</p>
+                  {phase.goal && <small>阶段目标：{phase.goal}</small>}
+                  {phase.obstacle && <small>主要障碍：{phase.obstacle}</small>}
                   <div className="phase-event-list">
                     {phase.event_ids.map((eventId) => {
                       const event = data.events.find((item) => item.id === eventId);
                       return event ? <div key={event.id}><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><strong>{event.title}</strong></div> : null;
                     })}
                   </div>
+                  {phase.outcome && <p><strong>结果：</strong>{phase.outcome}</p>}
+                  {phase.change && <p><strong>局面变化：</strong>{phase.change}</p>}
+                  {phase.next_hook && <p><strong>下一步悬念：</strong>{phase.next_hook}</p>}
                   {evidenceButtons(phase.evidence_ids)}
                 </article>
               ))}
-              {!data.phases.length && <p className="result-empty">当前没有足够的事件组成剧情阶段。</p>}
+              {!data.phases.length && <p className="result-empty">当前没有生成可读的剧情阶段。</p>}
             </div>
           )}
 
-          {view === "events" && (
+          {!searchQuery.trim() && view === "events" && (
             <div className="formal-card-list">
               {data.events.map((event, index) => (
                 <article className="formal-card event-formal-card" key={event.id}>
@@ -198,9 +428,125 @@ function FormalWorkbench({
                   {event.related_entities.length > 0 && <small>相关地点、组织或事物：{event.related_entities.join("、")}</small>}
                   <div className="character-meta"><span>{event.chapter_titles.join("、") || "章节待定"}</span><span>原文依据 {event.evidence_ids.length} 处</span><span>置信度 {event.confidence}%</span>{event.mention_count > 1 && <span>合并 {event.mention_count} 次提及</span>}</div>
                   {evidenceButtons(event.evidence_ids)}
+                  {markProblemButton("EVENT", event.id, event.title)}
                 </article>
               ))}
               {!data.events.length && <p className="result-empty">当前没有整理出事件时间线。</p>}
+              {data.event_relations.length > 0 && <section className="relation-section"><header><h3>事件之间的关系</h3><span>{data.event_relations.length} 条</span></header>{data.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><strong>{relation.source_title} → {relation.target_title}</strong><span>{relation.relation}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
+            </div>
+          )}
+
+          {!searchQuery.trim() && view === "facts" && (
+            <div className="deep-analysis-view">
+              {!data.deep_analysis ? (
+                <div className="workbench-callout"><strong>事实与状态仍在整理</strong><span>系统完成证据校验后，会在这里显示世界事实、状态变化和人物认知。</span></div>
+              ) : (
+                <>
+                  <div className="chapter-state-selector">
+                    <div><strong>查看指定章节时的状态</strong><span>后面的章节不会提前泄露到这个视图。</span></div>
+                    <label htmlFor="state-chapter">截至</label>
+                    <select id="state-chapter" value={stateChapter} onChange={(event) => setStateChapter(Number(event.target.value))}>
+                      {data.chapters.map((chapter) => <option value={chapter.ordinal} key={chapter.ordinal}>第 {chapter.ordinal} 章 · {chapter.title}</option>)}
+                    </select>
+                  </div>
+                  <section className="insight-group">
+                    <header><div><span>第 {stateChapter} 章时仍然成立</span><h3>世界事实</h3></div><b>{pointInTime.facts.length}</b></header>
+                    <div className="formal-card-list compact-list">
+                      {pointInTime.facts.map((fact) => (
+                        <article className="formal-card" key={fact.id}>
+                          <header><div><span>{FACT_TYPE_LABELS[fact.fact_type] ?? "事实"}</span><h3>{fact.subject}</h3></div><i className={fact.status === "DISPUTED" || fact.status === "UNCERTAIN" ? "needs-review" : ""}>{fact.status === "CONFIRMED" ? "原文确认" : fact.status === "REPORTED" ? "人物转述" : fact.status === "DISPUTED" ? "存在争议" : "尚不确定"}</i></header>
+                          <p><strong>{fact.predicate}：</strong>{fact.value}</p>
+                          <small>有效范围：第 {fact.valid_from_chapter} 章起{fact.valid_to_chapter ? `，至第 ${fact.valid_to_chapter} 章` : "，当前仍成立"}</small>
+                          {evidenceButtons(fact.evidence_ids)}
+                          {fact.counter_evidence_ids.length > 0 && evidenceButtons(fact.counter_evidence_ids, "查看反证")}
+                          {markProblemButton("FACT", fact.id, `${fact.subject}：${fact.predicate}`)}
+                        </article>
+                      ))}
+                      {!pointInTime.facts.length && <p className="result-empty">截至这一章，没有可确认且仍然成立的世界事实。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>每项只显示截至当前章节的最新状态</span><h3>人物与事物状态</h3></div><b>{pointInTime.states.length}</b></header>
+                    <div className="timeline-list">
+                      {pointInTime.states.map((change) => (
+                        <article key={change.id}><span>第 {change.chapter_ordinal} 章</span><div><h4>{change.subject} · {change.aspect}</h4><p>{change.before ? `${change.before} → ${change.after}` : change.after}</p>{evidenceButtons(change.evidence_ids)}</div></article>
+                      ))}
+                      {!pointInTime.states.length && <p className="result-empty">截至这一章，没有识别到可靠的状态变化。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>不是上帝视角</span><h3>人物当时知道什么</h3></div><b>{pointInTime.knowledge.length}</b></header>
+                    <div className="knowledge-grid">
+                      {pointInTime.knowledge.map((knowledge) => (
+                        <article key={knowledge.id}><span>{KNOWLEDGE_LABELS[knowledge.state] ?? "认知状态"}</span><h4>{knowledge.actor}</h4><p>{knowledge.proposition}</p><small>截至第 {knowledge.chapter_ordinal} 章</small>{evidenceButtons(knowledge.evidence_ids)}</article>
+                      ))}
+                      {!pointInTime.knowledge.length && <p className="result-empty">截至这一章，没有足够证据区分人物认知。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>设定、限制与例外</span><h3>世界规则</h3></div><b>{data.deep_analysis.world_rules.length}</b></header>
+                    <div className="formal-card-list compact-list">
+                      {data.deep_analysis.world_rules.map((rule) => (
+                        <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>
+                      ))}
+                      {!data.deep_analysis.world_rules.length && <p className="result-empty">当前章节尚未明确建立世界规则。</p>}
+                    </div>
+                  </section>
+                </>
+              )}
+            </div>
+          )}
+
+          {!searchQuery.trim() && view === "analysis" && (
+            <div className="deep-analysis-view">
+              {!data.deep_analysis ? (
+                <div className="workbench-callout"><strong>核心分析仍在整理</strong><span>系统会先验证事实和状态，再生成伏笔、冲突、节奏和场景分析。</span></div>
+              ) : (
+                <>
+                  <section className="insight-group">
+                    <header><div><span>叙事承诺账本</span><h3>伏笔与回收</h3></div><b>{data.deep_analysis.foreshadowing.length}</b></header>
+                    <div className="formal-card-list compact-list">
+                      {data.deep_analysis.foreshadowing.map((item) => (
+                        <article className="formal-card" key={item.id}><header><div><span>{FORESHADOWING_LABELS[item.lifecycle] ?? "伏笔"}</span><h3>{item.title}</h3></div><i>第 {item.setup_chapter} 章提出</i></header><p>{item.setup}</p>{item.payoff_chapter && <small>第 {item.payoff_chapter} 章出现回收</small>}{evidenceButtons(item.evidence_ids)}{markProblemButton("FORESHADOWING", item.id, item.title)}</article>
+                      ))}
+                      {!data.deep_analysis.foreshadowing.length && <p className="result-empty">当前没有足够证据确认伏笔。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>目标、障碍与赌注</span><h3>冲突</h3></div><b>{data.deep_analysis.conflicts.length}</b></header>
+                    <div className="formal-card-list compact-list">
+                      {data.deep_analysis.conflicts.map((conflict) => (
+                        <article className="formal-card" key={conflict.id}><header><div><span>{conflict.status === "RESOLVED" ? "已经解决" : conflict.status === "ESCALATING" ? "正在升级" : conflict.status === "SHIFTED" ? "冲突转向" : conflict.status === "UNCERTAIN" ? "尚不确定" : "仍未解决"}</span><h3>{conflict.title}</h3></div></header>{conflict.participants.length > 0 && <small>参与者：{conflict.participants.join("、")}</small>}{conflict.goals && <p><strong>目标：</strong>{conflict.goals}</p>}{conflict.obstacles && <p><strong>障碍：</strong>{conflict.obstacles}</p>}{conflict.stakes && <p><strong>赌注：</strong>{conflict.stakes}</p>}{conflict.escalation.length > 0 && <small>升级过程：{conflict.escalation.join("；")}</small>}{conflict.resolution && <p><strong>当前结果：</strong>{conflict.resolution}</p>}{evidenceButtons(conflict.evidence_ids)}{markProblemButton("CONFLICT", conflict.id, conflict.title)}</article>
+                      ))}
+                      {!data.deep_analysis.conflicts.length && <p className="result-empty">当前没有整理出证据充分的冲突。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>章节如何发挥作用</span><h3>场景与节奏</h3></div><b>{data.deep_analysis.scene_analysis.length}</b></header>
+                    <div className="scene-analysis-list">
+                      {data.deep_analysis.scene_analysis.map((scene) => (
+                        <article key={scene.id}><div><span>第 {scene.chapter_ordinal} 章</span><b>{scene.function === "SETUP" ? "铺垫" : scene.function === "TRANSITION" ? "过渡" : scene.function === "REVELATION" ? "揭示" : scene.function === "CONFLICT" ? "冲突" : scene.function === "DECISION" ? "决定" : scene.function === "AFTERMATH" ? "余波" : "其他功能"}</b></div><h4>{scene.summary}</h4><p>节奏：{scene.pace === "SLOW" ? "较慢" : scene.pace === "STEADY" ? "平稳" : scene.pace === "FAST" ? "较快" : scene.pace === "ACCELERATING" ? "正在加速" : scene.pace === "BRAKING" ? "明显放缓" : "尚不确定"}</p>{scene.information_released.length > 0 && <small>释放信息：{scene.information_released.join("；")}</small>}{evidenceButtons(scene.evidence_ids)}</article>
+                      ))}
+                      {!data.deep_analysis.scene_analysis.length && <p className="result-empty">当前没有完成场景与节奏分析。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>支持和反证分开保存</span><h3>分析结论</h3></div><b>{data.deep_analysis.claims.length}</b></header>
+                    <div className="formal-card-list compact-list">
+                      {data.deep_analysis.claims.map((claim) => (
+                        <article className="formal-card" key={claim.id}><header><div><span>{claim.claim_kind === "FACT" ? "事实判断" : claim.claim_kind === "INFERENCE" ? "推断" : claim.claim_kind === "PATTERN" ? "叙事模式" : claim.claim_kind === "INTERPRETATION" ? "解释" : "对比"}</span><h3>{claim.claim_text}</h3></div><i className={claim.verification_status !== "SUPPORTED" ? "needs-review" : ""}>{CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</i></header><small>适用范围：{claim.scope}</small>{evidenceButtons(claim.evidence_ids, "查看支持证据")}{claim.counter_evidence_ids.length > 0 && evidenceButtons(claim.counter_evidence_ids, "查看反证")}{markProblemButton("CLAIM", claim.id, claim.claim_text)}</article>
+                      ))}
+                      {!data.deep_analysis.claims.length && <p className="result-empty">当前没有证据充分的专项分析结论。</p>}
+                    </div>
+                  </section>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -211,18 +557,49 @@ function FormalWorkbench({
               <header><div><p>原文证据</p><h3>{evidenceContext.chapter_title}</h3></div><button type="button" className="secondary-button" onClick={onCloseEvidence}>关闭</button></header>
               <div className="evidence-text">{evidenceParts.map((part, index) => <span key={`${part}-${index}`}>{part}{index < evidenceParts.length - 1 && <mark>{evidenceContext.evidence.text_snapshot}</mark>}</span>)}</div>
             </>
-          ) : <div className="evidence-empty"><strong>原文证据</strong><span>点击任一人物、阶段或事件的“查看原文”，这里会显示来源章节和上下文。</span></div>}
+          ) : <div className="evidence-empty"><strong>原文证据</strong><span>点击任一人物、事件、事实或分析结论的“查看原文”，这里会显示来源章节和上下文。</span></div>}
         </aside>
       </div>
 
+      <section className="analysis-problem-center">
+        <header>
+          <div><p>问题与修正</p><h3>告诉系统哪里需要重新检查</h3><span>只描述内容问题即可，系统会自行重新分析并保留旧版本。</span></div>
+          <b>{issues.filter((item) => item.status === "OPEN").length} 项待处理</b>
+        </header>
+        {issueError && <div className="analysis-issue-error" role="alert">{issueError}</div>}
+        {issueTarget && (
+          <form className="analysis-issue-form" onSubmit={submitIssue}>
+            <div><span>正在标记</span><strong>{issueTarget.label}</strong></div>
+            <label>问题类型<select value={issueCategory} onChange={(event) => setIssueCategory(event.target.value)}><option value="INCORRECT">内容不正确</option><option value="EVIDENCE">原文依据不对</option><option value="UNCLEAR">表达看不懂</option><option value="MISSING">遗漏重要内容</option><option value="OTHER">其他问题</option></select></label>
+            <label>具体说明<textarea value={issueNote} onChange={(event) => setIssueNote(event.target.value)} placeholder="例如：这里把人物的猜测写成了确定事实" maxLength={2000} /></label>
+            <div className="issue-form-actions"><button type="button" className="secondary-button" onClick={() => setIssueTarget(null)}>取消</button><button type="submit" disabled={!issueNote.trim() || issueBusy === "create"}>{issueBusy === "create" ? "正在保存" : "保存问题"}</button></div>
+          </form>
+        )}
+        {issues.length > 0 && (
+          <div className="analysis-issue-list">
+            {issues.slice(0, 8).map((issue) => (
+              <article key={issue.id} className={issue.status === "RESOLVED" ? "resolved" : ""}>
+                <div><span>{issue.status === "OPEN" ? "等待处理" : "已经处理"}</span><strong>{issue.target_label}</strong><p>{issue.note}</p></div>
+                {issue.status === "OPEN" && <button type="button" className="secondary-button" disabled={issueBusy === issue.id} onClick={() => void resolveIssue(issue.id)}>{issueBusy === issue.id ? "处理中" : "不再处理"}</button>}
+              </article>
+            ))}
+          </div>
+        )}
+        <footer>
+          <div><strong>{data.deep_revision ? `当前为第 ${data.deep_revision} 版深层拆解` : "尚未生成深层拆解版本"}</strong><span>{revisions.length > 1 && revisionDiff ? `上一版到当前版：新增 ${Object.values(revisionDiff.added).flat().length} 项，移除 ${Object.values(revisionDiff.removed).flat().length} 项，修改 ${Object.values(revisionDiff.changed_counts).reduce((sum, value) => sum + value, 0)} 项。` : "重新分析完成后会在这里显示版本变化。"}</span></div>
+          <button type="button" disabled={!issues.some((item) => item.status === "OPEN") || issueBusy === "recompute"} onClick={() => void recomputeFromIssues()}>{issueBusy === "recompute" ? "正在准备重新分析" : "根据待处理问题重新分析"}</button>
+        </footer>
+      </section>
+
       <footer className="formal-workbench-footer">
         {analysisStatus === "CONFIRMED" ? (
-          <div><strong>人物、剧情和事件阶段已确认</strong><span>后续事实与设定版块将在下一阶段继续生成。</span></div>
+          <div><strong>当前拆解结果已经确认</strong><span>人物、剧情、事实状态和核心分析均已保存，可以继续回查原文。</span></div>
+        ) : data.narrative_status !== "READY" ? (
+          <div><strong>完整故事结构尚未完成</strong><span>当前内容仅供内部检查，不能作为正式拆解结果确认。</span></div>
+        ) : data.deep_status !== "READY" ? (
+          <div><strong>深层拆解仍在生成</strong><span>系统正在整理事实状态、世界设定、伏笔、冲突和节奏，当前不需要用户确认。</span></div>
         ) : (
-          <>
-            <div><strong>现在可以进行第一次产品验收</strong><span>请重点检查人物是否可读、事件顺序是否合理、每项内容能否回到原文。</span></div>
-            <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirm}>{busy === "confirm-analysis" ? "正在确认" : "确认人物、剧情和事件"}</button>
-          </>
+          <div><strong>核心拆解已经生成</strong><span>所有重要结论均保留原文依据；证据不足或存在反证的内容会明确标出。</span></div>
         )}
       </footer>
     </section>
@@ -244,7 +621,7 @@ export default function ProductWorkbench() {
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
-  const [workbenchView, setWorkbenchView] = useState<"overview" | "characters" | "plot" | "events">("overview");
+  const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -478,19 +855,6 @@ export default function ProductWorkbench() {
       setBusy("start-analysis");
       setError("");
       await loadAnalysisResults(await api.startAnalysis(activeVersion.id));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function handleConfirmAnalysis() {
-    if (!analysisRun) return;
-    try {
-      setBusy("confirm-analysis");
-      setError("");
-      await loadAnalysisResults(await api.confirmAnalysis(analysisRun.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -794,7 +1158,7 @@ export default function ProductWorkbench() {
                             onOpenEvidence={(evidenceId) => void handleOpenEvidence(evidenceId)}
                             onCloseEvidence={() => setEvidenceContext(null)}
                             busy={busy}
-                            onConfirm={() => void handleConfirmAnalysis()}
+                            onAnalysisRunChange={(run) => void loadAnalysisResults(run)}
                           />
                         )}
 

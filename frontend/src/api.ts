@@ -207,6 +207,11 @@ export type WorkbenchCharacter = {
   activity_level: string;
   status: "VALID" | "UNCERTAIN";
   confidence: number;
+  role: "PROTAGONIST" | "CORE_SUPPORTING" | "IMPORTANT_SUPPORTING" | "MINOR" | "UNCLASSIFIED";
+  role_reason: string;
+  goals: string[];
+  motivations: string[];
+  current_state: string;
 };
 
 export type WorkbenchEvent = {
@@ -235,6 +240,177 @@ export type WorkbenchPhase = {
   chapter_ordinals: number[];
   chapter_titles: string[];
   people: string[];
+  situation: string;
+  goal: string;
+  obstacle: string;
+  key_actions: string[];
+  outcome: string;
+  change: string;
+  next_hook: string;
+};
+
+export type WorkbenchStoryOverview = {
+  premise: string;
+  synopsis: string;
+  protagonist: string;
+  protagonist_goal: string;
+  central_conflict: string;
+  current_situation: string;
+  unresolved_questions: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterRelation = {
+  source_name: string;
+  target_name: string;
+  relation: string;
+  current_state: string;
+  changes: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchEventRelation = {
+  source_event_id: string;
+  target_event_id: string;
+  relation: string;
+  explanation: string;
+  evidence_ids: string[];
+  source_title: string;
+  target_title: string;
+};
+
+export type WorkbenchFactVersion = {
+  id: string;
+  subject: string;
+  predicate: string;
+  value: string;
+  fact_type: string;
+  status: string;
+  valid_from_chapter: number;
+  valid_to_chapter: number | null;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+};
+
+export type WorkbenchStateChange = {
+  id: string;
+  subject: string;
+  aspect: string;
+  before: string;
+  after: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
+export type WorkbenchActorKnowledge = {
+  id: string;
+  actor: string;
+  proposition: string;
+  state: string;
+  chapter_ordinal: number;
+  evidence_ids: string[];
+};
+
+export type WorkbenchWorldRule = {
+  id: string;
+  title: string;
+  description: string;
+  limitations: string[];
+  costs: string[];
+  exceptions: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchForeshadowing = {
+  id: string;
+  title: string;
+  setup: string;
+  lifecycle: string;
+  setup_chapter: number;
+  payoff_chapter: number | null;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchConflict = {
+  id: string;
+  title: string;
+  conflict_type: string;
+  participants: string[];
+  goals: string;
+  obstacles: string;
+  stakes: string;
+  escalation: string[];
+  resolution: string;
+  status: string;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchSceneAnalysis = {
+  id: string;
+  chapter_ordinal: number;
+  function: string;
+  summary: string;
+  information_released: string[];
+  action_dialogue_balance: string;
+  pace: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchClaim = {
+  id: string;
+  claim_kind: string;
+  claim_text: string;
+  scope: string;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  verification_status: string;
+  confidence: number;
+};
+
+export type WorkbenchDeepAnalysis = {
+  fact_versions: WorkbenchFactVersion[];
+  state_changes: WorkbenchStateChange[];
+  actor_knowledge: WorkbenchActorKnowledge[];
+  world_rules: WorkbenchWorldRule[];
+  foreshadowing: WorkbenchForeshadowing[];
+  conflicts: WorkbenchConflict[];
+  scene_analysis: WorkbenchSceneAnalysis[];
+  claims: WorkbenchClaim[];
+};
+
+export type WorkbenchChapterRef = {
+  ordinal: number;
+  title: string;
+};
+
+export type AnalysisIssue = {
+  id: string;
+  run_id: string;
+  target_kind: string;
+  target_id: string | null;
+  target_label: string;
+  category: string;
+  note: string;
+  status: "OPEN" | "RESOLVED";
+  created_at: string;
+  resolved_at: string | null;
+};
+
+export type DeepAnalysisRevision = {
+  revision_no: number;
+  created_at: string;
+  prompt_version: string;
+};
+
+export type DeepAnalysisDiff = {
+  from_revision: number;
+  to_revision: number;
+  added: Record<string, string[]>;
+  removed: Record<string, string[]>;
+  changed_counts: Record<string, number>;
 };
 
 export type Workbench = {
@@ -245,6 +421,14 @@ export type Workbench = {
   related_entities: EntityCandidate[];
   events: WorkbenchEvent[];
   phases: WorkbenchPhase[];
+  narrative_status: "READY" | "NOT_GENERATED";
+  story_overview: WorkbenchStoryOverview | null;
+  character_relations: WorkbenchCharacterRelation[];
+  event_relations: WorkbenchEventRelation[];
+  deep_status: "READY" | "NOT_GENERATED";
+  deep_analysis: WorkbenchDeepAnalysis | null;
+  deep_revision: number | null;
+  chapters: WorkbenchChapterRef[];
 };
 
 export type EvidenceContext = {
@@ -378,6 +562,23 @@ export const api = {
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
   analysisWorkbench: (runId: string) =>
     request<Workbench>(`/api/analysis-runs/${runId}/workbench`),
+  startDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
+  analysisIssues: (runId: string) =>
+    request<AnalysisIssue[]>(`/api/analysis-runs/${runId}/issues`),
+  createAnalysisIssue: (runId: string, payload: { target_kind: string; target_id: string | null; target_label: string; category: string; note: string }) =>
+    request<AnalysisIssue>(`/api/analysis-runs/${runId}/issues`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  resolveAnalysisIssue: (issueId: string) =>
+    request<AnalysisIssue>(`/api/analysis-issues/${issueId}/resolve`, { method: "POST" }),
+  recomputeDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/recompute`, { method: "POST" }),
+  deepAnalysisRevisions: (runId: string) =>
+    request<DeepAnalysisRevision[]>(`/api/analysis-runs/${runId}/deep/revisions`),
+  deepAnalysisDiff: (runId: string) =>
+    request<DeepAnalysisDiff>(`/api/analysis-runs/${runId}/deep/diff`),
   confirmAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/confirm`, { method: "POST" }),
   evidenceContext: (evidenceId: string) =>

@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session
 from ..models import (
     AnalysisRun,
     CandidateStatus,
+    DeepAnalysis,
     EntityCandidate,
     EventCandidate,
     EvidenceSpan,
+    NarrativeSynthesis,
     SourceUnit,
     Task,
     TaskStatus,
@@ -47,15 +49,20 @@ class _ChapterRef:
 
 
 def _chapters(session: Session, source_version_id: str) -> list[_ChapterRef]:
-    units = session.scalars(
+    units = list(session.scalars(
         select(SourceUnit)
         .where(
             SourceUnit.source_version_id == source_version_id,
             SourceUnit.unit_type == "CHAPTER",
         )
         .order_by(SourceUnit.ordinal)
-    )
-    return [_ChapterRef(item.ordinal, item.title, item.start_char, item.end_char) for item in units]
+    ))
+    # The book title/front matter is a SourceUnit but is not a novel chapter.
+    # Use the chapter sequence for user-facing numbering and time ordering.
+    return [
+        _ChapterRef(index, item.title, item.start_char, item.end_char)
+        for index, item in enumerate(units, start=1)
+    ]
 
 
 def _chapters_for_range(chapters: list[_ChapterRef], start_char: int, end_char: int) -> list[_ChapterRef]:
@@ -87,7 +94,12 @@ def _candidate_query(session: Session, model, run_id: str):
     )
 
 
-def build_workbench_projection(session: Session, run_id: str) -> dict:
+def build_workbench_projection(
+    session: Session,
+    run_id: str,
+    *,
+    include_synthesis: bool = True,
+) -> dict:
     run = session.get(AnalysisRun, run_id)
     if run is None:
         raise ValueError("ANALYSIS_RUN_NOT_FOUND")
@@ -204,20 +216,86 @@ def build_workbench_projection(session: Session, run_id: str) -> dict:
             "confidence": entity.confidence,
         })
 
+    synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+    ) if include_synthesis else None
+    deep_analysis = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    ) if include_synthesis else None
+    narrative_status = "NOT_GENERATED"
+    story_overview = None
+    character_relations: list[dict] = []
+    event_relations: list[dict] = []
     phases: list[dict] = []
-    current: list[dict] = []
-    previous_chapter: int | None = None
-    for event in events:
-        first_chapter = event["chapter_ordinals"][0] if event["chapter_ordinals"] else None
-        gap = first_chapter is not None and previous_chapter is not None and first_chapter - previous_chapter > 1
-        if current and gap:
-            phases.append(_phase(run_id, len(phases) + 1, current))
-            current = []
-        current.append(event)
-        if first_chapter is not None:
-            previous_chapter = first_chapter
-    if current:
-        phases.append(_phase(run_id, len(phases) + 1, current))
+    role_by_name: dict[str, dict] = {}
+    if synthesis is not None:
+        narrative_status = "READY"
+        payload = json.loads(synthesis.payload_json)
+        story_overview = payload.get("story_overview")
+        role_by_name = {
+            _normalize(item.get("name", "")): item
+            for item in payload.get("character_roles", [])
+            if item.get("name")
+        }
+        character_relations = payload.get("character_relations", [])
+        event_relations = payload.get("event_relations", [])
+        event_by_id = {item["id"]: item for item in events}
+        for index, phase in enumerate(payload.get("narrative_phases", []), start=1):
+            phase_event_ids = [
+                event_id for event_id in phase.get("event_ids", []) if event_id in event_by_id
+            ]
+            phase_events = [event_by_id[event_id] for event_id in phase_event_ids]
+            chapter_ordinals = sorted({
+                chapter
+                for event in phase_events
+                for chapter in event["chapter_ordinals"]
+            })
+            chapter_titles = []
+            for event in phase_events:
+                for title in event["chapter_titles"]:
+                    if title not in chapter_titles:
+                        chapter_titles.append(title)
+            phases.append({
+                "id": f"phs_{_hash(f'{run_id}:{index}:{','.join(phase_event_ids)}')[:32]}",
+                "title": phase["title"],
+                "summary": phase["situation"],
+                "situation": phase["situation"],
+                "goal": phase.get("goal", ""),
+                "obstacle": phase.get("obstacle", ""),
+                "key_actions": phase.get("key_actions", []),
+                "outcome": phase.get("outcome", ""),
+                "change": phase.get("change", ""),
+                "next_hook": phase.get("next_hook", ""),
+                "event_ids": phase_event_ids,
+                "evidence_ids": phase.get("evidence_ids", []),
+                "chapter_ordinals": chapter_ordinals,
+                "chapter_titles": chapter_titles,
+                "people": _unique([person for event in phase_events for person in event["people"]]),
+            })
+        for event in event_relations:
+            if event.get("source_event_id") in event_by_id and event.get("target_event_id") in event_by_id:
+                event["source_title"] = event_by_id[event["source_event_id"]]["title"]
+                event["target_title"] = event_by_id[event["target_event_id"]]["title"]
+
+    deep_status = "NOT_GENERATED"
+    deep_payload = None
+    deep_revision = None
+    if deep_analysis is not None:
+        deep_status = "READY"
+        deep_payload = json.loads(deep_analysis.payload_json)
+        deep_revision = deep_analysis.revision_no
+
+    for character in characters:
+        role = role_by_name.get(_normalize(character["name"]))
+        character.update({
+            "role": role.get("role", "UNCLASSIFIED") if role else "UNCLASSIFIED",
+            "role_reason": role.get("role_reason", "尚未完成角色定位") if role else "尚未完成角色定位",
+            "goals": role.get("goals", []) if role else [],
+            "motivations": role.get("motivations", []) if role else [],
+            "current_state": role.get("current_state", "") if role else "",
+        })
 
     return {
         "run_id": run_id,
@@ -241,30 +319,15 @@ def build_workbench_projection(session: Session, run_id: str) -> dict:
         ],
         "events": events,
         "phases": phases,
-    }
-
-
-def _phase(run_id: str, index: int, events: list[dict]) -> dict:
-    chapter_ordinals = sorted({chapter for event in events for chapter in event["chapter_ordinals"]})
-    chapter_titles: list[str] = []
-    for event in events:
-        for title in event["chapter_titles"]:
-            if title not in chapter_titles:
-                chapter_titles.append(title)
-    people = _unique([person for event in events for person in event["people"]])
-    evidence_ids = _unique([evidence for event in events for evidence in event["evidence_ids"]])
-    first_title = events[0]["title"]
-    last_title = events[-1]["title"]
-    title = first_title if first_title == last_title else f"{first_title} → {last_title}"
-    chapter_range = f"第 {chapter_ordinals[0]} 章" if len(chapter_ordinals) == 1 else f"第 {chapter_ordinals[0]}～{chapter_ordinals[-1]} 章"
-    summary = f"{chapter_range}，整理出 {len(events)} 个事件，涉及 {len(people)} 名参与人物。"
-    return {
-        "id": f"phs_{_hash(f'{run_id}:{index}:{','.join(event['id'] for event in events)}')[:32]}",
-        "title": title,
-        "summary": summary,
-        "event_ids": [event["id"] for event in events],
-        "evidence_ids": evidence_ids,
-        "chapter_ordinals": chapter_ordinals,
-        "chapter_titles": chapter_titles,
-        "people": people,
+        "narrative_status": narrative_status,
+        "story_overview": story_overview,
+        "character_relations": character_relations,
+        "event_relations": event_relations,
+        "deep_status": deep_status,
+        "deep_analysis": deep_payload,
+        "deep_revision": deep_revision,
+        "chapters": [
+            {"ordinal": chapter.ordinal, "title": chapter.title}
+            for chapter in chapters
+        ],
     }

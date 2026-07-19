@@ -16,10 +16,12 @@ from .models import (
     ArtifactStatus,
     AnalysisRun,
     AnalysisRunTask,
+    AnalysisIssue,
     CandidateStatus,
     EntityCandidate,
     EvidenceSpan,
     EventCandidate,
+    DeepAnalysis,
     Project,
     SourceDocument,
     SourceIssue,
@@ -41,6 +43,8 @@ from .repositories import (
 from .schemas import (
     ArtifactRead,
     AnalysisRunRead,
+    AnalysisIssueCreate,
+    AnalysisIssueRead,
     AnalysisProfileRead,
     AnalysisProfileWrite,
     EntityCandidateRead,
@@ -48,6 +52,8 @@ from .schemas import (
     EvidenceSpanRead,
     EventCandidateRead,
     WorkbenchRead,
+    DeepAnalysisDiffRead,
+    DeepAnalysisRevisionRead,
     ModelCatalogRead,
     ModelConnectionRead,
     ModelProbeRead,
@@ -78,6 +84,8 @@ from .services.analysis import (
     ANALYSIS_STAGE,
     analysis_run_progress,
     confirm_analysis_run,
+    enqueue_deep_analysis,
+    enqueue_narrative_synthesis,
     refresh_analysis_run,
     start_entities_events_run,
 )
@@ -251,6 +259,21 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),
+    )
+
+
+def _analysis_issue_read(issue: AnalysisIssue) -> AnalysisIssueRead:
+    return AnalysisIssueRead(
+        id=issue.id,
+        run_id=issue.run_id,
+        target_kind=issue.target_kind,
+        target_id=issue.target_id,
+        target_label=issue.target_label,
+        category=issue.category,
+        note=issue.note,
+        status=issue.status,
+        created_at=_as_utc(issue.created_at),
+        resolved_at=_as_utc(issue.resolved_at),
     )
 
 
@@ -773,6 +796,302 @@ def analysis_workbench_get(
             raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
         raise
     return WorkbenchRead.model_validate(projection)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/narrative/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def narrative_synthesis_start(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    task = enqueue_narrative_synthesis(session, request.app.state.settings, run)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUNDATION_ANALYSIS_NOT_READY",
+                "message": "人物和事件基础分析尚未完成，暂时不能整理完整故事结构。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/deep/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def deep_analysis_start(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    task = enqueue_deep_analysis(session, request.app.state.settings, run)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NARRATIVE_SYNTHESIS_NOT_READY",
+                "message": "故事结构尚未整理完成，暂时不能生成事实状态和核心拆解。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+def _workbench_target_ids(projection: dict) -> set[str]:
+    ids: set[str] = set()
+    for collection in (
+        projection.get("characters", []),
+        projection.get("events", []),
+        projection.get("phases", []),
+        projection.get("related_entities", []),
+    ):
+        ids.update(item.get("id") for item in collection if item.get("id"))
+    deep = projection.get("deep_analysis") or {}
+    for name in (
+        "fact_versions",
+        "state_changes",
+        "actor_knowledge",
+        "world_rules",
+        "foreshadowing",
+        "conflicts",
+        "scene_analysis",
+        "claims",
+    ):
+        ids.update(item.get("id") for item in deep.get(name, []) if item.get("id"))
+    return ids
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/issues",
+    response_model=list[AnalysisIssueRead],
+)
+def analysis_issues_list(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[AnalysisIssueRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    issues = session.scalars(
+        select(AnalysisIssue)
+        .where(AnalysisIssue.run_id == run_id)
+        .order_by(AnalysisIssue.created_at.desc())
+    )
+    return [_analysis_issue_read(issue) for issue in issues]
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/issues",
+    response_model=AnalysisIssueRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def analysis_issue_create(
+    run_id: str,
+    payload: AnalysisIssueCreate,
+    session: Session = Depends(get_db),
+) -> AnalysisIssueRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    if payload.target_id:
+        projection = build_workbench_projection(session, run_id)
+        if payload.target_id not in _workbench_target_ids(projection):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ANALYSIS_TARGET_NOT_FOUND",
+                    "message": "要标记的问题对象已经不存在，请刷新工作台后再试。",
+                },
+            )
+    issue = AnalysisIssue(
+        run_id=run_id,
+        target_kind=payload.target_kind.strip(),
+        target_id=payload.target_id,
+        target_label=payload.target_label.strip(),
+        category=payload.category.strip(),
+        note=payload.note.strip(),
+        status="OPEN",
+    )
+    session.add(issue)
+    session.commit()
+    session.refresh(issue)
+    return _analysis_issue_read(issue)
+
+
+@router.post(
+    "/api/analysis-issues/{issue_id}/resolve",
+    response_model=AnalysisIssueRead,
+)
+def analysis_issue_resolve(
+    issue_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisIssueRead:
+    issue = session.get(AnalysisIssue, issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_ISSUE_NOT_FOUND")
+    issue.status = "RESOLVED"
+    issue.resolved_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(issue)
+    return _analysis_issue_read(issue)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/deep/recompute",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def deep_analysis_recompute(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    active = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == "analysis.deep_insights",
+            Task.status.in_((TaskStatus.PENDING.value, TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value)),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DEEP_ANALYSIS_RUNNING", "message": "深层拆解正在处理中，请等待当前结果完成。"},
+        )
+    issues = list(session.scalars(
+        select(AnalysisIssue).where(
+            AnalysisIssue.run_id == run_id,
+            AnalysisIssue.status == "OPEN",
+        )
+    ))
+    if not issues:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NO_OPEN_ANALYSIS_ISSUES", "message": "请先标记需要重新检查的问题。"},
+        )
+    task = enqueue_deep_analysis(
+        session,
+        request.app.state.settings,
+        run,
+        force=True,
+        revision_requests=[
+            {
+                "issue_id": issue.id,
+                "target_kind": issue.target_kind,
+                "target_id": issue.target_id,
+                "target_label": issue.target_label,
+                "category": issue.category,
+                "note": issue.note,
+            }
+            for issue in issues
+        ],
+    )
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "故事结构尚未完成，暂时不能重新分析。"},
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/revisions",
+    response_model=list[DeepAnalysisRevisionRead],
+)
+def deep_analysis_revisions(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[DeepAnalysisRevisionRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    rows = session.scalars(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no)
+    )
+    return [
+        DeepAnalysisRevisionRead(
+            revision_no=row.revision_no,
+            created_at=_as_utc(row.created_at),
+            prompt_version=row.prompt_version,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/diff",
+    response_model=DeepAnalysisDiffRead,
+)
+def deep_analysis_diff(
+    run_id: str,
+    from_revision: int | None = None,
+    to_revision: int | None = None,
+    session: Session = Depends(get_db),
+) -> DeepAnalysisDiffRead:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    rows = list(session.scalars(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no)
+    ))
+    if len(rows) < 2:
+        raise HTTPException(status_code=409, detail={"code": "DEEP_REVISION_NOT_ENOUGH", "message": "当前还没有两个可比较的拆解版本。"})
+    by_revision = {row.revision_no: row for row in rows}
+    from_revision = from_revision or rows[-2].revision_no
+    to_revision = to_revision or rows[-1].revision_no
+    before = by_revision.get(from_revision)
+    after = by_revision.get(to_revision)
+    if before is None or after is None or before.revision_no == after.revision_no:
+        raise HTTPException(status_code=422, detail={"code": "DEEP_REVISION_INVALID", "message": "要比较的拆解版本不存在。"})
+
+    collections = ("fact_versions", "state_changes", "actor_knowledge", "world_rules", "foreshadowing", "conflicts", "scene_analysis", "claims")
+    def key_for(collection: str, item: dict) -> str:
+        if collection == "fact_versions":
+            return f"{item.get('subject')}:{item.get('predicate')}:{item.get('valid_from_chapter')}"
+        if collection == "state_changes":
+            return f"{item.get('subject')}:{item.get('aspect')}:{item.get('chapter_ordinal')}"
+        if collection == "actor_knowledge":
+            return f"{item.get('actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+        if collection == "scene_analysis":
+            return str(item.get("chapter_ordinal"))
+        if collection == "claims":
+            return f"{item.get('claim_kind')}:{item.get('scope')}:{item.get('claim_text')}"
+        return str(item.get("title"))
+    before_payload = json.loads(before.payload_json)
+    after_payload = json.loads(after.payload_json)
+    added: dict[str, list[str]] = {}
+    removed: dict[str, list[str]] = {}
+    changed_counts: dict[str, int] = {}
+    for collection in collections:
+        old = {key_for(collection, item): item for item in before_payload.get(collection, [])}
+        new = {key_for(collection, item): item for item in after_payload.get(collection, [])}
+        added[collection] = [new[key].get("title") or new[key].get("claim_text") or key for key in sorted(new.keys() - old.keys())]
+        removed[collection] = [old[key].get("title") or old[key].get("claim_text") or key for key in sorted(old.keys() - new.keys())]
+        changed_counts[collection] = sum(1 for key in new.keys() & old.keys() if new[key] != old[key])
+    return DeepAnalysisDiffRead(
+        from_revision=before.revision_no,
+        to_revision=after.revision_no,
+        added=added,
+        removed=removed,
+        changed_counts=changed_counts,
+    )
 
 
 @router.post(

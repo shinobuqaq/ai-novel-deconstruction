@@ -307,6 +307,11 @@ class WorkbenchCharacterRead(BaseModel):
     activity_level: str
     status: str
     confidence: int
+    role: str = "UNCLASSIFIED"
+    role_reason: str = ""
+    goals: list[str] = Field(default_factory=list)
+    motivations: list[str] = Field(default_factory=list)
+    current_state: str = ""
 
 
 class WorkbenchEventRead(BaseModel):
@@ -335,6 +340,150 @@ class WorkbenchPhaseRead(BaseModel):
     chapter_ordinals: list[int]
     chapter_titles: list[str]
     people: list[str]
+    situation: str = ""
+    goal: str = ""
+    obstacle: str = ""
+    key_actions: list[str] = Field(default_factory=list)
+    outcome: str = ""
+    change: str = ""
+    next_hook: str = ""
+
+
+class WorkbenchStoryOverviewRead(BaseModel):
+    premise: str
+    synopsis: str
+    protagonist: str
+    protagonist_goal: str
+    central_conflict: str
+    current_situation: str
+    unresolved_questions: list[str]
+    evidence_ids: list[str]
+
+
+class WorkbenchCharacterRelationRead(BaseModel):
+    source_name: str
+    target_name: str
+    relation: str
+    current_state: str
+    changes: list[str]
+    evidence_ids: list[str]
+
+
+class WorkbenchEventRelationRead(BaseModel):
+    source_event_id: str
+    target_event_id: str
+    relation: str
+    explanation: str
+    evidence_ids: list[str]
+    source_title: str = ""
+    target_title: str = ""
+
+
+class WorkbenchFactVersionRead(BaseModel):
+    id: str
+    subject: str
+    predicate: str
+    value: str
+    fact_type: str
+    status: str
+    valid_from_chapter: int
+    valid_to_chapter: int | None
+    evidence_ids: list[str]
+    counter_evidence_ids: list[str]
+
+
+class WorkbenchStateChangeRead(BaseModel):
+    id: str
+    subject: str
+    aspect: str
+    before: str
+    after: str
+    chapter_ordinal: int
+    event_id: str | None
+    evidence_ids: list[str]
+
+
+class WorkbenchActorKnowledgeRead(BaseModel):
+    id: str
+    actor: str
+    proposition: str
+    state: str
+    chapter_ordinal: int
+    evidence_ids: list[str]
+
+
+class WorkbenchWorldRuleRead(BaseModel):
+    id: str
+    title: str
+    description: str
+    limitations: list[str]
+    costs: list[str]
+    exceptions: list[str]
+    evidence_ids: list[str]
+
+
+class WorkbenchForeshadowingRead(BaseModel):
+    id: str
+    title: str
+    setup: str
+    lifecycle: str
+    setup_chapter: int
+    payoff_chapter: int | None
+    event_ids: list[str]
+    evidence_ids: list[str]
+
+
+class WorkbenchConflictRead(BaseModel):
+    id: str
+    title: str
+    conflict_type: str
+    participants: list[str]
+    goals: str
+    obstacles: str
+    stakes: str
+    escalation: list[str]
+    resolution: str
+    status: str
+    event_ids: list[str]
+    evidence_ids: list[str]
+
+
+class WorkbenchSceneAnalysisRead(BaseModel):
+    id: str
+    chapter_ordinal: int
+    function: str
+    summary: str
+    information_released: list[str]
+    action_dialogue_balance: str
+    pace: str
+    evidence_ids: list[str]
+
+
+class WorkbenchClaimRead(BaseModel):
+    id: str
+    claim_kind: str
+    claim_text: str
+    scope: str
+    evidence_ids: list[str]
+    counter_evidence_ids: list[str]
+    verification_status: str
+    confidence: int
+
+
+class WorkbenchDeepAnalysisRead(BaseModel):
+    fact_versions: list[WorkbenchFactVersionRead] = Field(default_factory=list)
+    state_changes: list[WorkbenchStateChangeRead] = Field(default_factory=list)
+    actor_knowledge: list[WorkbenchActorKnowledgeRead] = Field(default_factory=list)
+    world_rules: list[WorkbenchWorldRuleRead] = Field(default_factory=list)
+    foreshadowing: list[WorkbenchForeshadowingRead] = Field(default_factory=list)
+    conflicts: list[WorkbenchConflictRead] = Field(default_factory=list)
+    scene_analysis: list[WorkbenchSceneAnalysisRead] = Field(default_factory=list)
+    claims: list[WorkbenchClaimRead] = Field(default_factory=list)
+
+
+class WorkbenchChapterRefRead(BaseModel):
+    ordinal: int
+    title: str
 
 
 class WorkbenchRead(BaseModel):
@@ -345,3 +494,46 @@ class WorkbenchRead(BaseModel):
     related_entities: list[EntityCandidateRead]
     events: list[WorkbenchEventRead]
     phases: list[WorkbenchPhaseRead]
+    narrative_status: str = "NOT_GENERATED"
+    story_overview: WorkbenchStoryOverviewRead | None = None
+    character_relations: list[WorkbenchCharacterRelationRead] = Field(default_factory=list)
+    event_relations: list[WorkbenchEventRelationRead] = Field(default_factory=list)
+    deep_status: str = "NOT_GENERATED"
+    deep_analysis: WorkbenchDeepAnalysisRead | None = None
+    deep_revision: int | None = None
+    chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)
+
+
+class AnalysisIssueCreate(BaseModel):
+    target_kind: str = Field(min_length=1, max_length=40)
+    target_id: str | None = Field(default=None, max_length=64)
+    target_label: str = Field(min_length=1, max_length=300)
+    category: str = Field(min_length=1, max_length=40)
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class AnalysisIssueRead(BaseModel):
+    id: str
+    run_id: str
+    target_kind: str
+    target_id: str | None
+    target_label: str
+    category: str
+    note: str
+    status: str
+    created_at: datetime
+    resolved_at: datetime | None
+
+
+class DeepAnalysisRevisionRead(BaseModel):
+    revision_no: int
+    created_at: datetime
+    prompt_version: str
+
+
+class DeepAnalysisDiffRead(BaseModel):
+    from_revision: int
+    to_revision: int
+    added: dict[str, list[str]]
+    removed: dict[str, list[str]]
+    changed_counts: dict[str, int]

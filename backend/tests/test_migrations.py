@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0006_source_parser_version",)
+    assert revision == ("0009_analysis_issues",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -264,6 +264,30 @@ def test_migrated_schema_contains_task_attempt_constraints(
         source_version_indexes = {
             row[1] for row in connection.execute("PRAGMA index_list(source_versions)")
         }
+        narrative_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(narrative_syntheses)")
+        }
+        narrative_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(narrative_syntheses)")
+        }
+        deep_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(deep_analyses)")
+        }
+        deep_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(deep_analyses)")
+        }
+        issue_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(analysis_issues)")
+        }
+        issue_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(analysis_issues)")
+        }
 
     assert {
         "current_attempt_id",
@@ -334,6 +358,54 @@ def test_migrated_schema_contains_task_attempt_constraints(
     assert "parser_version" in source_version_columns
     assert "ux_source_version_hash_parser" in source_version_indexes
     assert "ux_source_version_hash" not in source_version_indexes
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == narrative_columns
+    assert {
+        "ux_narrative_synthesis_run",
+        "ix_narrative_syntheses_source_version",
+    }.issubset(narrative_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "revision_no",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == deep_columns
+    assert {
+        "ux_deep_analysis_run_revision",
+        "ux_deep_analysis_task",
+        "ix_deep_analyses_source_version",
+    }.issubset(deep_indexes)
+    assert {
+        "id",
+        "run_id",
+        "target_kind",
+        "target_id",
+        "target_label",
+        "category",
+        "note",
+        "status",
+        "created_at",
+        "resolved_at",
+    } == issue_columns
+    assert {
+        "ix_analysis_issues_run_id",
+        "ix_analysis_issues_run_status",
+    }.issubset(issue_indexes)
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -390,7 +462,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0006_source_parser_version",)
+    assert revision_after == ("0009_analysis_issues",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"
