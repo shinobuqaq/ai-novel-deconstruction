@@ -23,21 +23,28 @@
 
 ## 1. Windows 快速启动
 
-在项目根目录打开 PowerShell：
+日常使用请双击项目根目录的 `启动AI小说拆解工作台.bat`。
+
+启动后会保留一个可见的工作台窗口。这个窗口负责页面、后台服务和任务执行器的完整生命周期；关闭窗口会一并关闭它们，不会留下本项目的后台进程。
+
+关闭浏览器标签页不会停止正在进行的长篇分析；需要彻底关闭系统时，关闭这个启动窗口即可。
+
+首次安装或开发调试时，在项目根目录打开 PowerShell：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\setup.ps1
-.\scripts\dev.ps1
 ```
 
-启动后：
+安装完成后关闭 PowerShell，再双击 `启动AI小说拆解工作台.bat`。
 
-- 前端：`http://127.0.0.1:5173`
-- API 文档：`http://127.0.0.1:8000/docs`
-- 健康检查：`http://127.0.0.1:8000/health`
+正式启动后：
 
-`dev.ps1` 会分别启动 API、Worker 和 Frontend。关闭对应 PowerShell 窗口即可停止。
+- 工作台：`http://127.0.0.1:15173`
+- API 文档：`http://127.0.0.1:18000/docs`
+- 健康检查：`http://127.0.0.1:18000/health`
+
+`dev.ps1` 仅用于开发调试，会分别启动 API、Worker 和 Frontend；日常使用不要通过它启动。
 
 ## 2. 开发人员验证后台闭环
 
