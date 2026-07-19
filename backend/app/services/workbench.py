@@ -794,6 +794,10 @@ def build_workbench_projection(
             "current_state": role.get("current_state", "") if role else "",
             "arc_summary": role.get("arc_summary", "") if role else "",
         })
+    if synthesis is not None and any(
+        character["role"] == "UNCLASSIFIED" for character in characters
+    ):
+        narrative_status = "INCOMPLETE"
 
     return {
         "run_id": run_id,

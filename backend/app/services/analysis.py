@@ -2312,6 +2312,8 @@ def persist_narrative_synthesis(
         _normalized_name(item.name)
         for item in output.character_roles
     }
+    if len(returned_role_names) != len(output.character_roles):
+        raise ValueError("NARRATIVE_CHARACTER_ROLES_DUPLICATED")
     missing_required = [
         item["name"]
         for item in required_characters
@@ -2677,6 +2679,15 @@ def confirm_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
         raise SourceImportError(
             "NARRATIVE_SYNTHESIS_NOT_READY",
             "完整故事总览、人物角色和剧情结构尚未生成，暂时不能确认。",
+            status_code=409,
+        )
+    from .workbench import build_workbench_projection
+
+    projection = build_workbench_projection(session, run.id)
+    if projection.get("narrative_status") != "READY":
+        raise SourceImportError(
+            "NARRATIVE_SYNTHESIS_INCOMPLETE",
+            "仍有人物没有完成角色定位，请先重新整理人物和剧情结构。",
             status_code=409,
         )
     deep_analysis = session.scalar(

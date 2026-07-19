@@ -172,6 +172,7 @@ type FormalWorkbenchProps = {
   onSelectChapter: (chapterId: string) => void;
   busy: string;
   onAnalysisRunChange: (run: AnalysisRun) => void;
+  onRepairNarrative: () => void;
   onStartDeepAnalysis: () => void;
   onConfirmAnalysis: () => void;
 }
@@ -190,6 +191,7 @@ function FormalWorkbench({
   onSelectChapter,
   busy,
   onAnalysisRunChange,
+  onRepairNarrative,
   onStartDeepAnalysis,
   onConfirmAnalysis,
 }: FormalWorkbenchProps) {
@@ -210,6 +212,7 @@ function FormalWorkbench({
   const [issueBusy, setIssueBusy] = useState("");
   const [issueError, setIssueError] = useState("");
   const viewData = revisionData ?? data;
+  const unclassifiedCharacters = viewData.characters.filter((item) => item.role === "UNCLASSIFIED");
   const isHistoricalRevision = revisionData !== null && revisionData.deep_revision !== data.deep_revision;
   const sourceChapterNumbers = useMemo(() => {
     const numbers = new Map<string, number>();
@@ -394,9 +397,9 @@ function FormalWorkbench({
     <section className="formal-workbench" aria-label="人物剧情事件工作台">
       <div className="formal-workbench-heading">
         <div>
-          <p>{viewData.narrative_status === "READY" ? "故事结构已整理" : "基础人物与事件已整理"}</p>
+          <p>{viewData.narrative_status === "READY" ? "故事结构已整理" : viewData.narrative_status === "INCOMPLETE" ? "故事结构需要补全" : "基础人物与事件已整理"}</p>
           <h2>小说拆解工作台</h2>
-          <span>{viewData.narrative_status === "READY" ? "从总览理解故事，再按人物、剧情、事实、伏笔和节奏深入查看；每项重要内容都能回到原文。" : "基础抽取已完成，完整故事总览和人物角色定位尚未生成。"}</span>
+          <span>{viewData.narrative_status === "READY" ? "从总览理解故事，再按人物、剧情、事实、伏笔和节奏深入查看；每项重要内容都能回到原文。" : viewData.narrative_status === "INCOMPLETE" ? `已经发现 ${unclassifiedCharacters.length} 个人物尚未纳入完整角色定位，需要重新整理人物、关系和剧情阶段。` : "基础抽取已完成，完整故事总览和人物角色定位尚未生成。"}</span>
         </div>
         <div className="formal-workbench-counts">
           <div><strong>{viewData.characters.length}</strong><span>人物</span></div>
@@ -420,6 +423,17 @@ function FormalWorkbench({
         </div>
       )}
       {revisionError && <div className="analysis-issue-error" role="alert">{revisionError}</div>}
+      {viewData.narrative_status === "INCOMPLETE" && !isHistoricalRevision && (
+        <div className="analysis-failed" role="alert">
+          <div>
+            <strong>人物和剧情结构没有覆盖完整</strong>
+            <span>尚未定位：{unclassifiedCharacters.map((item) => item.name).join("、")}。系统会重新检查全部人物、人物关系和剧情阶段，并自动更新后续拆解。</span>
+          </div>
+          <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>
+            {busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}
+          </button>
+        </div>
+      )}
 
       <div className="workbench-search">
         <label htmlFor="workbench-search-input">搜索整个拆解结果</label>
@@ -753,7 +767,7 @@ function FormalWorkbench({
         ) : analysisStatus === "CONFIRMED" ? (
           <div><strong>当前拆解结果已经确认</strong><span>人物、剧情、事实状态和核心分析均已保存，可以继续回查原文。</span></div>
         ) : viewData.narrative_status !== "READY" ? (
-          <div><strong>完整故事结构尚未完成</strong><span>当前内容仅供内部检查，不能作为正式拆解结果确认。</span></div>
+          <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
           <><div><strong>第一阶段结果可以确认</strong><span>请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : "确认故事结构并继续"}</button></>
         ) : (
@@ -1033,6 +1047,19 @@ export default function ProductWorkbench() {
       setBusy("start-deep-analysis");
       setError("");
       await loadAnalysisResults(await api.startDeepAnalysis(analysisRun.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleRepairNarrative() {
+    if (!analysisRun) return;
+    try {
+      setBusy("repair-narrative");
+      setError("");
+      await loadAnalysisResults(await api.repairNarrativeAnalysis(analysisRun.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1423,6 +1450,7 @@ export default function ProductWorkbench() {
                             onSelectChapter={setSelectedChapter}
                             busy={busy}
                             onAnalysisRunChange={(run) => void loadAnalysisResults(run)}
+                            onRepairNarrative={() => void handleRepairNarrative()}
                             onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
                             onConfirmAnalysis={() => void handleConfirmAnalysis()}
                           />

@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, Task, TaskAttempt, TaskStatus
+from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, NarrativeSynthesis, Task, TaskAttempt, TaskStatus
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
@@ -689,7 +689,71 @@ def test_invalid_model_structure_records_safe_field_diagnostics(client) -> None:
         assert stored["phase"] == "schema_validation"
         assert stored["validation_error_count"] == 1
         assert stored["model"] == "test-model"
-        assert "raw_text" not in stored
+    assert "raw_text" not in stored
+
+
+def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+    registry = ProviderRegistry([StaticAnalysisProvider()])
+
+    with client.app.state.session_factory() as session:
+        foundation_claim = claim_next_task(
+            session, worker_id="legacy-foundation-worker", lease_seconds=60
+        )
+    assert foundation_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        foundation_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        narrative_claim = claim_next_task(
+            session, worker_id="legacy-narrative-worker", lease_seconds=60
+        )
+    assert narrative_claim is not None
+    assert narrative_claim.kind == "analysis.narrative_synthesis"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        narrative_claim,
+        registry,
+    )
+
+    with client.app.state.session_factory() as session:
+        synthesis = session.scalar(
+            select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run["id"])
+        )
+        assert synthesis is not None
+        payload = json.loads(synthesis.payload_json)
+        payload["character_roles"] = []
+        synthesis.payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        session.commit()
+
+    workbench = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert workbench.status_code == 200
+    assert workbench.json()["narrative_status"] == "INCOMPLETE"
+    assert workbench.json()["characters"][0]["role"] == "UNCLASSIFIED"
+
+    blocked = client.post(f"/api/analysis-runs/{run['id']}/confirm")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "NARRATIVE_SYNTHESIS_INCOMPLETE"
+
+    repair = client.post(f"/api/analysis-runs/{run['id']}/narrative/repair")
+    assert repair.status_code == 202
+    assert repair.json()["status"] == "PENDING"
+    with client.app.state.session_factory() as session:
+        repair_claim = claim_next_task(
+            session, worker_id="legacy-repair-worker", lease_seconds=60
+        )
+    assert repair_claim is not None
+    assert repair_claim.kind == "analysis.narrative_synthesis"
+    assert "人物角色覆盖" in repair_claim.payload_json
 
 
 def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:

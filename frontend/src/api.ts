@@ -499,7 +499,7 @@ export type Workbench = {
   related_entities: EntityCandidate[];
   events: WorkbenchEvent[];
   phases: WorkbenchPhase[];
-  narrative_status: "READY" | "NOT_GENERATED";
+  narrative_status: "READY" | "INCOMPLETE" | "NOT_GENERATED";
   story_overview: WorkbenchStoryOverview | null;
   character_relations: WorkbenchCharacterRelation[];
   event_relations: WorkbenchEventRelation[];
@@ -670,6 +670,8 @@ export const api = {
     request<AnalysisIssue>(`/api/analysis-issues/${issueId}/resolve`, { method: "POST" }),
   recomputeDeepAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/recompute`, { method: "POST" }),
+  repairNarrativeAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/repair`, { method: "POST" }),
   deepAnalysisRevisions: (runId: string) =>
     request<DeepAnalysisRevision[]>(`/api/analysis-runs/${runId}/deep/revisions`),
   deepAnalysisDiff: (runId: string) =>

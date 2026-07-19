@@ -1060,6 +1060,69 @@ def narrative_synthesis_start(
     return _analysis_run_read(session, run)
 
 
+@router.post(
+    "/api/analysis-runs/{run_id}/narrative/repair",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def narrative_synthesis_repair(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    projection = build_workbench_projection(session, run_id)
+    missing = [
+        item["name"]
+        for item in projection.get("characters", [])
+        if item.get("role") == "UNCLASSIFIED"
+    ]
+    if not missing:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_REPAIR_NOT_NEEDED", "message": "人物和剧情结构已经完整，不需要重新整理。"},
+        )
+    active = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind.in_(("analysis.narrative_synthesis", "analysis.deep_insights")),
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+            )),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ANALYSIS_REPAIR_RUNNING", "message": "人物和剧情正在重新整理，请等待当前处理完成。"},
+        )
+    task = enqueue_narrative_synthesis(
+        session,
+        request.app.state.settings,
+        run,
+        force=True,
+        revision_requests=[{
+            "target_kind": "CHARACTER",
+            "target_id": None,
+            "target_label": "人物角色覆盖",
+            "category": "INCOMPLETE",
+            "note": f"以下人物尚未完成角色定位：{'、'.join(missing)}。请重新整理全部人物、关系和剧情阶段。",
+        }],
+    )
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "基础人物与事件尚未准备完成，暂时不能重新整理。"},
+        )
+    return _analysis_run_read(session, run)
+
+
 @router.get(
     "/api/source-versions/{version_id}/analysis/entities-events/estimate",
     response_model=AnalysisCostEstimateRead,
