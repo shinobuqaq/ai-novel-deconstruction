@@ -6,7 +6,13 @@ from typing import Any
 import httpx
 
 from ..config import Settings
-from ..services.provider_config import ModelSettingsError, resolve_analysis_profile
+from ..services.provider_config import (
+    STRUCTURED_JSON_ONLY,
+    STRUCTURED_STRICT,
+    STRUCTURED_UNSUPPORTED,
+    ModelSettingsError,
+    resolve_analysis_profile,
+)
 from .base import ProviderError, ProviderResponse
 
 
@@ -49,6 +55,33 @@ class OpenAIResponsesProvider:
                 retryable=False,
             )
 
+        capability_matches = service.capabilities.tested_model == profile.model
+        capabilities = service.capabilities if capability_matches else None
+        structured_mode = (
+            capabilities.structured_output
+            if capabilities and capabilities.structured_output in {STRUCTURED_STRICT, STRUCTURED_JSON_ONLY}
+            else STRUCTURED_STRICT
+        )
+        reasoning_supported = not capabilities or capabilities.reasoning_effort != STRUCTURED_UNSUPPORTED
+        temperature_supported = not capabilities or capabilities.temperature != STRUCTURED_UNSUPPORTED
+        effective_reasoning = (
+            profile.reasoning_effort
+            if profile.reasoning_effort not in {"auto", "none"} and reasoning_supported
+            else None
+        )
+        effective_temperature = (
+            profile.temperature
+            if profile.temperature is not None
+            and temperature_supported
+            and (service.service_type != "OPENAI" or effective_reasoning is None)
+            else None
+        )
+        if structured_mode == STRUCTURED_JSON_ONLY:
+            instructions = (
+                f"{instructions}\n输出必须是 JSON 对象，并满足以下结构："
+                f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}"
+            )
+
         if service.service_type == "OPENAI":
             endpoint = f"{service.base_url}/responses"
             request_body: dict[str, Any] = {
@@ -56,19 +89,20 @@ class OpenAIResponsesProvider:
                 "instructions": instructions,
                 "input": model_input,
                 "max_output_tokens": profile.max_output_tokens,
-                "text": {
+            }
+            if structured_mode == STRUCTURED_STRICT:
+                request_body["text"] = {
                     "format": {
                         "type": "json_schema",
                         "name": "novel_entities_events",
                         "strict": True,
                         "schema": schema,
                     }
-                },
-            }
-            if profile.reasoning_effort != "none":
-                request_body["reasoning"] = {"effort": profile.reasoning_effort}
-            else:
-                request_body["temperature"] = profile.temperature
+                }
+            if effective_reasoning is not None:
+                request_body["reasoning"] = {"effort": effective_reasoning}
+            elif effective_temperature is not None:
+                request_body["temperature"] = effective_temperature
         else:
             endpoint = f"{service.base_url}/chat/completions"
             request_body = {
@@ -77,19 +111,21 @@ class OpenAIResponsesProvider:
                     {"role": "system", "content": instructions},
                     {"role": "user", "content": model_input},
                 ],
-                "temperature": profile.temperature,
                 "max_tokens": profile.max_output_tokens,
-                "response_format": {
+            }
+            if effective_temperature is not None:
+                request_body["temperature"] = effective_temperature
+            if structured_mode == STRUCTURED_STRICT:
+                request_body["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
                         "name": "novel_entities_events",
                         "strict": True,
                         "schema": schema,
                     },
-                },
-            }
-            if profile.reasoning_effort != "none":
-                request_body["reasoning_effort"] = profile.reasoning_effort
+                }
+            if effective_reasoning is not None:
+                request_body["reasoning_effort"] = effective_reasoning
 
         try:
             async with httpx.AsyncClient(
@@ -180,9 +216,10 @@ class OpenAIResponsesProvider:
             model=profile.model,
             parameters={
                 "profile_id": profile.id,
-                "temperature": profile.temperature,
+                "temperature": effective_temperature,
                 "max_output_tokens": profile.max_output_tokens,
-                "reasoning_effort": profile.reasoning_effort,
+                "reasoning_effort": effective_reasoning,
+                "structured_output": structured_mode,
                 "timeout_seconds": profile.timeout_seconds,
                 "max_retries": profile.max_retries,
             },

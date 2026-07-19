@@ -49,6 +49,7 @@ from .schemas import (
     EventCandidateRead,
     ModelCatalogRead,
     ModelConnectionRead,
+    ModelProbeRead,
     ModelServiceRead,
     ModelServiceWrite,
     ModelSettingsRead,
@@ -90,6 +91,7 @@ from .services.provider_config import (
     record_connection_result,
     save_analysis_profile,
     save_model_service,
+    probe_selected_model,
     write_openai_config,
 )
 
@@ -114,6 +116,15 @@ def _model_service_read(service: ModelService) -> ModelServiceRead:
         last_tested_at=service.last_tested_at,
         last_test_status=service.last_test_status,
         last_test_message=service.last_test_message,
+        capabilities={
+            "tested_model": service.capabilities.tested_model,
+            "tested_at": service.capabilities.tested_at,
+            "ordinary_request": service.capabilities.ordinary_request,
+            "structured_output": service.capabilities.structured_output,
+            "temperature": service.capabilities.temperature,
+            "reasoning_effort": service.capabilities.reasoning_effort,
+            "model_catalog": service.capabilities.model_catalog,
+        },
     )
 
 
@@ -134,7 +145,7 @@ def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
 
 def _model_settings_error(error: ModelSettingsError, *, connection: bool = False) -> HTTPException:
     status_code = 502 if connection else 422
-    if error.code in {"PROVIDER_NOT_FOUND", "ANALYSIS_PROFILE_NOT_FOUND"}:
+    if error.code in {"PROVIDER_NOT_FOUND", "ANALYSIS_PROFILE_NOT_FOUND", "MODEL_NOT_FOUND"}:
         status_code = 404
     if error.code == "PROVIDER_NOT_CONFIGURED":
         status_code = 409
@@ -388,7 +399,28 @@ async def model_services_models(service_id: str, request: Request) -> ModelCatal
     try:
         models = await discover_models(request.app.state.settings, service_id)
     except ModelSettingsError as error:
+        try:
+            record_connection_result(
+                request.app.state.settings,
+                service_id,
+                success=False,
+                message=error.message,
+                model_catalog_status="UNSUPPORTED" if error.code in {
+                    "PROVIDER_MODELS_UNSUPPORTED",
+                    "PROVIDER_MODELS_INVALID",
+                    "PROVIDER_MODELS_EMPTY",
+                } else "FAILED",
+            )
+        except ModelSettingsError:
+            pass
         raise _model_settings_error(error, connection=True) from error
+    record_connection_result(
+        request.app.state.settings,
+        service_id,
+        success=True,
+        message=f"已读取 {len(models)} 个可用模型。",
+        model_catalog_status="SUPPORTED",
+    )
     return ModelCatalogRead(
         service_id=service_id,
         models=models,
@@ -414,6 +446,7 @@ async def model_services_test(service_id: str, request: Request) -> ModelConnect
                 service_id,
                 success=True,
                 message=error.message,
+                model_catalog_status="UNSUPPORTED",
             )
             return ModelConnectionRead(
                 service=_model_service_read(service),
@@ -426,6 +459,7 @@ async def model_services_test(service_id: str, request: Request) -> ModelConnect
                 service_id,
                 success=False,
                 message=error.message,
+                model_catalog_status="FAILED",
             )
         except ModelSettingsError:
             pass
@@ -436,11 +470,27 @@ async def model_services_test(service_id: str, request: Request) -> ModelConnect
         service_id,
         success=True,
         message=message,
+        model_catalog_status="SUPPORTED",
     )
     return ModelConnectionRead(
         service=_model_service_read(service),
         model_count=len(models),
         message=message,
+    )
+
+
+@router.post(
+    "/api/settings/analysis-profiles/{profile_id}/test",
+    response_model=ModelProbeRead,
+)
+async def analysis_profile_test(profile_id: str, request: Request) -> ModelProbeRead:
+    try:
+        result = await probe_selected_model(request.app.state.settings, profile_id)
+    except ModelSettingsError as error:
+        raise _model_settings_error(error, connection=True) from error
+    return ModelProbeRead(
+        service=_model_service_read(result.service),
+        message=result.message,
     )
 
 

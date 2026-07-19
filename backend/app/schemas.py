@@ -193,6 +193,7 @@ class ModelServiceRead(BaseModel):
     last_tested_at: datetime | None
     last_test_status: str
     last_test_message: str | None
+    capabilities: dict[str, str | None]
 
 
 class ModelServiceWrite(BaseModel):
@@ -208,7 +209,7 @@ class AnalysisProfileRead(BaseModel):
     task_type: str
     service_id: str
     model: str
-    temperature: float
+    temperature: float | None
     max_output_tokens: int
     reasoning_effort: str
     timeout_seconds: float
@@ -219,8 +220,8 @@ class AnalysisProfileWrite(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     service_id: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=200)
-    temperature: float = Field(ge=0, le=2)
-    max_output_tokens: int = Field(ge=256, le=128_000)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_output_tokens: int = Field(ge=1, le=128_000)
     reasoning_effort: str = Field(max_length=20)
     timeout_seconds: float = Field(ge=10, le=1800)
     max_retries: int = Field(ge=0, le=10)
@@ -240,6 +241,11 @@ class ModelCatalogRead(BaseModel):
 class ModelConnectionRead(BaseModel):
     service: ModelServiceRead
     model_count: int
+    message: str
+
+
+class ModelProbeRead(BaseModel):
+    service: ModelServiceRead
     message: str
 
 

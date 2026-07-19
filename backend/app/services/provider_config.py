@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,13 @@ from ..config import Settings
 DEFAULT_SERVICE_ID = "openai-default"
 ENTITIES_EVENTS_PROFILE_ID = "entities-events"
 SUPPORTED_SERVICE_TYPES = {"OPENAI", "OPENAI_COMPATIBLE"}
-SUPPORTED_REASONING_EFFORTS = {"none", "low", "medium", "high"}
+SUPPORTED_REASONING_EFFORTS = {"auto", "none", "low", "medium", "high"}
+CAPABILITY_UNTESTED = "UNTESTED"
+CAPABILITY_SUPPORTED = "SUPPORTED"
+CAPABILITY_FAILED = "FAILED"
+STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
+STRUCTURED_JSON_ONLY = "JSON_ONLY"
+STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
 
 
 class ModelSettingsError(ValueError):
@@ -24,6 +30,17 @@ class ModelSettingsError(ValueError):
         super().__init__(code)
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCapabilities:
+    tested_model: str | None = None
+    tested_at: str | None = None
+    ordinary_request: str = CAPABILITY_UNTESTED
+    structured_output: str = CAPABILITY_UNTESTED
+    temperature: str = CAPABILITY_UNTESTED
+    reasoning_effort: str = CAPABILITY_UNTESTED
+    model_catalog: str = CAPABILITY_UNTESTED
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +53,7 @@ class ModelService:
     last_tested_at: str | None = None
     last_test_status: str = "NOT_TESTED"
     last_test_message: str | None = None
+    capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
     @property
     def configured(self) -> bool:
@@ -49,7 +67,7 @@ class AnalysisProfile:
     task_type: str
     service_id: str
     model: str
-    temperature: float
+    temperature: float | None
     max_output_tokens: int
     reasoning_effort: str
     timeout_seconds: float
@@ -97,9 +115,9 @@ def _default_settings(settings: Settings) -> ModelSettings:
         task_type="ENTITIES_EVENTS",
         service_id=service.id,
         model=settings.openai_model.strip(),
-        temperature=0.2,
+        temperature=None,
         max_output_tokens=16_000,
-        reasoning_effort=settings.openai_reasoning_effort,
+        reasoning_effort="auto",
         timeout_seconds=settings.openai_timeout_seconds,
         max_retries=2,
     )
@@ -120,10 +138,25 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
     defaults = _default_settings(settings)
+    stored_version = int(stored.get("version", 1) or 1)
     services: list[ModelService] = []
     for item in stored.get("services", []):
         if not isinstance(item, dict):
             continue
+        raw_capabilities = item.get("capabilities")
+        capabilities = ModelCapabilities()
+        if isinstance(raw_capabilities, dict):
+            capabilities = ModelCapabilities(
+                tested_model=str(raw_capabilities.get("tested_model") or "").strip() or None,
+                tested_at=str(raw_capabilities.get("tested_at") or "").strip() or None,
+                ordinary_request=str(raw_capabilities.get("ordinary_request") or CAPABILITY_UNTESTED),
+                structured_output=str(raw_capabilities.get("structured_output") or CAPABILITY_UNTESTED),
+                temperature=str(raw_capabilities.get("temperature") or CAPABILITY_UNTESTED),
+                reasoning_effort=str(raw_capabilities.get("reasoning_effort") or CAPABILITY_UNTESTED),
+                model_catalog=str(raw_capabilities.get("model_catalog") or CAPABILITY_UNTESTED),
+            )
+        elif str(item.get("last_test_status") or "") == "CONNECTED":
+            capabilities = replace(capabilities, model_catalog=CAPABILITY_SUPPORTED)
         services.append(
             ModelService(
                 id=str(item.get("id") or uuid4().hex),
@@ -134,6 +167,7 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                 last_tested_at=str(item.get("last_tested_at") or "").strip() or None,
                 last_test_status=str(item.get("last_test_status") or "NOT_TESTED"),
                 last_test_message=str(item.get("last_test_message") or "").strip() or None,
+                capabilities=capabilities,
             )
         )
     if not services:
@@ -143,6 +177,19 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
     for item in stored.get("analysis_profiles", []):
         if not isinstance(item, dict):
             continue
+        raw_temperature = item.get("temperature")
+        raw_reasoning = str(item.get("reasoning_effort") or "auto")
+        legacy_defaults = (
+            stored_version < 2
+            and raw_temperature is not None
+            and abs(float(raw_temperature) - 0.2) < 0.0001
+            and raw_reasoning == "low"
+        )
+        temperature = None if raw_temperature is None else float(raw_temperature)
+        reasoning_effort = raw_reasoning
+        if legacy_defaults:
+            temperature = None
+            reasoning_effort = "auto"
         profiles.append(
             AnalysisProfile(
                 id=str(item.get("id") or ENTITIES_EVENTS_PROFILE_ID),
@@ -150,9 +197,9 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                 task_type=str(item.get("task_type") or "ENTITIES_EVENTS"),
                 service_id=str(item.get("service_id") or services[0].id),
                 model=str(item.get("model") or "").strip(),
-                temperature=float(item.get("temperature", 0.2)),
+                temperature=temperature,
                 max_output_tokens=int(item.get("max_output_tokens", 16_000)),
-                reasoning_effort=str(item.get("reasoning_effort") or "low"),
+                reasoning_effort=reasoning_effort,
                 timeout_seconds=float(item.get("timeout_seconds", 180)),
                 max_retries=int(item.get("max_retries", 2)),
             )
@@ -190,7 +237,7 @@ def _write_model_settings(settings: Settings, value: ModelSettings) -> None:
     temp.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "services": [asdict(item) for item in value.services],
                 "analysis_profiles": [asdict(item) for item in value.analysis_profiles],
             },
@@ -231,6 +278,14 @@ def save_model_service(
     next_key = api_key.strip() if api_key and api_key.strip() else (existing.api_key if existing else None)
     if not next_key:
         raise ModelSettingsError("PROVIDER_API_KEY_REQUIRED", "请填写 API Key。")
+    connection_changed = bool(
+        existing
+        and (
+            existing.service_type != service_type
+            or existing.base_url != url
+            or existing.api_key != next_key
+        )
+    )
     saved = ModelService(
         id=existing.id if existing else f"provider-{uuid4().hex[:12]}",
         name=service_name,
@@ -238,8 +293,9 @@ def save_model_service(
         base_url=url,
         api_key=next_key,
         last_tested_at=existing.last_tested_at if existing else None,
-        last_test_status="NOT_TESTED",
-        last_test_message=None,
+        last_test_status="NOT_TESTED" if connection_changed else (existing.last_test_status if existing else "NOT_TESTED"),
+        last_test_message=None if connection_changed else (existing.last_test_message if existing else None),
+        capabilities=ModelCapabilities() if connection_changed else (existing.capabilities if existing else ModelCapabilities()),
     )
     services = tuple(saved if item.id == saved.id else item for item in current.services)
     if existing is None:
@@ -267,7 +323,7 @@ def save_analysis_profile(
     name: str,
     service_id: str,
     model: str,
-    temperature: float,
+    temperature: float | None,
     max_output_tokens: int,
     reasoning_effort: str,
     timeout_seconds: float,
@@ -281,10 +337,10 @@ def save_analysis_profile(
         raise ModelSettingsError("MODEL_REQUIRED", "请选择或填写模型。")
     if reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
         raise ModelSettingsError("REASONING_EFFORT_INVALID", "推理强度设置无效。")
-    if not 0 <= temperature <= 2:
+    if temperature is not None and not 0 <= temperature <= 2:
         raise ModelSettingsError("TEMPERATURE_INVALID", "温度必须在 0 到 2 之间。")
-    if not 256 <= max_output_tokens <= 128_000:
-        raise ModelSettingsError("MAX_OUTPUT_TOKENS_INVALID", "最大输出长度必须在 256 到 128000 之间。")
+    if not 1 <= max_output_tokens <= 128_000:
+        raise ModelSettingsError("MAX_OUTPUT_TOKENS_INVALID", "最大输出长度必须在 1 到 128000 之间。")
     if not 10 <= timeout_seconds <= 1800:
         raise ModelSettingsError("TIMEOUT_INVALID", "超时时间必须在 10 到 1800 秒之间。")
     if not 0 <= max_retries <= 10:
@@ -378,22 +434,310 @@ async def discover_models(
     return models
 
 
+PROBE_SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProbeResult:
+    service: ModelService
+    message: str
+
+
+def _probe_body(
+    service: ModelService,
+    *,
+    model: str,
+    strict: bool,
+    temperature: float | None = None,
+    reasoning_effort: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    instructions = '只返回 JSON 对象 {"ok": true}，不要输出解释或 Markdown。'
+    if service.service_type == "OPENAI":
+        body: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": "连接测试。",
+            "max_output_tokens": 32,
+        }
+        endpoint = f"{service.base_url}/responses"
+        if strict:
+            body["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "model_capability_probe",
+                    "strict": True,
+                    "schema": PROBE_SCHEMA,
+                }
+            }
+        if temperature is not None:
+            body["temperature"] = temperature
+        if reasoning_effort is not None:
+            body["reasoning"] = {"effort": reasoning_effort}
+        return endpoint, body
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": "连接测试。"},
+        ],
+        "max_tokens": 32,
+    }
+    endpoint = f"{service.base_url}/chat/completions"
+    if strict:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "model_capability_probe",
+                "strict": True,
+                "schema": PROBE_SCHEMA,
+            },
+        }
+    if temperature is not None:
+        body["temperature"] = temperature
+    if reasoning_effort is not None:
+        body["reasoning_effort"] = reasoning_effort
+    return endpoint, body
+
+
+async def _request_probe(
+    service: ModelService,
+    *,
+    model: str,
+    strict: bool,
+    timeout_seconds: float,
+    transport: httpx.AsyncBaseTransport | None,
+    temperature: float | None = None,
+    reasoning_effort: str | None = None,
+) -> httpx.Response:
+    endpoint, body = _probe_body(
+        service,
+        model=model,
+        strict=strict,
+        temperature=temperature,
+        reasoning_effort=reasoning_effort,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
+            return await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {service.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+    except httpx.TimeoutException as exc:
+        raise ModelSettingsError("PROVIDER_TIMEOUT", "所选模型测试超时，请检查网络或稍后再试。") from exc
+    except httpx.HTTPError as exc:
+        raise ModelSettingsError("PROVIDER_CONNECTION_FAILED", "无法连接所选模型，请检查接口地址和网络。") from exc
+
+
+def _probe_error(response: httpx.Response) -> ModelSettingsError:
+    if response.status_code in {401, 403}:
+        return ModelSettingsError("PROVIDER_AUTH_FAILED", "API Key 无效，或者当前账号没有访问所选模型的权限。")
+    if response.status_code == 404:
+        return ModelSettingsError("MODEL_NOT_FOUND", "服务找不到这个模型，或当前账号没有使用权限。")
+    if response.status_code == 429:
+        return ModelSettingsError("PROVIDER_RATE_LIMITED", "模型服务当前请求过多，请稍后再试。")
+    if response.status_code >= 500:
+        return ModelSettingsError("PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请稍后再试。")
+    return ModelSettingsError(
+        "MODEL_REQUEST_REJECTED",
+        f"所选模型拒绝了测试请求（{response.status_code}），请检查它支持的参数和输出格式。",
+    )
+
+
+def _probe_output(response: httpx.Response, service: ModelService) -> dict[str, Any]:
+    try:
+        body = response.json()
+        if service.service_type == "OPENAI":
+            output_text = next(
+                content["text"]
+                for item in body.get("output", [])
+                if item.get("type") == "message"
+                for content in item.get("content", [])
+                if content.get("type") == "output_text"
+            )
+        else:
+            output_text = body["choices"][0]["message"]["content"]
+        parsed = json.loads(output_text)
+    except (ValueError, KeyError, StopIteration, TypeError, json.JSONDecodeError) as exc:
+        raise ModelSettingsError("PROVIDER_INVALID_OUTPUT", "模型已响应，但没有返回可识别的 JSON 测试结果。") from exc
+    if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+        raise ModelSettingsError("PROVIDER_INVALID_OUTPUT", "模型已响应，但没有返回预期的 JSON 测试结果。")
+    return parsed
+
+
+def _probe_succeeded(response: httpx.Response, service: ModelService) -> bool:
+    if response.status_code >= 400:
+        return False
+    try:
+        _probe_output(response, service)
+    except ModelSettingsError:
+        return False
+    return True
+
+
+def record_model_capabilities(
+    settings: Settings,
+    service_id: str,
+    *,
+    capabilities: ModelCapabilities,
+) -> ModelService:
+    current = read_model_settings(settings)
+    service = next((item for item in current.services if item.id == service_id), None)
+    if service is None:
+        raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到这个模型服务。")
+    saved = replace(service, capabilities=capabilities)
+    services = tuple(saved if item.id == service_id else item for item in current.services)
+    _write_model_settings(settings, ModelSettings(services, current.analysis_profiles))
+    return saved
+
+
+def record_model_probe_failure(
+    settings: Settings,
+    service_id: str,
+    *,
+    model: str,
+) -> ModelService:
+    current = read_model_settings(settings)
+    service = next((item for item in current.services if item.id == service_id), None)
+    if service is None:
+        raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到这个模型服务。")
+    capabilities = ModelCapabilities(
+        tested_model=model,
+        tested_at=datetime.now(timezone.utc).isoformat(),
+        ordinary_request=CAPABILITY_FAILED,
+        model_catalog=service.capabilities.model_catalog,
+    )
+    return record_model_capabilities(settings, service_id, capabilities=capabilities)
+
+
+async def probe_selected_model(
+    settings: Settings,
+    profile_id: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> ModelProbeResult:
+    service, profile = resolve_analysis_profile(settings, profile_id)
+    model = profile.model
+    try:
+        strict_response = await _request_probe(
+            service,
+            model=model,
+            strict=True,
+            timeout_seconds=min(profile.timeout_seconds, 60),
+            transport=transport,
+        )
+    except ModelSettingsError:
+        record_model_probe_failure(settings, service.id, model=model)
+        raise
+    structured_output = STRUCTURED_STRICT
+    strict_succeeded = _probe_succeeded(strict_response, service)
+    if strict_response.status_code >= 400 or not strict_succeeded:
+        if strict_response.status_code not in {400, 422}:
+            if strict_response.status_code >= 400:
+                record_model_probe_failure(settings, service.id, model=model)
+                raise _probe_error(strict_response)
+        try:
+            plain_response = await _request_probe(
+                service,
+                model=model,
+                strict=False,
+                timeout_seconds=min(profile.timeout_seconds, 60),
+                transport=transport,
+            )
+        except ModelSettingsError:
+            record_model_probe_failure(settings, service.id, model=model)
+            raise
+        if plain_response.status_code >= 400:
+            record_model_probe_failure(settings, service.id, model=model)
+            raise _probe_error(plain_response)
+        try:
+            _probe_output(plain_response, service)
+        except ModelSettingsError:
+            record_model_probe_failure(settings, service.id, model=model)
+            raise
+        structured_output = STRUCTURED_JSON_ONLY
+
+    temperature_status = CAPABILITY_UNTESTED
+    if profile.temperature is not None:
+        response = await _request_probe(
+            service,
+            model=model,
+            strict=structured_output == STRUCTURED_STRICT,
+            timeout_seconds=min(profile.timeout_seconds, 60),
+            transport=transport,
+            temperature=profile.temperature,
+        )
+        temperature_status = CAPABILITY_SUPPORTED if _probe_succeeded(response, service) else CAPABILITY_FAILED
+        if response.status_code in {400, 422}:
+            temperature_status = STRUCTURED_UNSUPPORTED
+
+    reasoning_status = CAPABILITY_UNTESTED
+    if profile.reasoning_effort not in {"auto", "none"}:
+        response = await _request_probe(
+            service,
+            model=model,
+            strict=structured_output == STRUCTURED_STRICT,
+            timeout_seconds=min(profile.timeout_seconds, 60),
+            transport=transport,
+            reasoning_effort=profile.reasoning_effort,
+        )
+        reasoning_status = CAPABILITY_SUPPORTED if _probe_succeeded(response, service) else CAPABILITY_FAILED
+        if response.status_code in {400, 422}:
+            reasoning_status = STRUCTURED_UNSUPPORTED
+
+    current = read_model_settings(settings)
+    service = next(item for item in current.services if item.id == service.id)
+    capabilities = ModelCapabilities(
+        tested_model=model,
+        tested_at=datetime.now(timezone.utc).isoformat(),
+        ordinary_request=CAPABILITY_SUPPORTED,
+        structured_output=structured_output,
+        temperature=temperature_status,
+        reasoning_effort=reasoning_status,
+        model_catalog=service.capabilities.model_catalog,
+    )
+    saved = record_model_capabilities(settings, service.id, capabilities=capabilities)
+    if structured_output == STRUCTURED_STRICT:
+        message = "所选模型测试成功，支持严格结构化输出，可以用于拆书。"
+    else:
+        message = "所选模型可以调用，但不支持严格结构化输出；分析时会自动改用普通 JSON。"
+    if reasoning_status == STRUCTURED_UNSUPPORTED:
+        message += " 当前推理强度不被该模型接受，分析时会自动忽略。"
+    if temperature_status == STRUCTURED_UNSUPPORTED:
+        message += " 当前温度参数不被该模型接受，分析时会自动忽略。"
+    return ModelProbeResult(saved, message)
+
+
 def record_connection_result(
     settings: Settings,
     service_id: str,
     *,
     success: bool,
     message: str,
+    model_catalog_status: str | None = None,
 ) -> ModelService:
     current = read_model_settings(settings)
     service = next((item for item in current.services if item.id == service_id), None)
     if service is None:
         raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到这个模型服务。")
+    capabilities = service.capabilities
+    if model_catalog_status is not None:
+        capabilities = replace(capabilities, model_catalog=model_catalog_status)
     saved = replace(
         service,
         last_tested_at=datetime.now(timezone.utc).isoformat(),
         last_test_status="CONNECTED" if success else "FAILED",
         last_test_message=message,
+        capabilities=capabilities,
     )
     services = tuple(saved if item.id == service_id else item for item in current.services)
     _write_model_settings(settings, ModelSettings(services, current.analysis_profiles))
