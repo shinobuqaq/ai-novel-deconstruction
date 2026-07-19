@@ -561,8 +561,8 @@ export const api = {
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
-  analysisWorkbench: (runId: string) =>
-    request<Workbench>(`/api/analysis-runs/${runId}/workbench`),
+  analysisWorkbench: (runId: string, deepRevision?: number) =>
+    request<Workbench>(`/api/analysis-runs/${runId}/workbench${deepRevision ? `?deep_revision=${deepRevision}` : ""}`),
   startDeepAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

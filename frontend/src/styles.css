@@ -217,12 +217,12 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .analysis-failed { border-color: #e3bcbc; background: #fff7f7; }
 .analysis-failed strong { color: #952f2f; }
 .formal-workbench { margin-top: 14px; border: 1px solid #d4dce2; border-radius: 8px; overflow: hidden; background: #fff; }
-.formal-workbench-heading { display: flex; min-height: 104px; align-items: center; justify-content: space-between; gap: 28px; padding: 20px 22px; border-bottom: 1px solid #dce2e7; }
+.formal-workbench-heading { display: flex; min-height: 104px; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid #dce2e7; }
 .formal-workbench-heading > div:first-child { display: grid; gap: 4px; }
 .formal-workbench-heading p { margin: 0; color: #277487; font-size: 11px; font-weight: 800; }
 .formal-workbench-heading h2 { margin: 0; font-size: 21px; }
 .formal-workbench-heading span { color: #6c7b87; font-size: 12px; line-height: 1.5; }
-.formal-workbench-counts { display: grid; min-width: 410px; grid-template-columns: repeat(4, minmax(80px, 1fr)); border: 1px solid #dce2e7; border-radius: 6px; }
+.formal-workbench-counts { display: grid; width: min(100%, 410px); min-width: 0; grid-template-columns: repeat(4, minmax(70px, 1fr)); border: 1px solid #dce2e7; border-radius: 6px; }
 .formal-workbench-counts div { display: grid; gap: 2px; padding: 12px 15px; border-left: 1px solid #dce2e7; }
 .formal-workbench-counts div:first-child { border-left: 0; }
 .formal-workbench-counts strong { font-size: 20px; }
@@ -231,11 +231,11 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .workbench-search label { color: #50616c; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .workbench-search input { min-width: 260px; flex: 1; min-height: 34px; padding: 6px 10px; border: 1px solid #cbd5dc; border-radius: 5px; background: #fbfcfc; color: #263843; }
 .workbench-search > span { color: #277487; font-size: 11px; white-space: nowrap; }
-.formal-workbench-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #d8dee5; background: #f6f8f9; }
-.formal-workbench-tabs button { min-width: 118px; min-height: 44px; border: 0; border-right: 1px solid #d8dee5; border-radius: 0; background: transparent; color: #53626f; }
+.formal-workbench-tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-bottom: 1px solid #d8dee5; background: #f6f8f9; }
+.formal-workbench-tabs button { min-width: 0; min-height: 44px; border: 0; border-right: 1px solid #d8dee5; border-bottom: 1px solid #d8dee5; border-radius: 0; background: transparent; color: #53626f; }
 .formal-workbench-tabs button.active { box-shadow: inset 0 -3px #277487; background: #fff; color: #1f5260; }
 .formal-workbench-tabs button span { margin-left: 5px; color: #81909a; font-size: 10px; }
-.formal-workbench-body { display: grid; grid-template-columns: minmax(420px, 0.95fr) minmax(400px, 1.05fr); min-height: 510px; }
+.formal-workbench-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 510px; }
 .formal-workbench-content { max-height: 690px; padding: 16px; overflow-y: auto; border-right: 1px solid #d8dee5; background: #f6f8f9; }
 .workbench-callout { display: grid; gap: 5px; margin-bottom: 12px; padding: 13px 14px; border-left: 3px solid #5f929d; background: #edf5f6; }
 .workbench-callout strong { color: #274d57; font-size: 12px; }
@@ -360,6 +360,31 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .evidence-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .evidence-buttons button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
 .result-empty { margin: 0; padding: 48px 18px; color: #75828d; font-size: 13px; text-align: center; }
+.revision-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(150px, 220px) auto; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid #d8dee5; background: #f7fafb; }
+.revision-toolbar > div { display: grid; gap: 2px; min-width: 0; }
+.revision-toolbar strong { color: #345563; font-size: 12px; }
+.revision-toolbar span { color: #71808e; font-size: 11px; line-height: 1.45; }
+.revision-toolbar label { color: #60717d; font-size: 11px; font-weight: 800; }
+.revision-toolbar select { min-height: 32px; padding: 5px 8px; }
+.historical-readonly { color: #8a6b2b; font-size: 11px; }
+.source-workbench-view { display: grid; gap: 12px; }
+.source-chapter-list { display: grid; gap: 6px; }
+.source-chapter-list button { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 48px; padding: 9px 11px; border: 1px solid #dce2e7; border-radius: 6px; background: #fff; color: #344452; text-align: left; }
+.source-chapter-list button:hover { background: #f0f6f7; }
+.source-chapter-list button.active { border-color: #70a4af; box-shadow: inset 3px 0 #277487; background: #edf6f7; }
+.source-chapter-list button span, .source-chapter-list button small { color: #71808e; font-size: 11px; }
+.source-chapter-list button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-timeline { display: grid; gap: 1px; border-left: 2px solid #c6dadd; }
+.event-timeline article { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 10px 0 10px 10px; }
+.event-timeline article > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: #e5f1f3; color: #277487; font-size: 11px; font-weight: 800; }
+.event-timeline article > div { display: grid; gap: 5px; }
+.event-timeline h3 { margin: 0; font-size: 14px; }
+.event-timeline p { margin: 0; color: #40515d; font-size: 12px; line-height: 1.55; }
+.event-timeline small { color: #687985; font-size: 11px; line-height: 1.45; }
+.full-chapter-text { max-height: 690px; }
+.analysis-problem-center.embedded { margin: 0; padding: 0; border: 0; background: transparent; }
+.analysis-problem-center.embedded > header, .analysis-problem-center.embedded > footer { padding: 0; }
+.overview-claims { margin-top: 18px; }
 .evidence-text { max-height: 590px; padding: 22px 24px 44px; overflow-y: auto; color: #26313b; font-size: 14px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
 .evidence-text mark { padding: 2px 0; background: #ffe898; color: #17202a; }
 .evidence-empty { display: grid; min-height: 440px; place-content: center; gap: 6px; padding: 24px; color: #6f7d88; text-align: center; }
@@ -516,4 +541,32 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
   .provider-form, .analysis-start, .analysis-running, .analysis-failed { padding: 16px 14px; }
   .provider-actions { display: grid; }
   .analysis-running-copy { align-items: flex-start; }
+}
+
+/* Common desktop windows with 125%/150% display scaling need the project
+   switcher above the workbench so the two reading panes retain usable width. */
+@media (max-width: 1100px) {
+  .workbench-layout { grid-template-columns: 1fr; }
+  .project-sidebar { display: grid; grid-template-columns: 150px minmax(230px, 300px) minmax(0, 1fr); align-items: start; gap: 14px 18px; padding: 14px 18px; border-right: 0; border-bottom: 1px solid #d8dee5; }
+  .project-create { margin-top: 0; }
+  .novel-list { display: flex; min-width: 0; gap: 6px; margin-top: 0; overflow-x: auto; }
+  .novel-list button { flex: 0 0 170px; }
+  .product-main { padding: 18px 18px 44px; }
+  .formal-workbench-heading { align-items: flex-start; flex-direction: column; }
+  .formal-workbench-counts { width: 100%; }
+  .revision-toolbar { grid-template-columns: minmax(0, 1fr) auto minmax(150px, 220px); }
+  .revision-toolbar > span { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .formal-workbench-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .formal-workbench-body { grid-template-columns: 1fr; }
+  .formal-workbench-content { max-height: none; border-right: 0; border-bottom: 1px solid #d8dee5; }
+  .formal-evidence-reader { min-height: 360px; }
+  .revision-toolbar { grid-template-columns: 1fr; }
+  .revision-toolbar label { margin-top: 3px; }
+  .revision-toolbar select { width: 100%; }
+  .project-sidebar { grid-template-columns: 1fr; }
+  .novel-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .novel-list button { width: 100%; }
 }

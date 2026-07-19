@@ -78,6 +78,7 @@ from .services.source_import import (
     confirm_source_version,
     import_source,
     resolve_source_issue,
+    source_unit_display_content,
     source_text,
 )
 from .services.analysis import (
@@ -787,13 +788,23 @@ def analysis_events_list(
 )
 def analysis_workbench_get(
     run_id: str,
+    deep_revision: int | None = None,
     session: Session = Depends(get_db),
 ) -> WorkbenchRead:
     try:
-        projection = build_workbench_projection(session, run_id)
+        projection = build_workbench_projection(
+            session,
+            run_id,
+            deep_revision=deep_revision,
+        )
     except ValueError as error:
         if str(error) == "ANALYSIS_RUN_NOT_FOUND":
             raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
+        if str(error) == "DEEP_ANALYSIS_REVISION_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "DEEP_ANALYSIS_REVISION_NOT_FOUND", "message": "没有找到这个拆解版本。"},
+            ) from error
         raise
     return WorkbenchRead.model_validate(projection)
 
@@ -1128,14 +1139,15 @@ def source_unit_content(
         text = source_text(request.app.state.settings, unit.source_version)
     except SourceImportError as error:
         raise _source_error(error) from error
+    display_start, content = source_unit_display_content(text, unit)
     return SourceUnitContentRead(
         id=unit.id,
         source_version_id=unit.source_version_id,
         ordinal=unit.ordinal,
         title=unit.title,
-        start_char=unit.start_char,
+        start_char=display_start,
         end_char=unit.end_char,
-        content=text[unit.start_char:unit.end_char],
+        content=content,
     )
 
 

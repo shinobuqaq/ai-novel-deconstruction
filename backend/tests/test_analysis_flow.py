@@ -421,6 +421,18 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert diff["from_revision"] == 1
     assert diff["to_revision"] == 2
     assert diff["changed_counts"]["fact_versions"] == 1
+    first_revision = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench?deep_revision=1"
+    )
+    assert first_revision.status_code == 200
+    assert first_revision.json()["deep_revision"] == 1
+    latest_revision = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert latest_revision.json()["deep_revision"] == 2
+    missing_revision = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench?deep_revision=999"
+    )
+    assert missing_revision.status_code == 404
+    assert missing_revision.json()["detail"]["code"] == "DEEP_ANALYSIS_REVISION_NOT_FOUND"
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

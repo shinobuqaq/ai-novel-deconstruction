@@ -326,6 +326,26 @@ def _display_title(raw: str) -> str:
     return re.sub(r"^#{1,6}\s+", "", raw.strip()).strip()[:500] or "未命名章节"
 
 
+def source_unit_display_content(text: str, unit: SourceUnit) -> tuple[int, str]:
+    """Return reader-facing content without duplicating the chapter heading.
+
+    Stored source coordinates remain untouched so evidence spans continue to
+    point at the exact imported file. Only the chapter reader starts after an
+    exact first-line heading.
+    """
+    content = text[unit.start_char:unit.end_char]
+    if unit.unit_type != "CHAPTER":
+        return unit.start_char, content
+    first_line_end = content.find("\n")
+    if first_line_end < 0:
+        return unit.start_char, content
+    first_line = content[:first_line_end].rstrip("\r")
+    if _display_title(first_line) != unit.title:
+        return unit.start_char, content
+    body_offset = first_line_end + 1
+    return unit.start_char + body_offset, content[body_offset:]
+
+
 def _chapter_identity(raw: str) -> str | None:
     title = unicodedata.normalize("NFKC", _display_title(raw)).casefold()
     match = re.match(

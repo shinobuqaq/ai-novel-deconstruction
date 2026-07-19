@@ -99,6 +99,7 @@ def build_workbench_projection(
     run_id: str,
     *,
     include_synthesis: bool = True,
+    deep_revision: int | None = None,
 ) -> dict:
     run = session.get(AnalysisRun, run_id)
     if run is None:
@@ -219,11 +220,14 @@ def build_workbench_projection(
     synthesis = session.scalar(
         select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
     ) if include_synthesis else None
-    deep_analysis = session.scalar(
-        select(DeepAnalysis)
-        .where(DeepAnalysis.run_id == run_id)
-        .order_by(DeepAnalysis.revision_no.desc())
-    ) if include_synthesis else None
+    deep_query = select(DeepAnalysis).where(DeepAnalysis.run_id == run_id)
+    if deep_revision is None:
+        deep_query = deep_query.order_by(DeepAnalysis.revision_no.desc())
+    else:
+        deep_query = deep_query.where(DeepAnalysis.revision_no == deep_revision)
+    deep_analysis = session.scalar(deep_query) if include_synthesis else None
+    if include_synthesis and deep_revision is not None and deep_analysis is None:
+        raise ValueError("DEEP_ANALYSIS_REVISION_NOT_FOUND")
     narrative_status = "NOT_GENERATED"
     story_overview = None
     character_relations: list[dict] = []
