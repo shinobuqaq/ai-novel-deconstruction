@@ -131,25 +131,34 @@ export default function ProductWorkbench() {
   }, [loadAnalysisResults]);
 
   const loadProjects = useCallback(async () => {
+    let healthResult: { status: string };
     try {
-      const [healthResult, projectResult, settingsResult] = await Promise.all([
-        api.health(),
+      healthResult = await api.health();
+      setHealth(healthResult.status);
+    } catch (reason) {
+      setHealth("offline");
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+
+    try {
+      const [projectResult, settingsResult] = await Promise.all([
         api.projects(),
         api.modelSettings(),
       ]);
-      setHealth(healthResult.status);
       setProjects(projectResult);
       setModelSettings(settingsResult);
       setSelectedProject((current) => current || projectResult[0]?.id || "");
       setError("");
     } catch (reason) {
-      setHealth("offline");
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(`后台已连接，但页面数据接口暂时不可用：${reason instanceof Error ? reason.message : String(reason)}`);
     }
   }, []);
 
   useEffect(() => {
     void loadProjects();
+    const timer = window.setInterval(() => void loadProjects(), 5000);
+    return () => window.clearInterval(timer);
   }, [loadProjects]);
 
   useEffect(() => {
