@@ -35,10 +35,23 @@ function serviceDraft(service: ModelService): ServiceDraft {
 }
 
 function connectionLabel(service: ModelService) {
-  if (service.last_test_status === "CONNECTED") return "连接正常";
-  if (service.last_test_status === "FAILED") return "连接失败";
+  if (service.last_test_status === "CONNECTED") return "上次测试通过";
+  if (service.last_test_status === "FAILED") return "上次测试失败";
   if (service.configured) return "已保存，尚未测试";
   return "尚未连接";
+}
+
+function testTimeLabel(service: ModelService) {
+  if (!service.last_tested_at) return "尚未进行连接测试";
+  const parsed = new Date(service.last_tested_at);
+  if (Number.isNaN(parsed.getTime())) return "测试时间无法读取";
+  return `上次测试：${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed)}`;
 }
 
 export default function SettingsPage() {
@@ -291,6 +304,7 @@ export default function SettingsPage() {
                       <span className={`connection-state ${service.last_test_status.toLowerCase()}`}>
                         {connectionLabel(service)}
                       </span>
+                      <small>{testTimeLabel(service)}</small>
                     </button>
                   ))}
                   {selectedServiceId === "new" && <button type="button" className="active"><strong>新模型服务</strong><span>尚未保存</span></button>}
@@ -312,7 +326,8 @@ export default function SettingsPage() {
                   </label>
                   {selectedService && (
                     <div className="connection-summary">
-                      <div><span>当前状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <div><span>测试状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <small>{testTimeLabel(selectedService)}</small>
                       <p>{selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}</p>
                     </div>
                   )}
