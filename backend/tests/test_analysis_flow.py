@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -731,6 +733,14 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
         )
         assert synthesis is not None
         payload = json.loads(synthesis.payload_json)
+        current_projection = client.get(
+            f"/api/analysis-runs/{run['id']}/workbench"
+        ).json()
+        current_event = current_projection["events"][0]
+        normalized_title = re.sub(r"\s+", "", current_event["title"]).casefold()
+        legacy_identity = f"{run['id']}:{normalized_title}:{current_event['event_type']}"
+        legacy_event_id = f"cev_{hashlib.sha256(legacy_identity.encode('utf-8')).hexdigest()[:32]}"
+        payload["narrative_phases"][0]["event_ids"] = [legacy_event_id]
         payload["character_roles"] = []
         synthesis.payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         session.commit()
@@ -739,6 +749,8 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
     assert workbench.status_code == 200
     assert workbench.json()["narrative_status"] == "INCOMPLETE"
     assert workbench.json()["characters"][0]["role"] == "UNCLASSIFIED"
+    assert workbench.json()["phases"][0]["event_ids"] == [current_event["id"]]
+    assert workbench.json()["phases"][0]["chapter_ordinals"]
 
     blocked = client.post(f"/api/analysis-runs/{run['id']}/confirm")
     assert blocked.status_code == 409

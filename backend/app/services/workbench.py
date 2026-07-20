@@ -40,6 +40,17 @@ def _unique(values: list[str]) -> list[str]:
     return result
 
 
+def _unique_events(values: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for value in values:
+        event_id = str(value.get("id") or "")
+        if event_id and event_id not in seen:
+            seen.add(event_id)
+            result.append(value)
+    return result
+
+
 _GENERIC_PERSON_ALIASES = {
     "他", "她", "它", "此人", "那人", "男人", "女人", "少年", "少女",
     "老人", "老师", "先生", "女士", "同学", "老板", "经理", "主任",
@@ -598,6 +609,12 @@ def build_workbench_projection(
     event_relations: list[dict] = []
     phases: list[dict] = []
     role_by_name: dict[str, dict] = {}
+    event_reference_map: dict[str, dict] = {}
+    for event in events:
+        event_reference_map[event["id"]] = event
+        legacy_identity = f"{run_id}:{_normalize(event['title'])}:{event['event_type']}"
+        legacy_id = f"cev_{_hash(legacy_identity)[:32]}"
+        event_reference_map[legacy_id] = event
     if synthesis is not None:
         narrative_status = "READY"
         payload = json.loads(synthesis.payload_json)
@@ -611,10 +628,22 @@ def build_workbench_projection(
         event_relations = payload.get("event_relations", [])
         event_by_id = {item["id"]: item for item in events}
         for index, phase in enumerate(payload.get("narrative_phases", []), start=1):
-            phase_event_ids = [
-                event_id for event_id in phase.get("event_ids", []) if event_id in event_by_id
-            ]
-            phase_events = [event_by_id[event_id] for event_id in phase_event_ids]
+            phase_events = _unique_events([
+                event_reference_map[event_id]
+                for event_id in phase.get("event_ids", [])
+                if event_id in event_reference_map
+            ])
+            phase_evidence_ids = phase.get("evidence_ids", [])
+            referenced_evidence_ids = set(phase_evidence_ids)
+            phase_events = _unique_events([
+                *phase_events,
+                *[
+                    event
+                    for event in events
+                    if referenced_evidence_ids.intersection(event.get("evidence_ids", []))
+                ],
+            ])
+            phase_event_ids = [event["id"] for event in phase_events]
             chapter_ordinals = sorted({
                 chapter
                 for event in phase_events
@@ -625,6 +654,20 @@ def build_workbench_projection(
                 for title in event["chapter_titles"]:
                     if title not in chapter_titles:
                         chapter_titles.append(title)
+            if not chapter_ordinals:
+                phase_chapters: list[_ChapterRef] = []
+                for evidence_id in phase_evidence_ids:
+                    evidence = evidence_by_id.get(evidence_id)
+                    if evidence is not None:
+                        phase_chapters.extend(
+                            _chapters_for_range(chapters, evidence.start_char, evidence.end_char)
+                        )
+                phase_chapters = sorted(
+                    {item.ordinal: item for item in phase_chapters}.values(),
+                    key=lambda item: item.ordinal,
+                )
+                chapter_ordinals = [item.ordinal for item in phase_chapters]
+                chapter_titles = [item.title for item in phase_chapters]
             phases.append({
                 "id": f"phs_{_hash(f'{run_id}:{index}:{','.join(phase_event_ids)}')[:32]}",
                 "title": phase["title"],
@@ -637,15 +680,22 @@ def build_workbench_projection(
                 "change": phase.get("change", ""),
                 "next_hook": phase.get("next_hook", ""),
                 "event_ids": phase_event_ids,
-                "evidence_ids": phase.get("evidence_ids", []),
+                "evidence_ids": phase_evidence_ids,
                 "chapter_ordinals": chapter_ordinals,
                 "chapter_titles": chapter_titles,
                 "people": _unique([person for event in phase_events for person in event["people"]]),
             })
-        for event in event_relations:
-            if event.get("source_event_id") in event_by_id and event.get("target_event_id") in event_by_id:
-                event["source_title"] = event_by_id[event["source_event_id"]]["title"]
-                event["target_title"] = event_by_id[event["target_event_id"]]["title"]
+        valid_event_relations: list[dict] = []
+        for relation in event_relations:
+            source = event_reference_map.get(relation.get("source_event_id"))
+            target = event_reference_map.get(relation.get("target_event_id"))
+            if source is not None and target is not None:
+                relation["source_event_id"] = source["id"]
+                relation["target_event_id"] = target["id"]
+                relation["source_title"] = source["title"]
+                relation["target_title"] = target["title"]
+                valid_event_relations.append(relation)
+        event_relations = valid_event_relations
 
     deep_status = "NOT_GENERATED"
     deep_payload = None
