@@ -548,6 +548,14 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     )
     assert issue.status_code == 201
     assert issue.json()["status"] == "OPEN"
+    impact = client.get(f"/api/analysis-runs/{run['id']}/deep/recompute-impact")
+    assert impact.status_code == 200
+    assert impact.json()["mode"] == "TARGETED"
+    assert impact.json()["issue_count"] == 1
+    fact_impact = next(
+        item for item in impact.json()["sections"] if item["key"] == "fact_versions"
+    )
+    assert fact_impact["item_labels"] == ["林舟：当前目标"]
     recompute = client.post(f"/api/analysis-runs/{run['id']}/deep/recompute")
     assert recompute.status_code == 202
     assert recompute.json()["status"] == "PENDING"
@@ -567,6 +575,8 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         "actor_knowledge",
         "claims",
     ]
+    assert revision_payload["revision_impact"]["mode"] == "TARGETED"
+    assert revision_payload["revision_impact"]["sections"][0]["key"] == "fact_versions"
     assert execute_task_sync(
         client.app.state.session_factory,
         client.app.state.settings,

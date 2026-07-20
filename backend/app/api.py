@@ -49,6 +49,7 @@ from .schemas import (
     AnalysisStageDiagnosticRead,
     AnalysisIssueCreate,
     AnalysisIssueRead,
+    DeepRevisionImpactRead,
     AnalysisProfileRead,
     AnalysisProfileWrite,
     EntityCandidateRead,
@@ -91,6 +92,7 @@ from .services.analysis import (
     analysis_run_progress,
     confirm_analysis_run,
     estimate_analysis_cost,
+    build_deep_revision_impact,
     enqueue_deep_analysis,
     enqueue_narrative_synthesis,
     refresh_analysis_run,
@@ -1356,6 +1358,45 @@ def deep_analysis_recompute(
             detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "故事结构尚未完成，暂时不能重新分析。"},
         )
     return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/recompute-impact",
+    response_model=DeepRevisionImpactRead,
+)
+def deep_analysis_recompute_impact(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> DeepRevisionImpactRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    issues = list(session.scalars(
+        select(AnalysisIssue).where(
+            AnalysisIssue.run_id == run_id,
+            AnalysisIssue.status == "OPEN",
+        ).order_by(AnalysisIssue.created_at),
+    ))
+    previous = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    previous_payload = json.loads(previous.payload_json) if previous is not None else None
+    requests = [
+        {
+            "issue_id": issue.id,
+            "target_kind": issue.target_kind,
+            "target_id": issue.target_id,
+            "target_label": issue.target_label,
+            "category": issue.category,
+            "note": issue.note,
+        }
+        for issue in issues
+    ]
+    return DeepRevisionImpactRead.model_validate(
+        build_deep_revision_impact(requests, previous_payload)
+    )
 
 
 @router.get(

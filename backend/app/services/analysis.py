@@ -52,7 +52,7 @@ ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.5.0"
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.4.0"
+DEEP_PROMPT_VERSION = "1.5.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -83,30 +83,200 @@ DEEP_ANALYSIS_COLLECTIONS = (
     "claims",
     "entity_resolutions",
 )
+NARRATIVE_REVISION_TARGETS = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
+DEEP_TARGET_COLLECTIONS = {
+    "FACT": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
+    "STATE": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
+    "KNOWLEDGE": {"actor_knowledge", "claims"},
+    "WORLD": {"fact_versions", "world_rules", "claims", "entity_resolutions"},
+    "FORESHADOWING": {"foreshadowing", "claims"},
+    "CONFLICT": {"conflicts", "claims"},
+    "PACING": {"scene_analysis", "claims"},
+    "SCENE": {"scene_analysis", "claims"},
+    "CLAIM": {"claims"},
+    "ENTITY": {"world_rules", "fact_versions", "entity_resolutions", "claims"},
+}
+DEEP_PRIMARY_COLLECTIONS = {
+    "FACT": "fact_versions",
+    "STATE": "state_changes",
+    "KNOWLEDGE": "actor_knowledge",
+    "WORLD": "world_rules",
+    "FORESHADOWING": "foreshadowing",
+    "CONFLICT": "conflicts",
+    "PACING": "scene_analysis",
+    "SCENE": "scene_analysis",
+    "CLAIM": "claims",
+    "ENTITY": "entity_resolutions",
+}
+DEEP_COLLECTION_LABELS = {
+    "fact_versions": "事实",
+    "state_changes": "状态变化",
+    "actor_knowledge": "人物认知",
+    "world_rules": "世界设定",
+    "foreshadowing": "伏笔",
+    "conflicts": "冲突",
+    "scene_analysis": "场景与节奏",
+    "claims": "分析结论",
+    "entity_resolutions": "实体归一",
+}
 
 
 def deep_revision_scope(revision_requests: list[dict] | None) -> list[str]:
     if not revision_requests:
         return list(DEEP_ANALYSIS_COLLECTIONS)
-    broad_targets = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
-    if any(str(item.get("target_kind") or "").upper() in broad_targets for item in revision_requests):
+    if any(
+        str(item.get("target_kind") or "").upper() in NARRATIVE_REVISION_TARGETS
+        for item in revision_requests
+    ):
         return list(DEEP_ANALYSIS_COLLECTIONS)
-    target_collections = {
-        "FACT": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
-        "STATE": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
-        "KNOWLEDGE": {"actor_knowledge", "claims"},
-        "WORLD": {"fact_versions", "world_rules", "claims", "entity_resolutions"},
-        "FORESHADOWING": {"foreshadowing", "claims"},
-        "CONFLICT": {"conflicts", "claims"},
-        "PACING": {"scene_analysis", "claims"},
-        "SCENE": {"scene_analysis", "claims"},
-        "CLAIM": {"claims"},
-        "ENTITY": {"world_rules", "fact_versions", "entity_resolutions", "claims"},
-    }
     scope: set[str] = set()
     for item in revision_requests:
-        scope.update(target_collections.get(str(item.get("target_kind") or "").upper(), set()))
+        scope.update(DEEP_TARGET_COLLECTIONS.get(str(item.get("target_kind") or "").upper(), set()))
     return [item for item in DEEP_ANALYSIS_COLLECTIONS if item in (scope or set(DEEP_ANALYSIS_COLLECTIONS))]
+
+
+def _revision_item_label(collection: str, item: dict) -> str:
+    if collection == "fact_versions":
+        return f"{item.get('subject', '未知对象')}：{item.get('predicate', '事实')}"
+    if collection == "state_changes":
+        return f"{item.get('subject', '未知对象')}：{item.get('aspect', '状态变化')}"
+    if collection == "actor_knowledge":
+        return f"{item.get('actor', '未知人物')}：{item.get('proposition', '认知变化')}"
+    if collection == "scene_analysis":
+        return f"第 {item.get('chapter_ordinal', '?')} 章：{item.get('summary', '场景与节奏')}"
+    if collection == "claims":
+        return str(item.get("claim_text") or "分析结论")
+    if collection == "entity_resolutions":
+        return str(item.get("canonical_name") or "实体归一")
+    return str(item.get("title") or "待核对内容")
+
+
+def build_deep_revision_impact(
+    revision_requests: list[dict] | None,
+    previous_payload: dict | None,
+) -> dict:
+    requests = revision_requests or []
+    if not requests:
+        return {
+            "mode": "NONE",
+            "issue_count": 0,
+            "summary": "当前没有需要重新检查的问题。",
+            "sections": [],
+        }
+
+    previous = previous_payload or {}
+    target_kinds = {
+        str(item.get("target_kind") or "").upper()
+        for item in requests
+    }
+    broad = bool(target_kinds.intersection(NARRATIVE_REVISION_TARGETS))
+    scope = list(DEEP_ANALYSIS_COLLECTIONS) if broad else deep_revision_scope(requests)
+    target_ids = {
+        str(item.get("target_id"))
+        for item in requests
+        if item.get("target_id")
+    }
+    direct_items: list[tuple[str, dict]] = []
+    for request in requests:
+        kind = str(request.get("target_kind") or "").upper()
+        collection = DEEP_PRIMARY_COLLECTIONS.get(kind)
+        if collection is None:
+            continue
+        target_id = request.get("target_id")
+        match = next(
+            (
+                item
+                for item in previous.get(collection, [])
+                if item.get("id") == target_id
+            ),
+            None,
+        )
+        if match is not None:
+            direct_items.append((collection, match))
+
+    evidence_ids = {
+        evidence_id
+        for _collection, item in direct_items
+        for evidence_id in [
+            *item.get("evidence_ids", []),
+            *item.get("counter_evidence_ids", []),
+        ]
+    }
+    subject_names = {
+        str(item.get("subject") or item.get("actor") or "").strip()
+        for _collection, item in direct_items
+        if item.get("subject") or item.get("actor")
+    }
+    request_labels = {
+        str(item.get("target_label") or "").strip()
+        for item in requests
+        if item.get("target_label")
+    }
+
+    sections: list[dict] = []
+    if broad:
+        sections.append({
+            "key": "narrative",
+            "label": "故事总览、人物与剧情结构",
+            "reason": "人物或事件问题会影响角色定位、剧情阶段和后续深层拆解。",
+            "item_count": len(requests),
+            "item_labels": sorted(request_labels)[:8],
+        })
+
+    for collection in scope:
+        items = list(previous.get(collection, []))
+        selected: list[dict] = []
+        for item in items:
+            item_evidence = {
+                *item.get("evidence_ids", []),
+                *item.get("counter_evidence_ids", []),
+            }
+            item_text = " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "subject", "predicate", "actor", "proposition", "claim_text", "scope")
+            )
+            if item.get("id") in target_ids:
+                selected.append(item)
+            elif evidence_ids and item_evidence.intersection(evidence_ids):
+                selected.append(item)
+            elif subject_names and any(name and name in item_text for name in subject_names):
+                selected.append(item)
+            elif collection == "claims" and any(label and label in item_text for label in request_labels):
+                selected.append(item)
+
+        unique: dict[str, dict] = {}
+        for item in selected:
+            unique[str(item.get("id") or _revision_item_label(collection, item))] = item
+        labels = [_revision_item_label(collection, item) for item in unique.values()]
+        is_direct = any(primary_collection == collection for primary_collection, _item in direct_items)
+        if broad:
+            reason = "故事结构变化后，这一版块必须重新核对，防止旧结论继续沿用。"
+        elif is_direct:
+            reason = "这里包含用户直接标记的问题对象。"
+        else:
+            reason = "这些内容可能共享同一原文证据、对象或上游结论，需要一起核对。"
+        sections.append({
+            "key": collection,
+            "label": DEEP_COLLECTION_LABELS[collection],
+            "reason": reason,
+            "item_count": len(unique),
+            "item_labels": labels[:8],
+        })
+
+    affected_count = sum(section["item_count"] for section in sections)
+    if broad:
+        summary = "人物或事件问题会重新整理故事结构，并检查所有依赖它的深层拆解内容。"
+    else:
+        summary = (
+            f"系统已定位 {affected_count} 个直接或关联条目；"
+            "未列出的版块会沿用上一版本，不会被整批覆盖。"
+        )
+    return {
+        "mode": "STORY_WIDE" if broad else "TARGETED",
+        "issue_count": len(requests),
+        "summary": summary,
+        "sections": sections,
+    }
 
 
 class StructuredOutputValidationError(ValueError):
@@ -936,6 +1106,7 @@ def _build_synthesis_context(
 
     extra_priorities = {
         "revision_requests": 12_000,
+        "revision_impact": 12_000,
         "hierarchical_digests": 11_500,
         "story_overview": 4_500,
         "narrative_phases": 4_000,
@@ -1714,6 +1885,7 @@ def provider_payload_for_deep_analysis(
             "narrative_phases": narrative.get("narrative_phases", []),
             "previous_analysis": previous_analysis_payload,
             "revision_requests": task_payload.get("revision_requests", []),
+            "revision_impact": task_payload.get("revision_impact"),
             "revision_scope": task_payload.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
         },
     )
@@ -1725,6 +1897,7 @@ def provider_payload_for_deep_analysis(
         "narrative_phases": selected.get("narrative_phases", []),
         "previous_analysis": selected.get("previous_analysis"),
         "revision_requests": selected.get("revision_requests", []),
+        "revision_impact": selected.get("revision_impact"),
         "revision_scope": selected.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
     }
     return {
@@ -2404,6 +2577,21 @@ def enqueue_deep_analysis(
         _service, model_profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
     except ModelSettingsError:
         return None
+    previous_analysis = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run.id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    previous_payload = (
+        json.loads(previous_analysis.payload_json)
+        if previous_analysis is not None
+        else None
+    )
+    revision_impact = (
+        build_deep_revision_impact(revision_requests, previous_payload)
+        if revision_requests
+        else None
+    )
     task = Task(
         project_id=run.source_version.document.project_id,
         kind=DEEP_ANALYSIS_TASK_KIND,
@@ -2415,6 +2603,7 @@ def enqueue_deep_analysis(
                 "model_profile_id": model_profile.id,
                 "revision_requests": revision_requests or [],
                 "revision_scope": deep_revision_scope(revision_requests),
+                "revision_impact": revision_impact,
             },
             ensure_ascii=False,
             sort_keys=True,

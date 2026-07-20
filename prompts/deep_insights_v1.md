@@ -12,7 +12,7 @@
 5. 只有输入里的事件 id 可以放进 event_ids 或 event_id；只有输入里的角色可以放进 actor。模型不得猜测 ID。
 6. 分析主张必须细粒度、自包含。支持证据和反证分别放入 evidence_ids、counter_evidence_ids；证据不足不等于被反驳。
 7. 只输出 JSON，不要输出 Markdown、解释文字或额外字段。
-8. previous_analysis 是上一版完整结果，revision_requests 是用户标记的问题，revision_scope 是本轮允许修改的结果集合。重新分析时必须逐项核对这些问题，并返回完整结构；不在 revision_scope 中的集合保持上一版内容，程序也会强制保留这些未受影响结果。没有新证据时保留不确定性，不要为了迎合反馈而强行改结论。
+8. previous_analysis 是上一版完整结果，revision_requests 是用户标记的问题，revision_scope 是本轮允许修改的结果集合，revision_impact 是程序根据稳定对象、原文证据和依赖关系计算出的优先复核范围。重新分析时必须先逐项核对 revision_requests，再优先复核 revision_impact 中列出的直接对象和关联对象；不要因为一个问题随意重写无关版块。仍需返回完整结构；不在 revision_scope 中的集合保持上一版内容，程序也会强制保留这些未受影响结果。没有新证据时保留不确定性，不要为了迎合反馈而强行改结论。
 
 ## 输出要求
 

@@ -393,6 +393,21 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .analysis-issue-list article.resolved span { color: #35745a; }
 .analysis-issue-list article strong { color: #34424e; font-size: 12px; }
 .analysis-issue-list article p { margin: 0; color: #64737d; font-size: 11px; }
+.recompute-impact { display: grid; gap: 11px; padding: 13px 15px; border: 1px solid #cfdde1; border-radius: 7px; background: #f7fbfc; }
+.recompute-impact > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.recompute-impact > header > div { display: grid; gap: 3px; min-width: 0; }
+.recompute-impact > header p { margin: 0; color: #277487; font-size: 10px; font-weight: 800; }
+.recompute-impact > header h3 { margin: 0; font-size: 14px; }
+.recompute-impact > header span { color: #637580; font-size: 11px; line-height: 1.5; }
+.recompute-impact > header b { color: #277487; font-size: 11px; white-space: nowrap; }
+.recompute-impact-list { display: grid; gap: 7px; }
+.recompute-impact-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 12px; border-top: 1px solid #dbe6e9; }
+.recompute-impact-list article > div { display: grid; gap: 2px; min-width: 0; }
+.recompute-impact-list article strong { color: #344651; font-size: 12px; }
+.recompute-impact-list article span, .recompute-impact-list article p { color: #687985; font-size: 11px; line-height: 1.5; }
+.recompute-impact-list article > b { color: #4b6671; font-size: 11px; white-space: nowrap; }
+.recompute-impact-list article p { grid-column: 1 / -1; margin: 1px 0 0; overflow-wrap: anywhere; }
+.recompute-impact-list article p.impact-empty { color: #87939b; }
 .analysis-problem-center > footer { padding-top: 4px; border-top: 1px solid #edf0f2; }
 .analysis-problem-center > footer > div { display: grid; gap: 2px; }
 .analysis-problem-center > footer strong { font-size: 12px; }

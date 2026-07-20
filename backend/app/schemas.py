@@ -618,6 +618,21 @@ class AnalysisIssueRead(BaseModel):
     resolved_at: datetime | None
 
 
+class DeepRevisionImpactSectionRead(BaseModel):
+    key: str
+    label: str
+    reason: str
+    item_count: int
+    item_labels: list[str] = Field(default_factory=list)
+
+
+class DeepRevisionImpactRead(BaseModel):
+    mode: str
+    issue_count: int
+    summary: str
+    sections: list[DeepRevisionImpactSectionRead] = Field(default_factory=list)
+
+
 class DeepAnalysisRevisionRead(BaseModel):
     revision_no: int
     created_at: datetime

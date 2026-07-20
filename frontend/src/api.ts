@@ -477,6 +477,21 @@ export type AnalysisIssue = {
   resolved_at: string | null;
 };
 
+export type DeepRevisionImpactSection = {
+  key: string;
+  label: string;
+  reason: string;
+  item_count: number;
+  item_labels: string[];
+};
+
+export type DeepRevisionImpact = {
+  mode: "NONE" | "TARGETED" | "STORY_WIDE";
+  issue_count: number;
+  summary: string;
+  sections: DeepRevisionImpactSection[];
+};
+
 export type DeepAnalysisRevision = {
   revision_no: number;
   created_at: string;
@@ -662,6 +677,8 @@ export const api = {
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>
     request<AnalysisIssue[]>(`/api/analysis-runs/${runId}/issues`),
+  deepAnalysisImpact: (runId: string) =>
+    request<DeepRevisionImpact>(`/api/analysis-runs/${runId}/deep/recompute-impact`),
   createAnalysisIssue: (runId: string, payload: { target_kind: string; target_id: string | null; target_label: string; category: string; note: string }) =>
     request<AnalysisIssue>(`/api/analysis-runs/${runId}/issues`, {
       method: "POST",
