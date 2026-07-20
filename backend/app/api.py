@@ -39,6 +39,7 @@ from .repositories import (
     list_projects,
     list_tasks,
     request_task_cancellation,
+    resolve_provider_confirmation,
     retry_task,
 )
 from .schemas import (
@@ -47,6 +48,8 @@ from .schemas import (
     AnalysisCostEstimateRead,
     AnalysisRunDiagnosticsRead,
     AnalysisStageDiagnosticRead,
+    ProviderConfirmationRead,
+    ProviderConfirmationWrite,
     AnalysisIssueCreate,
     AnalysisIssueRead,
     DeepRevisionImpactRead,
@@ -163,6 +166,10 @@ def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
         input_price_per_million_tokens=profile.input_price_per_million_tokens,
         output_price_per_million_tokens=profile.output_price_per_million_tokens,
         price_currency=profile.price_currency,
+        failover_targets=[
+            {"service_id": item.service_id, "model": item.model}
+            for item in profile.failover_targets
+        ],
     )
 
 
@@ -259,6 +266,30 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         .order_by(AnalysisRunTask.batch_index)
         .limit(1)
     ).one_or_none()
+    waiting_task = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            Task.status == TaskStatus.WAITING_CONFIRMATION.value,
+        )
+        .order_by(AnalysisRunTask.batch_index)
+    )
+    provider_confirmation = None
+    if waiting_task is not None:
+        payload = _json_dict(waiting_task.payload_json)
+        pending = payload.get("pending_provider_switch")
+        if isinstance(pending, dict):
+            provider_confirmation = ProviderConfirmationRead(
+                current_service_name=str(pending.get("current_service_name") or "当前服务"),
+                current_model=str(pending.get("current_model") or "当前模型"),
+                next_service_name=str(pending.get("next_service_name") or "备用服务"),
+                next_model=str(pending.get("next_model") or "备用模型"),
+                failure_count=int(pending.get("failure_count") or 0),
+                threshold=int(pending.get("threshold") or 3),
+                error_code=str(pending.get("error_code") or "PROVIDER_FAILURE"),
+                message=str(pending.get("message") or "当前模型服务连续失败。"),
+            )
     return AnalysisRunRead(
         id=run.id,
         source_version_id=run.source_version_id,
@@ -272,6 +303,7 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),
+        provider_confirmation=provider_confirmation,
     )
 
 
@@ -722,6 +754,7 @@ def analysis_profiles_update(
             input_price_per_million_tokens=payload.input_price_per_million_tokens,
             output_price_per_million_tokens=payload.output_price_per_million_tokens,
             price_currency=payload.price_currency,
+            failover_targets=[item.model_dump() for item in payload.failover_targets],
         )
     except ModelSettingsError as error:
         raise _model_settings_error(error) from error
@@ -1536,6 +1569,56 @@ def analysis_run_confirm(
     except SourceImportError as error:
         raise _source_error(error) from error
     return _analysis_run_read(session, confirmed)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/provider-switch",
+    response_model=AnalysisRunRead,
+)
+def analysis_provider_switch(
+    run_id: str,
+    payload: ProviderConfirmationWrite,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    waiting_tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.status == TaskStatus.WAITING_CONFIRMATION.value,
+        )
+        .order_by(AnalysisRunTask.batch_index)
+    ))
+    if not waiting_tasks:
+        raise HTTPException(status_code=409, detail={
+            "code": "PROVIDER_CONFIRMATION_NOT_PENDING",
+            "message": "当前没有等待确认的模型服务切换。",
+        })
+    try:
+        for task in waiting_tasks:
+            if resolve_provider_confirmation(
+                session,
+                task_id=task.id,
+                decision=payload.decision,
+            ) is None:
+                session.rollback()
+                raise HTTPException(status_code=409, detail={
+                    "code": "PROVIDER_CONFIRMATION_STALE",
+                    "message": "模型服务切换状态已经变化，请刷新页面后再选择。",
+                })
+        session.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        session.rollback()
+        raise
+    refreshed = session.get(AnalysisRun, run_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    return _analysis_run_read(session, refreshed)
 
 
 @router.get(

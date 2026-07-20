@@ -38,7 +38,9 @@ from .provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
     ModelSettingsError,
     model_cost_snapshot,
+    prepare_task_provider_routes,
     resolve_analysis_profile,
+    snapshot_provider_routes,
 )
 
 
@@ -1133,12 +1135,18 @@ def _task_payload(task: Task) -> dict[str, Any]:
 
 def _append_run_task(
     session: Session,
+    settings: Settings,
     run: AnalysisRun,
     *,
     kind: str,
     payload: dict[str, Any],
     max_attempts: int,
 ) -> Task:
+    payload, max_attempts = prepare_task_provider_routes(
+        settings,
+        payload,
+        max_attempts,
+    )
     task = Task(
         project_id=run.source_version.document.project_id,
         kind=kind,
@@ -1212,6 +1220,7 @@ def enqueue_hierarchical_digests(
         for spec in _range_digest_specs(chapter_units, target_chars=target_chars):
             _append_run_task(
                 session,
+                settings,
                 run,
                 kind=HIERARCHICAL_DIGEST_TASK_KIND,
                 payload={
@@ -1248,6 +1257,7 @@ def enqueue_hierarchical_digests(
             group = range_digests[offset:offset + MAX_STAGE_DIGEST_INPUTS]
             _append_run_task(
                 session,
+                settings,
                 run,
                 kind=HIERARCHICAL_DIGEST_TASK_KIND,
                 payload={
@@ -1707,16 +1717,24 @@ def estimate_analysis_cost(
         len(batches) + range_digest_count + stage_digest_count + 2
     )
     maximum_output_tokens = planned_call_count * profile.max_output_tokens
-    retry_multiplier = profile.max_retries + 1
+    provider_routes = snapshot_provider_routes(settings, profile.id)
+    retry_multiplier = max(
+        profile.max_retries + 1,
+        len(provider_routes) * 3,
+    )
     normal_cost = model_cost_snapshot(
         profile,
         prompt_tokens=estimated_input_tokens,
         completion_tokens=maximum_output_tokens,
     )
-    retry_cost = model_cost_snapshot(
-        profile,
-        prompt_tokens=estimated_input_tokens * retry_multiplier,
-        completion_tokens=maximum_output_tokens * retry_multiplier,
+    retry_cost = (
+        model_cost_snapshot(
+            profile,
+            prompt_tokens=estimated_input_tokens * retry_multiplier,
+            completion_tokens=maximum_output_tokens * retry_multiplier,
+        )
+        if len(provider_routes) == 1
+        else None
     )
     return {
         "source_version_id": version.id,
@@ -1736,7 +1754,12 @@ def estimate_analysis_cost(
         "basis": (
             "按当前分批数量、必要的长篇范围与阶段整理、两次全局分析、最大输出设置"
             "和字符数近似令牌数计算；"
-            "这是避免低估的保守上限，不是预扣费或最终账单。"
+            + (
+                "备用服务价格可能不同，因此只显示主服务正常完成的金额，不猜测切换后的总金额；"
+                if len(provider_routes) > 1
+                else ""
+            )
+            + "这是避免低估的保守上限，不是预扣费或最终账单。"
         ),
     }
 
@@ -1793,25 +1816,26 @@ def start_entities_events_run(
     session.add(run)
     session.flush()
     for batch_index, batch in enumerate(batches, start=1):
+        task_payload, task_max_attempts = prepare_task_provider_routes(
+            settings,
+            {
+                "run_id": run.id,
+                "source_version_id": version.id,
+                "batch_index": batch_index,
+                "batch_count": len(batches),
+                "start_char": batch.start_char,
+                "end_char": batch.end_char,
+                "unit_ids": list(batch.unit_ids),
+                "provider_name": "openai",
+                "model_profile_id": model_profile.id,
+            },
+            model_profile.max_retries + 1,
+        )
         task = Task(
             project_id=version.document.project_id,
             kind=ANALYSIS_TASK_KIND,
-            payload_json=json.dumps(
-                {
-                    "run_id": run.id,
-                    "source_version_id": version.id,
-                    "batch_index": batch_index,
-                    "batch_count": len(batches),
-                    "start_char": batch.start_char,
-                    "end_char": batch.end_char,
-                    "unit_ids": list(batch.unit_ids),
-                    "provider_name": "openai",
-                    "model_profile_id": model_profile.id,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            max_attempts=model_profile.max_retries + 1,
+            payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+            max_attempts=task_max_attempts,
         )
         session.add(task)
         session.flush()
@@ -2787,21 +2811,22 @@ def enqueue_narrative_synthesis(
         return None
     if not enqueue_hierarchical_digests(session, settings, run):
         return None
+    task_payload, task_max_attempts = prepare_task_provider_routes(
+        settings,
+        {
+            "run_id": run.id,
+            "source_version_id": run.source_version_id,
+            "provider_name": "openai",
+            "model_profile_id": model_profile.id,
+            "revision_requests": revision_requests or [],
+        },
+        model_profile.max_retries + 1,
+    )
     task = Task(
         project_id=run.source_version.document.project_id,
         kind=NARRATIVE_SYNTHESIS_TASK_KIND,
-        payload_json=json.dumps(
-            {
-                "run_id": run.id,
-                "source_version_id": run.source_version_id,
-                "provider_name": "openai",
-                "model_profile_id": model_profile.id,
-                "revision_requests": revision_requests or [],
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        max_attempts=model_profile.max_retries + 1,
+        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+        max_attempts=task_max_attempts,
     )
     session.add(task)
     session.flush()
@@ -3178,23 +3203,24 @@ def enqueue_deep_analysis(
         if revision_requests
         else None
     )
+    task_payload, task_max_attempts = prepare_task_provider_routes(
+        settings,
+        {
+            "run_id": run.id,
+            "source_version_id": run.source_version_id,
+            "provider_name": "openai",
+            "model_profile_id": model_profile.id,
+            "revision_requests": revision_requests or [],
+            "revision_scope": deep_revision_scope(revision_requests),
+            "revision_impact": revision_impact,
+        },
+        model_profile.max_retries + 1,
+    )
     task = Task(
         project_id=run.source_version.document.project_id,
         kind=DEEP_ANALYSIS_TASK_KIND,
-        payload_json=json.dumps(
-            {
-                "run_id": run.id,
-                "source_version_id": run.source_version_id,
-                "provider_name": "openai",
-                "model_profile_id": model_profile.id,
-                "revision_requests": revision_requests or [],
-                "revision_scope": deep_revision_scope(revision_requests),
-                "revision_impact": revision_impact,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        max_attempts=model_profile.max_retries + 1,
+        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+        max_attempts=task_max_attempts,
     )
     session.add(task)
     session.flush()
@@ -3527,6 +3553,11 @@ def refresh_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
         return run
     if any(task.status == TaskStatus.FAILED.value for task in tasks):
         run.status = AnalysisRunStatus.FAILED.value
+    elif any(
+        task.status == TaskStatus.WAITING_CONFIRMATION.value
+        for task in tasks
+    ):
+        run.status = AnalysisRunStatus.WAITING_CONFIRMATION.value
     elif any(task.status in {TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value} for task in tasks):
         run.status = AnalysisRunStatus.RUNNING.value
     elif all(task.status == TaskStatus.SUCCEEDED.value for task in tasks):

@@ -16,6 +16,7 @@ from app.services.provider_config import (
     read_model_settings,
     save_analysis_profile,
     save_model_service,
+    snapshot_provider_routes,
     probe_selected_model,
 )
 
@@ -66,6 +67,85 @@ def test_model_settings_api_keeps_secrets_local_and_supports_multiple_services(c
     assert [item["name"] for item in client.get("/api/settings/models").json()["services"]] == [
         "主要分析服务"
     ]
+
+
+def test_analysis_profile_preserves_ordered_failover_routes(client) -> None:
+    settings = client.app.state.settings
+    primary = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="主服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://primary.example/v1",
+        api_key="sk-primary",
+    )
+    backup_one = save_model_service(
+        settings,
+        service_id=None,
+        name="第一备用",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://backup-one.example/v1",
+        api_key="sk-backup-one",
+    )
+    backup_two = save_model_service(
+        settings,
+        service_id=None,
+        name="第二备用",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://backup-two.example/v1",
+        api_key="sk-backup-two",
+    )
+
+    saved = save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="带备用链的分析方案",
+        service_id=primary.id,
+        model="primary-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=2,
+        failover_targets=[
+            {"service_id": backup_two.id, "model": "backup-two-model"},
+            {"service_id": backup_one.id, "model": "backup-one-model"},
+        ],
+    )
+
+    assert [(item.service_id, item.model) for item in saved.failover_targets] == [
+        (backup_two.id, "backup-two-model"),
+        (backup_one.id, "backup-one-model"),
+    ]
+    assert [item["service_name"] for item in snapshot_provider_routes(settings)] == [
+        "主服务",
+        "第二备用",
+        "第一备用",
+    ]
+    profile = client.get("/api/settings/models").json()["analysis_profiles"][0]
+    assert profile["failover_targets"] == [
+        {"service_id": backup_two.id, "model": "backup-two-model"},
+        {"service_id": backup_one.id, "model": "backup-one-model"},
+    ]
+
+    with pytest.raises(ModelSettingsError) as duplicate:
+        save_analysis_profile(
+            settings,
+            profile_id=ENTITIES_EVENTS_PROFILE_ID,
+            name="重复备用服务",
+            service_id=primary.id,
+            model="primary-model",
+            temperature=None,
+            max_output_tokens=4096,
+            reasoning_effort="auto",
+            timeout_seconds=30,
+            max_retries=2,
+            failover_targets=[
+                {"service_id": backup_one.id, "model": "one"},
+                {"service_id": backup_one.id, "model": "two"},
+            ],
+        )
+    assert duplicate.value.code == "FAILOVER_SERVICE_INVALID"
 
 
 def test_legacy_openai_config_is_read_without_destroying_it(client) -> None:

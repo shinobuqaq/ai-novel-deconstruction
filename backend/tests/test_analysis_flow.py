@@ -282,6 +282,29 @@ class AuthenticationFailureProvider:
         )
 
 
+class FailoverExerciseProvider:
+    name = "openai"
+
+    def __init__(self, primary_service_id: str, backup_service_id: str) -> None:
+        self.primary_service_id = primary_service_id
+        self.backup_service_id = backup_service_id
+        self.calls: list[str] = []
+        self.success_provider = StaticAnalysisProvider()
+
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        service_id = str(payload.get("provider_service_id") or "")
+        self.calls.append(service_id)
+        if service_id == self.primary_service_id:
+            raise ProviderError(
+                code="PROVIDER_TIMEOUT",
+                message="主服务模拟超时。",
+                retryable=True,
+                provider_name=service_id,
+            )
+        assert service_id == self.backup_service_id
+        return await self.success_provider.complete(task_kind=task_kind, payload=payload)
+
+
 class InvalidStructureProvider:
     name = "openai"
 
@@ -338,6 +361,219 @@ def test_analysis_requires_local_provider_configuration(client) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PROVIDER_NOT_CONFIGURED"
+
+
+def test_provider_failover_waits_for_confirmation_and_resumes_same_task(client) -> None:
+    imported = _import_confirmed_novel(client)
+    settings = client.app.state.settings
+    primary = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="主分析服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://primary.example/v1",
+        api_key="sk-primary",
+    )
+    backup = save_model_service(
+        settings,
+        service_id=None,
+        name="备用分析服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://backup.example/v1",
+        api_key="sk-backup",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="主备分析方案",
+        service_id=primary.id,
+        model="primary-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=2,
+        failover_targets=[
+            {"service_id": backup.id, "model": "backup-model"},
+        ],
+    )
+    version_id = imported["version"]["id"]
+    estimate = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events/estimate"
+    ).json()
+    assert estimate["retry_ceiling_call_count"] == estimate["planned_call_count"] * 6
+    started = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    )
+    assert started.status_code == 201
+    run_id = started.json()["id"]
+    provider = FailoverExerciseProvider(primary.id, backup.id)
+    registry = ProviderRegistry([provider])
+
+    for attempt_no in range(1, 4):
+        with client.app.state.session_factory() as session:
+            claim = claim_next_task(
+                session,
+                worker_id=f"primary-failure-{attempt_no}",
+                lease_seconds=60,
+            )
+        assert claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            settings,
+            claim,
+            registry,
+        )
+
+    waiting = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert waiting["status"] == "WAITING_CONFIRMATION"
+    assert waiting["provider_confirmation"] == {
+        "current_service_name": "主分析服务",
+        "current_model": "primary-model",
+        "next_service_name": "备用分析服务",
+        "next_model": "backup-model",
+        "failure_count": 3,
+        "threshold": 3,
+        "error_code": "PROVIDER_TIMEOUT",
+        "message": "主服务模拟超时。",
+    }
+
+    retry_current = client.post(
+        f"/api/analysis-runs/{run_id}/provider-switch",
+        json={"decision": "RETRY_CURRENT"},
+    )
+    assert retry_current.status_code == 200
+    assert retry_current.json()["status"] == "PENDING"
+    assert retry_current.json()["provider_confirmation"] is None
+
+    for attempt_no in range(4, 7):
+        with client.app.state.session_factory() as session:
+            claim = claim_next_task(
+                session,
+                worker_id=f"primary-retry-{attempt_no}",
+                lease_seconds=60,
+            )
+        assert claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            settings,
+            claim,
+            registry,
+        )
+
+    waiting_again = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert waiting_again["status"] == "WAITING_CONFIRMATION"
+    assert waiting_again["provider_confirmation"]["failure_count"] == 3
+
+    switched = client.post(
+        f"/api/analysis-runs/{run_id}/provider-switch",
+        json={"decision": "SWITCH"},
+    )
+    assert switched.status_code == 200
+    assert switched.json()["status"] == "PENDING"
+    assert switched.json()["provider_confirmation"] is None
+
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="backup-success",
+            lease_seconds=60,
+        )
+    assert claim is not None
+    original_task_id = claim.id
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        settings,
+        claim,
+        registry,
+    )
+    assert provider.calls == [primary.id] * 6 + [backup.id]
+    with client.app.state.session_factory() as session:
+        task = session.get(Task, original_task_id)
+        assert task is not None
+        assert task.status == TaskStatus.SUCCEEDED.value
+        assert task.attempts == 7
+        payload = json.loads(task.payload_json)
+        assert payload["provider_route_index"] == 1
+        assert [item["decision"] for item in payload["provider_switch_history"]] == [
+            "RETRY_CURRENT",
+            "SWITCH",
+        ]
+
+
+def test_permanent_provider_failure_can_be_stopped_without_switching(client) -> None:
+    imported = _import_confirmed_novel(client)
+    settings = client.app.state.settings
+    primary = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="权限失效服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://primary.example/v1",
+        api_key="sk-primary",
+    )
+    backup = save_model_service(
+        settings,
+        service_id=None,
+        name="未启用备用服务",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://backup.example/v1",
+        api_key="sk-backup",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="权限失败停止方案",
+        service_id=primary.id,
+        model="primary-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=30,
+        max_retries=2,
+        failover_targets=[{"service_id": backup.id, "model": "backup-model"}],
+    )
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="auth-failure",
+            lease_seconds=60,
+        )
+    assert claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        settings,
+        claim,
+        ProviderRegistry([AuthenticationFailureProvider()]),
+    )
+
+    waiting = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert waiting["status"] == "WAITING_CONFIRMATION"
+    assert waiting["provider_confirmation"]["failure_count"] == 1
+    assert waiting["provider_confirmation"]["error_code"] == "PROVIDER_AUTH_FAILED"
+
+    stopped = client.post(
+        f"/api/analysis-runs/{run['id']}/provider-switch",
+        json={"decision": "STOP"},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "FAILED"
+    assert stopped.json()["provider_confirmation"] is None
+    with client.app.state.session_factory() as session:
+        task = session.get(Task, claim.id)
+        assert task is not None
+        assert task.status == TaskStatus.FAILED.value
+        assert task.error_code == "PROVIDER_SWITCH_DECLINED"
 
 
 def test_analysis_estimate_uses_local_batches_and_saved_pricing(client) -> None:

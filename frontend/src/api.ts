@@ -137,6 +137,7 @@ export type AnalysisProfile = {
   input_price_per_million_tokens: number | null;
   output_price_per_million_tokens: number | null;
   price_currency: "USD" | "CNY";
+  failover_targets: Array<{ service_id: string; model: string }>;
 };
 
 export type ModelSettings = {
@@ -157,7 +158,7 @@ export type AnalysisRun = {
   id: string;
   source_version_id: string;
   stage: string;
-  status: "PENDING" | "RUNNING" | "REVIEW" | "CONFIRMED" | "FAILED" | "CANCELLED";
+  status: "PENDING" | "RUNNING" | "WAITING_CONFIRMATION" | "REVIEW" | "CONFIRMED" | "FAILED" | "CANCELLED";
   total_batches: number;
   completed_batches: number;
   failed_batches: number;
@@ -166,6 +167,16 @@ export type AnalysisRun = {
   created_at: string;
   finished_at: string | null;
   confirmed_at: string | null;
+  provider_confirmation: {
+    current_service_name: string;
+    current_model: string;
+    next_service_name: string;
+    next_model: string;
+    failure_count: number;
+    threshold: number;
+    error_code: string;
+    message: string;
+  } | null;
 };
 
 export type AnalysisStageDiagnostic = {
@@ -680,6 +691,11 @@ export const api = {
     request<AnalysisCostEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
   analysisDiagnostics: (runId: string) =>
     request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
+  confirmProviderSwitch: (runId: string, decision: "SWITCH" | "RETRY_CURRENT" | "STOP") =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/provider-switch`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
   analysisEntities: (runId: string) =>
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>

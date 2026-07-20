@@ -13,7 +13,7 @@ from ..services.provider_config import (
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
     model_cost_snapshot,
-    resolve_analysis_profile,
+    resolve_analysis_route,
     schema_for_provider,
 )
 from .base import ProviderError, ProviderResponse
@@ -36,9 +36,11 @@ class OpenAIResponsesProvider:
 
     def _configuration(self, payload: dict[str, Any]):
         try:
-            return resolve_analysis_profile(
+            return resolve_analysis_route(
                 self.settings,
                 str(payload.get("model_profile_id") or "entities-events"),
+                service_id=str(payload.get("provider_service_id") or "").strip() or None,
+                model=str(payload.get("provider_model") or "").strip() or None,
             )
         except ModelSettingsError as exc:
             raise ProviderError(

@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Settings
-from ..models import AnalysisRun, Task
+from ..models import AnalysisRun, AnalysisRunTask, Task, TaskAttempt, TaskAttemptStatus, TaskStatus
 from ..providers.base import ProviderError, ProviderResponse
 from ..providers.registry import ProviderRegistry
 from ..repositories import (
@@ -16,6 +18,7 @@ from ..repositories import (
     acknowledge_task_cancellation,
     complete_task_attempt,
     fail_task_attempt,
+    pause_task_for_provider_confirmation,
     task_claim_is_current,
 )
 from .artifacts import write_json_artifact
@@ -48,6 +51,12 @@ ANALYSIS_TASK_KINDS = {
     HIERARCHICAL_DIGEST_TASK_KIND,
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
+}
+
+_IMMEDIATE_PROVIDER_SWITCH_CODES = {
+    "PROVIDER_AUTH_FAILED",
+    "PROVIDER_BAD_REQUEST",
+    "PROVIDER_NOT_CONFIGURED",
 }
 
 _OUTPUT_FIELD_LABELS = {
@@ -197,6 +206,112 @@ def _persist_failed_model_output(
     return path.relative_to(settings.workspace_dir).as_posix()
 
 
+def _provider_routes(payload: dict) -> list[dict]:
+    routes = payload.get("provider_routes")
+    if not isinstance(routes, list):
+        return []
+    return [item for item in routes if isinstance(item, dict)]
+
+
+def _active_provider_route(payload: dict) -> tuple[int, dict | None]:
+    routes = _provider_routes(payload)
+    try:
+        route_index = int(payload.get("provider_route_index") or 0)
+    except (TypeError, ValueError):
+        route_index = 0
+    if route_index < 0 or route_index >= len(routes):
+        return route_index, None
+    return route_index, routes[route_index]
+
+
+def _run_provider_failure_streak(
+    session_factory: sessionmaker[Session],
+    *,
+    run_id: str | None,
+    provider_name: str,
+    current_attempt_id: str,
+    reset_at: str | None = None,
+) -> int:
+    if not run_id:
+        return 1
+    reset_time = None
+    if reset_at:
+        try:
+            reset_time = datetime.fromisoformat(reset_at)
+        except (TypeError, ValueError):
+            reset_time = None
+    with session_factory() as session:
+        stmt = (
+            select(TaskAttempt)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == TaskAttempt.task_id)
+            .where(AnalysisRunTask.run_id == run_id)
+        )
+        if reset_time is not None:
+            stmt = stmt.where(TaskAttempt.started_at >= reset_time)
+        attempts = list(session.scalars(
+            stmt.order_by(
+                TaskAttempt.finished_at.desc(),
+                TaskAttempt.started_at.desc(),
+                TaskAttempt.attempt_no.desc(),
+            )
+        ))
+    streak = 1
+    failed_statuses = {
+        TaskAttemptStatus.RETRYABLE_FAILED.value,
+        TaskAttemptStatus.PERMANENT_FAILED.value,
+        TaskAttemptStatus.EXPIRED.value,
+    }
+    for attempt in attempts:
+        if attempt.id == current_attempt_id or attempt.status == TaskAttemptStatus.RUNNING.value:
+            continue
+        if attempt.provider_name != provider_name:
+            break
+        if attempt.status in failed_statuses:
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _pause_related_run_tasks(
+    session_factory: sessionmaker[Session],
+    *,
+    run_id: str | None,
+    current_task_id: str,
+    pending_switch: dict,
+    failure_streak: int,
+) -> None:
+    if not run_id:
+        return
+    with session_factory() as session:
+        related_tasks = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run_id,
+                Task.id != current_task_id,
+                Task.status.in_({TaskStatus.PENDING.value, TaskStatus.RETRY_WAIT.value}),
+            )
+        ))
+        for task in related_tasks:
+            try:
+                related_payload = json.loads(task.payload_json)
+            except json.JSONDecodeError:
+                continue
+            route_index, route = _active_provider_route(related_payload)
+            if route is None or route.get("service_id") != pending_switch.get("current_service_id"):
+                continue
+            routes = _provider_routes(related_payload)
+            if route_index + 1 >= len(routes):
+                continue
+            related_payload["provider_failure_streak"] = failure_streak
+            related_payload["pending_provider_switch"] = dict(pending_switch)
+            task.payload_json = json.dumps(related_payload, ensure_ascii=False, sort_keys=True)
+            task.status = TaskStatus.WAITING_CONFIRMATION.value
+            task.next_attempt_at = None
+        session.commit()
+
+
 async def execute_task(
     session_factory: sessionmaker[Session],
     settings: Settings,
@@ -233,6 +348,11 @@ async def execute_task(
             )
     else:
         provider_payload = payload
+    route_index, route = _active_provider_route(payload)
+    if route is not None:
+        provider_payload["provider_route_index"] = route_index
+        provider_payload["provider_service_id"] = str(route.get("service_id") or "")
+        provider_payload["provider_model"] = str(route.get("model") or "")
     try:
         response = await provider.complete(task_kind=claim.kind, payload=provider_payload)
     except ProviderError:
@@ -589,8 +709,16 @@ def execute_task_sync(
     claim: ClaimedTask,
     provider_registry: ProviderRegistry,
 ) -> bool:
+    task_payload: dict = {}
+    active_route: dict | None = None
     try:
-        failure_provider_name = str(json.loads(claim.payload_json).get("provider_name") or settings.provider_name)
+        task_payload = json.loads(claim.payload_json)
+        _, active_route = _active_provider_route(task_payload)
+        failure_provider_name = str(
+            (active_route or {}).get("service_id")
+            or task_payload.get("provider_name")
+            or settings.provider_name
+        )
     except json.JSONDecodeError:
         failure_provider_name = settings.provider_name
     try:
@@ -614,7 +742,11 @@ def execute_task_sync(
             }
             if isinstance(exc.diagnostics.get("cost"), dict):
                 failure_usage["cost"] = exc.diagnostics["cost"]
-            failure_provider_name = exc.provider_name or failure_provider_name
+            failure_provider_name = (
+                exc.provider_name
+                or str((active_route or {}).get("service_id") or "")
+                or failure_provider_name
+            )
             if exc.raw_text is not None:
                 failure_diagnostics = dict(failure_diagnostics)
                 try:
@@ -627,6 +759,75 @@ def execute_task_sync(
                     failure_diagnostics["raw_output_persist_error"] = type(
                         diagnostic_error
                     ).__name__
+            route_index, current_route = _active_provider_route(task_payload)
+            routes = _provider_routes(task_payload)
+            threshold = max(1, int(task_payload.get("provider_failover_threshold") or 3))
+            run_id = str(task_payload.get("run_id") or "") or None
+            failure_streak = _run_provider_failure_streak(
+                session_factory,
+                run_id=run_id,
+                provider_name=failure_provider_name,
+                current_attempt_id=claim.current_attempt_id,
+                reset_at=str(task_payload.get("provider_failure_reset_at") or "") or None,
+            )
+            task_payload["provider_failure_streak"] = failure_streak
+            next_route = routes[route_index + 1] if route_index + 1 < len(routes) else None
+            confirmation_required = bool(
+                current_route
+                and next_route
+                and (
+                    failure_streak >= threshold
+                    or error_code in _IMMEDIATE_PROVIDER_SWITCH_CODES
+                )
+            )
+            if confirmation_required:
+                pending_switch = {
+                    "current_service_id": current_route.get("service_id"),
+                    "current_service_name": current_route.get("service_name"),
+                    "current_model": current_route.get("model"),
+                    "next_service_id": next_route.get("service_id"),
+                    "next_service_name": next_route.get("service_name"),
+                    "next_model": next_route.get("model"),
+                    "failure_count": failure_streak,
+                    "threshold": threshold,
+                    "error_code": error_code,
+                    "message": str(exc),
+                }
+                task_payload["pending_provider_switch"] = pending_switch
+                failure_diagnostics = dict(failure_diagnostics)
+                failure_diagnostics["provider_switch_confirmation_required"] = True
+                with session_factory() as session:
+                    paused = pause_task_for_provider_confirmation(
+                        session,
+                        task_id=claim.id,
+                        attempt_id=claim.current_attempt_id,
+                        lease_token=claim.lease_token,
+                        lease_generation=claim.lease_generation,
+                        error_code=error_code,
+                        error_message=str(exc),
+                        retryable=retryable,
+                        provider_name=failure_provider_name,
+                        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+                        usage_json=json.dumps(failure_usage, sort_keys=True),
+                        diagnostics_json=json.dumps(
+                            failure_diagnostics,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    )
+                    if not paused:
+                        acknowledge_task_cancellation(session, claim=claim)
+                if paused:
+                    _pause_related_run_tasks(
+                        session_factory,
+                        run_id=run_id,
+                        current_task_id=claim.id,
+                        pending_switch=pending_switch,
+                        failure_streak=failure_streak,
+                    )
+                return paused
+            if routes and failure_streak >= threshold:
+                retryable = False
         else:
             if isinstance(exc, ValueError) and str(exc).startswith(
                 "UNSUPPORTED_TASK_KIND:"
@@ -661,6 +862,11 @@ def execute_task_sync(
                     failure_diagnostics,
                     ensure_ascii=False,
                     sort_keys=True,
+                ),
+                payload_json=(
+                    json.dumps(task_payload, ensure_ascii=False, sort_keys=True)
+                    if task_payload
+                    else None
                 ),
             )
             if not failed:

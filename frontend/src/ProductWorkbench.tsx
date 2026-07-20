@@ -203,6 +203,7 @@ const ACTION_DIALOGUE_LABELS: Record<string, string> = {
 const ANALYSIS_STAGE_STATUS_LABELS: Record<string, string> = {
   PENDING: "等待开始",
   RUNNING: "正在处理",
+  WAITING_CONFIRMATION: "等待你确认服务选择",
   SUCCEEDED: "已经完成",
   FAILED: "处理失败",
   CANCELLED: "已经取消",
@@ -1275,6 +1276,25 @@ export default function ProductWorkbench() {
     }
   }
 
+  async function handleProviderSwitch(decision: "SWITCH" | "RETRY_CURRENT" | "STOP") {
+    if (!analysisRun) return;
+    try {
+      setBusy(
+        decision === "SWITCH"
+          ? "switch-provider"
+          : decision === "RETRY_CURRENT"
+            ? "retry-current-provider"
+            : "stop-provider-switch",
+      );
+      setError("");
+      await loadAnalysisResults(await api.confirmProviderSwitch(analysisRun.id, decision));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleOpenEvidence(evidenceId: string) {
     try {
       setBusy(`evidence-${evidenceId}`);
@@ -1543,8 +1563,13 @@ export default function ProductWorkbench() {
                               {analysisEstimate && (
                                 <div className="analysis-cost-preview">
                                   <span>预计基础调用 {analysisEstimate.planned_call_count} 次；全部触发重试时最多 {analysisEstimate.retry_ceiling_call_count} 次。</span>
-                                  {analysisEstimate.pricing_available && analysisEstimate.cost_currency && analysisEstimate.maximum_cost_without_retries !== null && analysisEstimate.maximum_cost_with_retries !== null ? (
-                                    <strong>按最大输出计算：正常完成不超过 {formatCost(analysisEstimate.maximum_cost_without_retries, analysisEstimate.cost_currency)}；全部重试上限 {formatCost(analysisEstimate.maximum_cost_with_retries, analysisEstimate.cost_currency)}</strong>
+                                  {analysisEstimate.pricing_available && analysisEstimate.cost_currency && analysisEstimate.maximum_cost_without_retries !== null ? (
+                                    <strong>
+                                      按最大输出计算：正常完成不超过 {formatCost(analysisEstimate.maximum_cost_without_retries, analysisEstimate.cost_currency)}；
+                                      {analysisEstimate.maximum_cost_with_retries !== null
+                                        ? `全部重试上限 ${formatCost(analysisEstimate.maximum_cost_with_retries, analysisEstimate.cost_currency)}`
+                                        : "切换备用服务后的总金额因各服务价格不同暂不估算"}
+                                    </strong>
                                   ) : (
                                     <strong>当前没有可靠模型单价，只估算调用量，不显示金额。</strong>
                                   )}
@@ -1572,6 +1597,52 @@ export default function ProductWorkbench() {
                             </div>
                             <div className="analysis-progress"><span style={{ width: `${analysisPercent}%` }} /></div>
                             <p>可以关闭页面，后台会继续处理；再次打开项目会恢复当前进度。</p>
+                          </div>
+                        )}
+
+                        {analysisRun?.status === "WAITING_CONFIRMATION" && analysisRun.provider_confirmation && (
+                          <div className="provider-switch-confirmation" role="alert">
+                            <div className="provider-switch-copy">
+                              <span>需要你的确认</span>
+                              <strong>
+                                {analysisRun.provider_confirmation.failure_count >= analysisRun.provider_confirmation.threshold
+                                  ? `${analysisRun.provider_confirmation.current_service_name} 已连续失败 ${analysisRun.provider_confirmation.failure_count} 次`
+                                  : `${analysisRun.provider_confirmation.current_service_name} 当前无法继续`}
+                              </strong>
+                              <p>{analysisRun.provider_confirmation.message}</p>
+                            </div>
+                            <div className="provider-switch-route" aria-label="模型服务切换方向">
+                              <div><span>当前</span><strong>{analysisRun.provider_confirmation.current_service_name}</strong><small>{analysisRun.provider_confirmation.current_model}</small></div>
+                              <b aria-hidden="true">→</b>
+                              <div><span>备用</span><strong>{analysisRun.provider_confirmation.next_service_name}</strong><small>{analysisRun.provider_confirmation.next_model}</small></div>
+                            </div>
+                            <div className="provider-switch-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleProviderSwitch("STOP")}
+                              >
+                                {busy === "stop-provider-switch" ? "正在停止" : "不切换，停止本次分析"}
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleProviderSwitch("RETRY_CURRENT")}
+                              >
+                                {busy === "retry-current-provider"
+                                  ? "正在恢复"
+                                  : `继续用 ${analysisRun.provider_confirmation.current_service_name} 重试`}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleProviderSwitch("SWITCH")}
+                              >
+                                {busy === "switch-provider" ? "正在切换" : `确认切换到 ${analysisRun.provider_confirmation.next_service_name}`}
+                              </button>
+                            </div>
                           </div>
                         )}
 

@@ -24,6 +24,7 @@ CAPABILITY_FAILED = "FAILED"
 STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
 STRUCTURED_JSON_ONLY = "JSON_ONLY"
 STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
+PROVIDER_FAILURE_SWITCH_THRESHOLD = 3
 
 # JSON Schema files used by the application may contain document metadata such
 # as `$id` and `$schema`. Those keywords are valid JSON Schema, but several
@@ -82,6 +83,12 @@ class ModelService:
 
 
 @dataclass(frozen=True, slots=True)
+class FailoverTarget:
+    service_id: str
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisProfile:
     id: str
     name: str
@@ -97,6 +104,7 @@ class AnalysisProfile:
     input_price_per_million_tokens: float | None = None
     output_price_per_million_tokens: float | None = None
     price_currency: str = "USD"
+    failover_targets: tuple[FailoverTarget, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +251,16 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                     else None
                 ),
                 price_currency=str(item.get("price_currency") or "USD").upper(),
+                failover_targets=tuple(
+                    FailoverTarget(
+                        service_id=str(target.get("service_id") or "").strip(),
+                        model=str(target.get("model") or "").strip(),
+                    )
+                    for target in item.get("failover_targets", [])
+                    if isinstance(target, dict)
+                    and str(target.get("service_id") or "").strip()
+                    and str(target.get("model") or "").strip()
+                ),
             )
         )
     if not profiles:
@@ -278,7 +296,7 @@ def _write_model_settings(settings: Settings, value: ModelSettings) -> None:
     temp.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "services": [asdict(item) for item in value.services],
                 "analysis_profiles": [asdict(item) for item in value.analysis_profiles],
             },
@@ -351,7 +369,11 @@ def delete_model_service(settings: Settings, service_id: str) -> None:
         raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到这个模型服务。")
     if len(current.services) == 1:
         raise ModelSettingsError("PROVIDER_LAST_SERVICE", "至少需要保留一个模型服务。")
-    if any(item.service_id == service_id for item in current.analysis_profiles):
+    if any(
+        item.service_id == service_id
+        or any(target.service_id == service_id for target in item.failover_targets)
+        for item in current.analysis_profiles
+    ):
         raise ModelSettingsError("PROVIDER_IN_USE", "这个服务正在被分析方案使用，请先更换分析方案中的模型服务。")
     services = tuple(item for item in current.services if item.id != service_id)
     _write_model_settings(settings, ModelSettings(services, current.analysis_profiles))
@@ -373,6 +395,7 @@ def save_analysis_profile(
     input_price_per_million_tokens: float | None = None,
     output_price_per_million_tokens: float | None = None,
     price_currency: str = "USD",
+    failover_targets: list[dict[str, str]] | tuple[FailoverTarget, ...] = (),
 ) -> AnalysisProfile:
     current = read_model_settings(settings)
     if not any(item.id == service_id for item in current.services):
@@ -406,6 +429,31 @@ def save_analysis_profile(
     currency = price_currency.strip().upper()
     if currency not in SUPPORTED_PRICE_CURRENCIES:
         raise ModelSettingsError("MODEL_PRICE_CURRENCY_INVALID", "计价币种目前支持美元或人民币。")
+    service_by_id = {item.id: item for item in current.services}
+    normalized_targets: list[FailoverTarget] = []
+    seen_service_ids = {service_id}
+    for raw_target in failover_targets:
+        if isinstance(raw_target, FailoverTarget):
+            target_service_id = raw_target.service_id.strip()
+            target_model = raw_target.model.strip()
+        else:
+            target_service_id = str(raw_target.get("service_id") or "").strip()
+            target_model = str(raw_target.get("model") or "").strip()
+        if not target_service_id or target_service_id in seen_service_ids:
+            raise ModelSettingsError("FAILOVER_SERVICE_INVALID", "备用服务不能重复，也不能与当前主服务相同。")
+        if target_service_id not in service_by_id:
+            raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到所选备用模型服务。")
+        if not service_by_id[target_service_id].configured:
+            raise ModelSettingsError(
+                "PROVIDER_NOT_CONFIGURED",
+                "所选备用模型服务没有完成地址和密钥配置。",
+            )
+        if not target_model:
+            raise ModelSettingsError("MODEL_REQUIRED", "请为每个备用服务选择或填写模型。")
+        seen_service_ids.add(target_service_id)
+        normalized_targets.append(
+            FailoverTarget(service_id=target_service_id, model=target_model)
+        )
     existing = next((item for item in current.analysis_profiles if item.id == profile_id), None)
     saved = AnalysisProfile(
         id=profile_id,
@@ -422,6 +470,7 @@ def save_analysis_profile(
         input_price_per_million_tokens=input_price_per_million_tokens,
         output_price_per_million_tokens=output_price_per_million_tokens,
         price_currency=currency,
+        failover_targets=tuple(normalized_targets),
     )
     profiles = tuple(saved if item.id == profile_id else item for item in current.analysis_profiles)
     if existing is None:
@@ -444,6 +493,83 @@ def resolve_analysis_profile(
     if not profile.model:
         raise ModelSettingsError("MODEL_REQUIRED", "请先到设置中心选择分析模型。")
     return service, profile
+
+
+def resolve_analysis_route(
+    settings: Settings,
+    profile_id: str,
+    *,
+    service_id: str | None = None,
+    model: str | None = None,
+) -> tuple[ModelService, AnalysisProfile]:
+    current = read_model_settings(settings)
+    profile = next((item for item in current.analysis_profiles if item.id == profile_id), None)
+    if profile is None:
+        raise ModelSettingsError("ANALYSIS_PROFILE_NOT_FOUND", "没有找到这个分析方案。")
+    selected_service_id = service_id or profile.service_id
+    selected_model = (model or profile.model).strip()
+    service = next((item for item in current.services if item.id == selected_service_id), None)
+    if service is None or not service.configured:
+        raise ModelSettingsError("PROVIDER_NOT_CONFIGURED", "所选模型服务没有完成配置。")
+    if not selected_model:
+        raise ModelSettingsError("MODEL_REQUIRED", "所选模型服务没有配置分析模型。")
+    return service, replace(
+        profile,
+        service_id=selected_service_id,
+        model=selected_model,
+    )
+
+
+def snapshot_provider_routes(
+    settings: Settings,
+    profile_id: str = ENTITIES_EVENTS_PROFILE_ID,
+) -> list[dict[str, str]]:
+    current = read_model_settings(settings)
+    profile = next((item for item in current.analysis_profiles if item.id == profile_id), None)
+    if profile is None:
+        raise ModelSettingsError("ANALYSIS_PROFILE_NOT_FOUND", "没有找到这个分析方案。")
+    service_by_id = {item.id: item for item in current.services}
+    routes = [FailoverTarget(profile.service_id, profile.model), *profile.failover_targets]
+    result: list[dict[str, str]] = []
+    for route in routes:
+        service = service_by_id.get(route.service_id)
+        if service is None:
+            raise ModelSettingsError("PROVIDER_NOT_FOUND", "分析方案引用了不存在的模型服务。")
+        if not service.configured:
+            raise ModelSettingsError(
+                "PROVIDER_NOT_CONFIGURED",
+                f"模型服务“{service.name}”没有完成地址和密钥配置。",
+            )
+        if not route.model.strip():
+            raise ModelSettingsError(
+                "MODEL_REQUIRED",
+                f"模型服务“{service.name}”没有设置分析模型。",
+            )
+        result.append({
+            "service_id": service.id,
+            "service_name": service.name,
+            "model": route.model,
+        })
+    return result
+
+
+def prepare_task_provider_routes(
+    settings: Settings,
+    payload: dict[str, Any],
+    max_attempts: int,
+) -> tuple[dict[str, Any], int]:
+    profile_id = str(payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID)
+    routes = snapshot_provider_routes(settings, profile_id)
+    prepared = dict(payload)
+    prepared.update({
+        "provider_routes": routes,
+        "provider_route_index": 0,
+        "provider_failure_streak": 0,
+        "provider_failover_threshold": PROVIDER_FAILURE_SWITCH_THRESHOLD,
+    })
+    if len(routes) > 1:
+        max_attempts = max(max_attempts, len(routes) * PROVIDER_FAILURE_SWITCH_THRESHOLD)
+    return prepared, max_attempts
 
 
 def model_cost_snapshot(

@@ -218,6 +218,12 @@ class AnalysisProfileRead(BaseModel):
     input_price_per_million_tokens: float | None
     output_price_per_million_tokens: float | None
     price_currency: str
+    failover_targets: list["FailoverTargetWrite"] = Field(default_factory=list)
+
+
+class FailoverTargetWrite(BaseModel):
+    service_id: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
 
 
 class AnalysisProfileWrite(BaseModel):
@@ -233,6 +239,7 @@ class AnalysisProfileWrite(BaseModel):
     input_price_per_million_tokens: float | None = Field(default=None, ge=0, le=1_000_000)
     output_price_per_million_tokens: float | None = Field(default=None, ge=0, le=1_000_000)
     price_currency: str = Field(default="USD", max_length=3)
+    failover_targets: list[FailoverTargetWrite] = Field(default_factory=list, max_length=10)
 
 
 class ModelSettingsRead(BaseModel):
@@ -257,6 +264,21 @@ class ModelProbeRead(BaseModel):
     message: str
 
 
+class ProviderConfirmationRead(BaseModel):
+    current_service_name: str
+    current_model: str
+    next_service_name: str
+    next_model: str
+    failure_count: int
+    threshold: int
+    error_code: str
+    message: str
+
+
+class ProviderConfirmationWrite(BaseModel):
+    decision: str = Field(pattern="^(SWITCH|RETRY_CURRENT|STOP)$")
+
+
 class AnalysisRunRead(BaseModel):
     id: str
     source_version_id: str
@@ -270,6 +292,7 @@ class AnalysisRunRead(BaseModel):
     created_at: datetime
     finished_at: datetime | None
     confirmed_at: datetime | None
+    provider_confirmation: ProviderConfirmationRead | None = None
 
 
 class AnalysisStageDiagnosticRead(BaseModel):

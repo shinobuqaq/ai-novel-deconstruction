@@ -85,6 +85,7 @@ export default function SettingsPage() {
       input_price_per_million_tokens: profile.input_price_per_million_tokens ?? null,
       output_price_per_million_tokens: profile.output_price_per_million_tokens ?? null,
       price_currency: profile.price_currency ?? "USD",
+      failover_targets: profile.failover_targets ?? [],
     } : null);
   }
 
@@ -194,6 +195,7 @@ export default function SettingsPage() {
       input_price_per_million_tokens: profileDraft.input_price_per_million_tokens,
       output_price_per_million_tokens: profileDraft.output_price_per_million_tokens,
       price_currency: profileDraft.price_currency,
+      failover_targets: profileDraft.failover_targets,
     });
     setProfileDraft(saved);
     await loadSettings(saved.service_id);
@@ -257,6 +259,59 @@ export default function SettingsPage() {
   const capabilityMatches = Boolean(
     profileService && profileDraft?.model && profileService.capabilities.tested_model === profileDraft.model,
   );
+  const fallbackServices = settings?.services.filter(
+    (service) => service.id !== profileDraft?.service_id,
+  ) ?? [];
+  const orderedFallbackServices = [...fallbackServices].sort((left, right) => {
+    const leftIndex = profileDraft?.failover_targets.findIndex(
+      (target) => target.service_id === left.id,
+    ) ?? -1;
+    const rightIndex = profileDraft?.failover_targets.findIndex(
+      (target) => target.service_id === right.id,
+    ) ?? -1;
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return 0;
+  });
+
+  function toggleFailoverService(service: ModelService) {
+    if (!profileDraft) return;
+    const existing = profileDraft.failover_targets.find(
+      (target) => target.service_id === service.id,
+    );
+    setProfileDraft({
+      ...profileDraft,
+      failover_targets: existing
+        ? profileDraft.failover_targets.filter((target) => target.service_id !== service.id)
+        : [
+            ...profileDraft.failover_targets,
+            { service_id: service.id, model: service.capabilities.tested_model ?? "" },
+          ],
+    });
+  }
+
+  function updateFailoverModel(serviceId: string, model: string) {
+    if (!profileDraft) return;
+    setProfileDraft({
+      ...profileDraft,
+      failover_targets: profileDraft.failover_targets.map((target) => (
+        target.service_id === serviceId ? { ...target, model } : target
+      )),
+    });
+  }
+
+  function moveFailoverService(serviceId: string, direction: -1 | 1) {
+    if (!profileDraft) return;
+    const currentIndex = profileDraft.failover_targets.findIndex(
+      (target) => target.service_id === serviceId,
+    );
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= profileDraft.failover_targets.length) return;
+    const reordered = [...profileDraft.failover_targets];
+    [reordered[currentIndex], reordered[nextIndex]] = [reordered[nextIndex], reordered[currentIndex]];
+    setProfileDraft({ ...profileDraft, failover_targets: reordered });
+  }
 
   return (
     <div className="settings-shell">
@@ -361,7 +416,14 @@ export default function SettingsPage() {
                     <select
                       value={profileDraft.service_id}
                       onChange={(event) => {
-                        setProfileDraft({ ...profileDraft, service_id: event.target.value, model: "" });
+                        setProfileDraft({
+                          ...profileDraft,
+                          service_id: event.target.value,
+                          model: "",
+                          failover_targets: profileDraft.failover_targets.filter(
+                            (target) => target.service_id !== event.target.value,
+                          ),
+                        });
                         setManualModelEntry(false);
                       }}
                     >
@@ -410,6 +472,69 @@ export default function SettingsPage() {
                     {!currentCatalog.length && <small>点击“获取模型”后，可从服务返回的模型中直接选择。</small>}
                   </div>
                 </div>
+
+                <section className="failover-settings" aria-label="备用模型服务">
+                  <header>
+                    <div>
+                      <span>备用服务</span>
+                      <strong>当前服务连续失败 3 次后暂停</strong>
+                    </div>
+                    <small>按下方顺序逐个建议切换；你也可以继续用当前服务重试或停止。</small>
+                  </header>
+                  {fallbackServices.length ? (
+                    <div className="failover-service-list">
+                      {orderedFallbackServices.map((service) => {
+                        const target = profileDraft.failover_targets.find(
+                          (item) => item.service_id === service.id,
+                        );
+                        const targetIndex = profileDraft.failover_targets.findIndex(
+                          (item) => item.service_id === service.id,
+                        );
+                        return (
+                          <div className={`failover-service ${target ? "enabled" : ""}`} key={service.id}>
+                            <div className="failover-service-identity">
+                              <label className="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(target)}
+                                  onChange={() => toggleFailoverService(service)}
+                                />
+                                <span><strong>{service.name}</strong><small>{connectionLabel(service)}</small></span>
+                              </label>
+                              {target && (
+                                <div className="failover-priority" aria-label={`${service.name} 的备用顺序`}>
+                                  <span>第 {targetIndex + 1} 备用</span>
+                                  <button
+                                    type="button"
+                                    disabled={targetIndex === 0}
+                                    onClick={() => moveFailoverService(service.id, -1)}
+                                    aria-label={`提高 ${service.name} 的备用优先级`}
+                                  >上移</button>
+                                  <button
+                                    type="button"
+                                    disabled={targetIndex === profileDraft.failover_targets.length - 1}
+                                    onClick={() => moveFailoverService(service.id, 1)}
+                                    aria-label={`降低 ${service.name} 的备用优先级`}
+                                  >下移</button>
+                                </div>
+                              )}
+                            </div>
+                            <label>备用模型
+                              <input
+                                disabled={!target}
+                                value={target?.model ?? ""}
+                                onChange={(event) => updateFailoverModel(service.id, event.target.value)}
+                                placeholder={service.capabilities.tested_model || "填写这个服务使用的模型"}
+                              />
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="settings-empty-note">添加第二个模型服务后，可以在这里设置备用服务。</p>
+                  )}
+                </section>
 
                 <div className={`model-test-summary ${capabilityMatches ? profileService?.capabilities.ordinary_request === "SUPPORTED" ? "tested" : "failed" : "untested"}`}>
                   <div>
