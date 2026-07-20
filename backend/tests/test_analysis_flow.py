@@ -818,6 +818,21 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
     assert repair_claim is not None
     assert repair_claim.kind == "analysis.narrative_synthesis"
     assert "人物角色覆盖" in repair_claim.payload_json
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        repair_claim,
+        registry,
+    )
+
+    repaired = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert repaired.status_code == 200
+    repaired_payload = repaired.json()
+    assert repaired_payload["narrative_status"] == "READY"
+    assert all(item["role"] != "UNCLASSIFIED" for item in repaired_payload["characters"])
+    assert repaired_payload["story_overview"]["development_path"]
+    assert repaired_payload["story_overview"]["turning_points"]
+    assert repaired_payload["story_overview"]["current_result"]
 
 
 def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:

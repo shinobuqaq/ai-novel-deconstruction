@@ -1112,7 +1112,10 @@ def narrative_synthesis_repair(
         run,
         force=True,
         revision_requests=[{
-            "target_kind": "CHARACTER",
+            # This repair covers the complete narrative structure, not one
+            # character. Mark it as a story-wide revision so the merge keeps
+            # the newly returned roles, phases, relations, and overview.
+            "target_kind": "STORY",
             "target_id": None,
             "target_label": "人物角色覆盖",
             "category": "INCOMPLETE",
