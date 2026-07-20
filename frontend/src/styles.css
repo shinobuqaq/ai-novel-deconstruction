@@ -254,8 +254,12 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .formal-workbench-tabs button { min-width: 0; min-height: 44px; border: 0; border-right: 1px solid #d8dee5; border-bottom: 1px solid #d8dee5; border-radius: 0; background: transparent; color: #53626f; }
 .formal-workbench-tabs button.active { box-shadow: inset 0 -3px #277487; background: #fff; color: #1f5260; }
 .formal-workbench-tabs button span { margin-left: 5px; color: #81909a; font-size: 10px; }
-.formal-workbench-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 510px; }
+.formal-workbench-body { min-height: 510px; }
+.formal-workbench-body.has-evidence { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); }
+.formal-workbench-body.reading-wide { display: block; background: #f6f8f9; }
 .formal-workbench-content { max-height: 690px; padding: 16px; overflow-y: auto; border-right: 1px solid #d8dee5; background: #f6f8f9; }
+.formal-workbench-body.reading-wide .formal-workbench-content { width: 100%; max-width: 1120px; max-height: none; margin: 0 auto; padding: 22px 24px 34px; overflow: visible; border-right: 0; }
+.formal-workbench-body.reading-wide .formal-evidence-reader { display: none; }
 .workbench-callout { display: grid; gap: 5px; margin-bottom: 12px; padding: 13px 14px; border-left: 3px solid #5f929d; background: #edf5f6; }
 .workbench-callout strong { color: #274d57; font-size: 12px; }
 .workbench-callout span { color: #60737d; font-size: 12px; line-height: 1.55; }
@@ -277,6 +281,20 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .phase-detail-card > header i { white-space: normal; line-height: 1.55; text-align: left; }
 .character-meta { display: flex; flex-wrap: wrap; gap: 5px; }
 .character-meta span { padding: 3px 6px; border-radius: 4px; background: #f0f3f5; color: #60707c; font-size: 10px; }
+.character-workbench-view { display: grid; gap: 18px; }
+.character-role-summary { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid #cedde1; border-radius: 7px; background: #f4fafb; }
+.character-role-summary > strong { color: #274f59; font-size: 13px; }
+.character-role-summary > span { color: #60737d; font-size: 12px; line-height: 1.55; }
+.character-role-summary > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.character-role-summary > div span { padding: 4px 8px; border-radius: 4px; background: #e7f1f3; color: #315d68; font-size: 11px; font-weight: 800; }
+.character-role-group { display: grid; gap: 10px; }
+.character-role-group > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 8px; border-bottom: 2px solid #c5dadd; }
+.character-role-group > header > div { display: flex; align-items: baseline; gap: 9px; }
+.character-role-group > header span { color: #71808e; font-size: 10px; font-weight: 800; }
+.character-role-group > header h3 { margin: 0; color: #294c56; font-size: 16px; }
+.character-role-group > header b { color: #55717a; font-size: 11px; }
+.character-role-group.role-unclassified > header { border-bottom-color: #d3ae63; }
+.character-role-group.role-unclassified > header h3 { color: #84631d; }
 .association-links { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .association-links strong { margin-right: 2px; color: #52636f; font-size: 11px; }
 .association-links button, .association-links span { padding: 4px 7px; border: 1px solid #cbd9de; border-radius: 4px; background: #f5fafb; color: #276e7c; font-size: 10px; font-weight: 700; }
@@ -645,8 +663,9 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 
 @media (max-width: 760px) {
   .formal-workbench-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .formal-workbench-body { grid-template-columns: 1fr; }
+  .formal-workbench-body.has-evidence { grid-template-columns: 1fr; }
   .formal-workbench-content { max-height: none; border-right: 0; border-bottom: 1px solid #d8dee5; }
+  .formal-workbench-body.reading-wide .formal-workbench-content { padding: 18px 16px 28px; }
   .formal-evidence-reader { min-height: 360px; }
   .revision-toolbar { grid-template-columns: 1fr; }
   .revision-toolbar label { margin-top: 3px; }

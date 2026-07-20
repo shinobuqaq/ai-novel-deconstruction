@@ -108,6 +108,14 @@ const ROLE_LABELS: Record<string, string> = {
   UNCLASSIFIED: "尚未定位",
 };
 
+const ROLE_ORDER = [
+  "PROTAGONIST",
+  "CORE_SUPPORTING",
+  "IMPORTANT_SUPPORTING",
+  "MINOR",
+  "UNCLASSIFIED",
+] as const;
+
 const FACT_TYPE_LABELS: Record<string, string> = {
   PLACE: "地点",
   ORGANIZATION: "组织",
@@ -376,6 +384,11 @@ function FormalWorkbench({
     return () => { active = false; };
   }, [viewData.run_id, viewData.deep_revision, viewData.deep_analysis, stateChapter]);
   const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], knowledge_transfers: [], world_rules: [] };
+  const characterGroups = useMemo(() => ROLE_ORDER.map((role) => ({
+    role,
+    label: ROLE_LABELS[role],
+    characters: viewData.characters.filter((character) => character.role === role),
+  })).filter((group) => group.characters.length > 0), [viewData.characters]);
   const revisionChanges = useMemo(() => {
     if (!revisionDiff) return [];
     return REVISION_COLLECTIONS.map(([key, label]) => ({
@@ -574,7 +587,7 @@ function FormalWorkbench({
         ))}
       </nav>
 
-      <div className="formal-workbench-body">
+      <div className={`formal-workbench-body${view === "source" || evidenceContext ? " has-evidence" : " reading-wide"}`}>
         <div className="formal-workbench-content">
           {searchQuery.trim() && (
             <section className="search-results">
@@ -653,36 +666,48 @@ function FormalWorkbench({
           )}
 
           {!searchQuery.trim() && view === "characters" && (
-            <div className="formal-card-list">
-              {viewData.characters.map((character) => (
-                <article className={`formal-card${focusClass(character.id)}`} data-workbench-id={character.id} key={character.id}>
-                  <header>
-                    <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
-                    <i className={character.status === "UNCERTAIN" || character.role === "UNCLASSIFIED" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? "角色作用待确认" : "角色定位已生成"}</i>
-                  </header>
-                  <p>{character.description || "原文中已识别到该人物。"}</p>
-                  <small>{character.role_reason}</small>
-                  {character.identity_notes.map((note) => <small className="identity-note" key={note}>{note}</small>)}
-                  {character.aliases.length > 0 && <small>别名或称谓：{character.aliases.join("、")}</small>}
-                  {character.identities.length > 0 && <small>身份：{character.identities.join("、")}</small>}
-                  {character.goals.length > 0 && <small>目标：{character.goals.join("、")}</small>}
-                  {character.motivations.length > 0 && <small>动机：{character.motivations.join("、")}</small>}
-                  {character.abilities.length > 0 && <small>能力：{character.abilities.join("、")}</small>}
-                  {character.secrets.length > 0 && <small>秘密：{character.secrets.join("、")}</small>}
-                  {character.important_experiences.length > 0 && <small>重要经历：{character.important_experiences.join("；")}</small>}
-                  {character.current_state && <small>当前状态：{character.current_state}</small>}
-                  {character.arc_summary && <p><strong>人物变化：</strong>{character.arc_summary}</p>}
-                  <div className="character-meta">
-                    <span>出场活跃度：{character.activity_level}</span>
-                    <span>人物识别置信度：{character.confidence}%</span>
-                    <span>证据 {character.appearance_count} 处</span>
-                    <span>{character.first_chapter_ordinal ? `第 ${character.first_chapter_ordinal} 章首次出现` : "章节位置待定"}</span>
-                    <span>{character.event_ids.length} 个相关事件</span>
+            <div className="character-workbench-view">
+              <div className="character-role-summary">
+                <strong>按人物在故事中的作用分组</strong>
+                <span>角色定位结合人物目标、关键事件、人物关系和剧情作用；出现次数只作为辅助信息。</span>
+                <div>{characterGroups.map((group) => <span key={group.role}>{group.label} {group.characters.length}</span>)}</div>
+              </div>
+              {characterGroups.map((group) => (
+                <section className={`character-role-group role-${group.role.toLocaleLowerCase()}`} key={group.role}>
+                  <header><div><span>人物层级</span><h3>{group.label}</h3></div><b>{group.characters.length} 人</b></header>
+                  <div className="formal-card-list">
+                    {group.characters.map((character) => (
+                      <article className={`formal-card${focusClass(character.id)}`} data-workbench-id={character.id} key={character.id}>
+                        <header>
+                          <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
+                          <i className={character.status === "UNCERTAIN" || character.role === "UNCLASSIFIED" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? "角色作用待确认" : "角色定位已生成"}</i>
+                        </header>
+                        <p>{character.description || "原文中已识别到该人物。"}</p>
+                        <small>{character.role_reason}</small>
+                        {character.identity_notes.map((note) => <small className="identity-note" key={note}>{note}</small>)}
+                        {character.aliases.length > 0 && <small>别名或称谓：{character.aliases.join("、")}</small>}
+                        {character.identities.length > 0 && <small>身份：{character.identities.join("、")}</small>}
+                        {character.goals.length > 0 && <small>目标：{character.goals.join("、")}</small>}
+                        {character.motivations.length > 0 && <small>动机：{character.motivations.join("、")}</small>}
+                        {character.abilities.length > 0 && <small>能力：{character.abilities.join("、")}</small>}
+                        {character.secrets.length > 0 && <small>秘密：{character.secrets.join("、")}</small>}
+                        {character.important_experiences.length > 0 && <small>重要经历：{character.important_experiences.join("；")}</small>}
+                        {character.current_state && <small>当前状态：{character.current_state}</small>}
+                        {character.arc_summary && <p><strong>人物变化：</strong>{character.arc_summary}</p>}
+                        <div className="character-meta">
+                          <span>出场活跃度：{character.activity_level}</span>
+                          <span>人物识别置信度：{character.confidence}%</span>
+                          <span>证据 {character.appearance_count} 处</span>
+                          <span>{character.first_chapter_ordinal ? `第 ${character.first_chapter_ordinal} 章首次出现` : "章节位置待定"}</span>
+                          <span>{character.event_ids.length} 个相关事件</span>
+                        </div>
+                        {character.event_ids.length > 0 && <div className="association-links"><strong>相关事件</strong>{character.event_ids.map((eventId) => { const relatedEvent = viewData.events.find((item) => item.id === eventId); return relatedEvent ? <button type="button" key={eventId} onClick={() => openWorkbenchItem("events", eventId)}>{relatedEvent.title}</button> : null; })}</div>}
+                        {evidenceButtons(character.evidence_ids)}
+                        {markProblemButton("CHARACTER", character.id, character.name)}
+                      </article>
+                    ))}
                   </div>
-                  {character.event_ids.length > 0 && <div className="association-links"><strong>相关事件</strong>{character.event_ids.map((eventId) => { const relatedEvent = viewData.events.find((item) => item.id === eventId); return relatedEvent ? <button type="button" key={eventId} onClick={() => openWorkbenchItem("events", eventId)}>{relatedEvent.title}</button> : null; })}</div>}
-                  {evidenceButtons(character.evidence_ids)}
-                  {markProblemButton("CHARACTER", character.id, character.name)}
-                </article>
+                </section>
               ))}
               {!viewData.characters.length && <p className="result-empty">当前没有整理出人物档案。</p>}
               {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={name}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化：{relation.changes.join("；")}</small>}{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_name}与${relation.target_name}的关系`)}</article>)}</section>}
