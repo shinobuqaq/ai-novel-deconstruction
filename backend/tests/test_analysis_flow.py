@@ -146,6 +146,17 @@ class StaticAnalysisProvider:
                         "valid_to_chapter": None,
                         "evidence_ids": [evidence_id],
                         "counter_evidence_ids": [],
+                    },
+                    {
+                        "subject": "旧宅",
+                        "predicate": "木门状态",
+                        "value": "模型试图改写无关事实" if is_revision else "木门老旧",
+                        "fact_type": "PLACE",
+                        "status": "CONFIRMED",
+                        "valid_from_chapter": 1,
+                        "valid_to_chapter": None,
+                        "evidence_ids": [evidence_id],
+                        "counter_evidence_ids": [],
                     }
                 ],
                 "state_changes": [
@@ -533,6 +544,11 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["phases"][0]["title"] == "雨夜归来与密信出现"
     assert projection["deep_status"] == "READY"
     assert projection["deep_analysis"]["fact_versions"][0]["status"] == "CONFIRMED"
+    unaffected_fact = next(
+        item
+        for item in projection["deep_analysis"]["fact_versions"]
+        if item["subject"] == "旧宅"
+    )
     assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
     assert projection["deep_analysis"]["world_rules"][0]["discovered_chapter"] == 1
 
@@ -600,6 +616,13 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     latest_revision = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert latest_revision.json()["deep_revision"] == 2
     assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
+    latest_unaffected_fact = next(
+        item
+        for item in latest_revision.json()["deep_analysis"]["fact_versions"]
+        if item["subject"] == "旧宅"
+    )
+    assert latest_unaffected_fact["value"] == "木门老旧"
+    assert latest_unaffected_fact["id"] == unaffected_fact["id"]
     missing_revision = client.get(
         f"/api/analysis-runs/{run['id']}/workbench?deep_revision=999"
     )

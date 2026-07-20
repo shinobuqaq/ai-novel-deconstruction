@@ -212,6 +212,9 @@ def build_deep_revision_impact(
         for item in requests
         if item.get("target_label")
     }
+    direct_collections = {
+        collection for collection, _item in direct_items
+    }
 
     sections: list[dict] = []
     if broad:
@@ -237,9 +240,17 @@ def build_deep_revision_impact(
             )
             if item.get("id") in target_ids:
                 selected.append(item)
-            elif evidence_ids and item_evidence.intersection(evidence_ids):
+            elif (
+                collection not in direct_collections
+                and evidence_ids
+                and item_evidence.intersection(evidence_ids)
+            ):
                 selected.append(item)
-            elif subject_names and any(name and name in item_text for name in subject_names):
+            elif (
+                collection not in direct_collections
+                and subject_names
+                and any(name and name in item_text for name in subject_names)
+            ):
                 selected.append(item)
             elif collection == "claims" and any(label and label in item_text for label in request_labels):
                 selected.append(item)
@@ -261,6 +272,12 @@ def build_deep_revision_impact(
             "reason": reason,
             "item_count": len(unique),
             "item_labels": labels[:8],
+            "direct": is_direct,
+            "item_ids": [
+                str(item.get("id"))
+                for item in unique.values()
+                if item.get("id")
+            ],
         })
 
     affected_count = sum(section["item_count"] for section in sections)
@@ -276,7 +293,142 @@ def build_deep_revision_impact(
         "issue_count": len(requests),
         "summary": summary,
         "sections": sections,
+        "match_evidence_ids": sorted(evidence_ids),
+        "match_subject_names": sorted(subject_names),
+        "match_target_labels": sorted(request_labels),
     }
+
+
+def public_deep_revision_impact(value: dict | None) -> dict | None:
+    if value is None:
+        return None
+    return {
+        "mode": value.get("mode", "NONE"),
+        "issue_count": int(value.get("issue_count") or 0),
+        "summary": str(value.get("summary") or ""),
+        "sections": [
+            {
+                "key": str(section.get("key") or ""),
+                "label": str(section.get("label") or ""),
+                "reason": str(section.get("reason") or ""),
+                "item_count": int(section.get("item_count") or 0),
+                "item_labels": list(section.get("item_labels") or []),
+            }
+            for section in value.get("sections", [])
+        ],
+    }
+
+
+def _revision_stable_key(collection: str, item: dict) -> str:
+    if collection == "fact_versions":
+        return f"{item.get('subject')}:{item.get('predicate')}:{item.get('valid_from_chapter')}"
+    if collection == "state_changes":
+        return f"{item.get('subject')}:{item.get('aspect')}:{item.get('chapter_ordinal')}"
+    if collection == "actor_knowledge":
+        return f"{item.get('actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+    if collection == "scene_analysis":
+        return str(item.get("chapter_ordinal"))
+    if collection == "claims":
+        return f"{item.get('claim_kind')}:{item.get('scope')}:{item.get('claim_text')}"
+    if collection == "foreshadowing":
+        return f"{item.get('title')}:{item.get('setup_chapter')}"
+    if collection == "entity_resolutions":
+        return f"{item.get('entity_type')}:{item.get('canonical_name')}:{':'.join(item.get('merged_names', []))}"
+    return str(item.get("title"))
+
+
+def _revision_item_matches(
+    collection: str,
+    item: dict,
+    *,
+    affected_previous: list[dict],
+    evidence_ids: set[str],
+    subject_names: set[str],
+    target_labels: set[str],
+    direct_collection: bool,
+    preserved_keys: set[str],
+) -> bool:
+    item_key = _revision_stable_key(collection, item)
+    previous_keys = {
+        _revision_stable_key(collection, previous_item)
+        for previous_item in affected_previous
+    }
+    if item_key in previous_keys:
+        return True
+    if item_key in preserved_keys:
+        return False
+    item_text = " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "subject", "predicate", "actor", "proposition", "claim_text", "scope")
+    )
+    if direct_collection:
+        item_evidence = {
+            *item.get("evidence_ids", []),
+            *item.get("counter_evidence_ids", []),
+        }
+        return bool(
+            (evidence_ids and item_evidence.intersection(evidence_ids))
+            or (subject_names and any(name and name in item_text for name in subject_names))
+            or any(label and label in item_text for label in target_labels)
+        )
+    item_evidence = {
+        *item.get("evidence_ids", []),
+        *item.get("counter_evidence_ids", []),
+    }
+    return bool(
+        (evidence_ids and item_evidence.intersection(evidence_ids))
+        or (subject_names and any(name and name in item_text for name in subject_names))
+        or (collection == "claims" and any(label and label in item_text for label in target_labels))
+    )
+
+
+def merge_targeted_revision_payload(
+    previous_payload: dict,
+    proposed_payload: dict,
+    revision_impact: dict | None,
+) -> dict:
+    if not revision_impact or revision_impact.get("mode") != "TARGETED":
+        return proposed_payload
+    evidence_ids = set(revision_impact.get("match_evidence_ids") or [])
+    subject_names = set(revision_impact.get("match_subject_names") or [])
+    target_labels = set(revision_impact.get("match_target_labels") or [])
+    sections = {
+        str(section.get("key")): section
+        for section in revision_impact.get("sections", [])
+    }
+    merged = dict(proposed_payload)
+    for collection in DEEP_ANALYSIS_COLLECTIONS:
+        section = sections.get(collection)
+        if section is None:
+            continue
+        affected_ids = set(section.get("item_ids") or [])
+        previous_items = list(previous_payload.get(collection, []))
+        affected_previous = [
+            item for item in previous_items if item.get("id") in affected_ids
+        ]
+        preserved = [
+            item for item in previous_items if item.get("id") not in affected_ids
+        ]
+        preserved_keys = {
+            _revision_stable_key(collection, item) for item in preserved
+        }
+        direct_collection = bool(section.get("direct"))
+        revised = [
+            item
+            for item in proposed_payload.get(collection, [])
+            if _revision_item_matches(
+                collection,
+                item,
+                affected_previous=affected_previous,
+                evidence_ids=evidence_ids,
+                subject_names=subject_names,
+                target_labels=target_labels,
+                direct_collection=direct_collection,
+                preserved_keys=preserved_keys,
+            )
+        ]
+        merged[collection] = [*preserved, *revised]
+    return merged
 
 
 class StructuredOutputValidationError(ValueError):
@@ -1885,7 +2037,7 @@ def provider_payload_for_deep_analysis(
             "narrative_phases": narrative.get("narrative_phases", []),
             "previous_analysis": previous_analysis_payload,
             "revision_requests": task_payload.get("revision_requests", []),
-            "revision_impact": task_payload.get("revision_impact"),
+            "revision_impact": public_deep_revision_impact(task_payload.get("revision_impact")),
             "revision_scope": task_payload.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
         },
     )
@@ -2736,7 +2888,8 @@ def persist_deep_analysis(
 
     payload = output.model_dump(mode="json")
     revision_scope = set(task_payload.get("revision_scope") or DEEP_ANALYSIS_COLLECTIONS)
-    if task_payload.get("revision_requests") and revision_scope != set(DEEP_ANALYSIS_COLLECTIONS):
+    previous_payload: dict | None = None
+    if task_payload.get("revision_requests"):
         previous = session.scalar(
             select(DeepAnalysis)
             .where(DeepAnalysis.run_id == run.id)
@@ -2745,9 +2898,16 @@ def persist_deep_analysis(
         if previous is None:
             raise ValueError("DEEP_ANALYSIS_PREVIOUS_REVISION_MISSING")
         previous_payload = json.loads(previous.payload_json)
+    if previous_payload is not None and revision_scope != set(DEEP_ANALYSIS_COLLECTIONS):
         for collection in DEEP_ANALYSIS_COLLECTIONS:
             if collection not in revision_scope:
                 payload[collection] = previous_payload.get(collection, [])
+    if previous_payload is not None:
+        payload = merge_targeted_revision_payload(
+            previous_payload,
+            payload,
+            task_payload.get("revision_impact"),
+        )
     item_specs = (
         ("fact_versions", "fct", lambda item: f"{item['subject']}:{item['predicate']}:{item['value']}:{item['valid_from_chapter']}"),
         ("state_changes", "stc", lambda item: f"{item['subject']}:{item['aspect']}:{item['chapter_ordinal']}:{item['after']}"),
@@ -2760,8 +2920,17 @@ def persist_deep_analysis(
         ("entity_resolutions", "ers", lambda item: f"{item['entity_type']}:{item['canonical_name']}:{':'.join(item['merged_names'])}"),
     )
     for collection, prefix, identity in item_specs:
+        previous_ids = {
+            _revision_stable_key(collection, item): item.get("id")
+            for item in (previous_payload or {}).get(collection, [])
+            if item.get("id")
+        }
         for index, item in enumerate(payload[collection], start=1):
-            item["id"] = _item_id(prefix, run.id, index, identity(item))
+            if item.get("id"):
+                continue
+            item["id"] = previous_ids.get(
+                _revision_stable_key(collection, item),
+            ) or _item_id(prefix, run.id, index, identity(item))
     for fact in payload["fact_versions"]:
         if fact["counter_evidence_ids"]:
             fact["status"] = "DISPUTED"
