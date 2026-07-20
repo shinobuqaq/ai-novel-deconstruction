@@ -14,7 +14,7 @@ import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +120,48 @@ class AlreadyRunning(RuntimeError):
     pass
 
 
+class WindowsConsoleCloseHandler:
+    CTRL_CLOSE_EVENT = 2
+    CTRL_LOGOFF_EVENT = 5
+    CTRL_SHUTDOWN_EVENT = 6
+
+    def __init__(self, callback) -> None:  # type: ignore[no-untyped-def]
+        self._callback = callback
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+        self._handler = self._handler_type(self._dispatch)
+        self._kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._kernel32.SetConsoleCtrlHandler.restype = ctypes.c_int
+        ok = self._kernel32.SetConsoleCtrlHandler(
+            ctypes.cast(self._handler, ctypes.c_void_p),
+            True,
+        )
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._registered = True
+
+    def _dispatch(self, control_type: int) -> int:
+        if control_type not in {
+            self.CTRL_CLOSE_EVENT,
+            self.CTRL_LOGOFF_EVENT,
+            self.CTRL_SHUTDOWN_EVENT,
+        }:
+            return 0
+        try:
+            self._callback()
+        except Exception:
+            return 0
+        return 1
+
+    def close(self) -> None:
+        if self._registered:
+            self._kernel32.SetConsoleCtrlHandler(
+                ctypes.cast(self._handler, ctypes.c_void_p),
+                False,
+            )
+            self._registered = False
+
+
 def _acquire_mutex() -> int:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
@@ -199,6 +241,7 @@ class WorkbenchLauncher:
     def __init__(self, *, open_browser: bool) -> None:
         self.open_browser = open_browser
         self.stop_event = Event()
+        self.stop_lock = Lock()
         self.job: WindowsJob | None = None
         self.mutex: int | None = None
         self.children: list[Child] = []
@@ -334,27 +377,28 @@ class WorkbenchLauncher:
             self._check_children()
 
     def stop(self) -> None:
-        self.stop_event.set()
-        had_resources = self.job is not None or bool(self.children) or self.owns_state
-        if self.job is not None:
-            self.log("正在关闭工作台并回收全部后台进程...")
-            self.job.close()
-            self.job = None
-        for child in self.children:
-            try:
-                child.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass
-            child.stdout_file.close()
-            child.stderr_file.close()
-        self.children.clear()
-        if self.owns_state:
-            ACTIVE_STATE.unlink(missing_ok=True)
-            self.owns_state = False
-        _close_mutex(self.mutex)
-        self.mutex = None
-        if had_resources:
-            self.log("工作台已关闭，没有保留本次启动的后台进程。")
+        with self.stop_lock:
+            self.stop_event.set()
+            had_resources = self.job is not None or bool(self.children) or self.owns_state
+            if self.job is not None:
+                self.log("正在关闭工作台并回收全部后台进程...")
+                self.job.close()
+                self.job = None
+            for child in self.children:
+                try:
+                    child.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+                child.stdout_file.close()
+                child.stderr_file.close()
+            self.children.clear()
+            if self.owns_state:
+                ACTIVE_STATE.unlink(missing_ok=True)
+                self.owns_state = False
+            _close_mutex(self.mutex)
+            self.mutex = None
+            if had_resources:
+                self.log("工作台已关闭，没有保留本次启动的后台进程。")
 
 
 def main() -> int:
@@ -366,6 +410,9 @@ def main() -> int:
         print(f"缺少项目 Python 环境：{PYTHON}", file=sys.stderr)
         return 1
     launcher = WorkbenchLauncher(open_browser=not args.no_browser)
+    console_close_handler: WindowsConsoleCloseHandler | None = None
+    if os.name == "nt":
+        console_close_handler = WindowsConsoleCloseHandler(launcher.stop)
 
     def request_stop(_signum: int, _frame: object) -> None:
         launcher.stop_event.set()
@@ -388,6 +435,8 @@ def main() -> int:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 1
     finally:
+        if console_close_handler is not None:
+            console_close_handler.close()
         launcher.stop()
 
 
