@@ -237,6 +237,7 @@ function FormalWorkbench({
   const [issueNote, setIssueNote] = useState("");
   const [issueBusy, setIssueBusy] = useState("");
   const [issueError, setIssueError] = useState("");
+  const [focusTarget, setFocusTarget] = useState<{ view: WorkbenchView; id: string } | null>(null);
   const viewData = revisionData ?? data;
   const unclassifiedCharacters = viewData.characters.filter((item) => item.role === "UNCLASSIFIED");
   const isHistoricalRevision = revisionData !== null && revisionData.deep_revision !== data.deep_revision;
@@ -257,6 +258,14 @@ function FormalWorkbench({
     setRevisionData(null);
     setRevisionError("");
   }, [data.run_id, data.chapters]);
+  useEffect(() => {
+    if (!focusTarget || focusTarget.view !== view || searchQuery.trim()) return;
+    const timer = window.setTimeout(() => {
+      const element = document.querySelector<HTMLElement>(`[data-workbench-id="${focusTarget.id}"]`);
+      element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [focusTarget, searchQuery, view, viewData]);
   useEffect(() => {
     let active = true;
     void Promise.all([
@@ -285,14 +294,14 @@ function FormalWorkbench({
     const query = searchQuery.trim().toLocaleLowerCase("zh-CN");
     if (!query) return [];
     const entries = [
-      ...viewData.characters.map((item) => ({ key: item.id, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.identities.join(" ")} ${item.goals.join(" ")} ${item.motivations.join(" ")} ${item.abilities.join(" ")} ${item.secrets.join(" ")} ${item.arc_summary}`, evidenceIds: item.evidence_ids })),
-      ...viewData.events.map((item) => ({ key: item.id, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")} ${item.location} ${item.trigger} ${item.process} ${item.outcome} ${item.impact}`, evidenceIds: item.evidence_ids })),
-      ...viewData.phases.map((item) => ({ key: item.id, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
-      ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, section: "事实", title: item.subject, text: `${item.predicate} ${item.value} ${item.timeline_note}`, evidenceIds: item.evidence_ids })) ?? []),
-      ...(viewData.deep_analysis?.world_rules.map((item) => ({ key: item.id, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
-      ...(viewData.deep_analysis?.foreshadowing.map((item) => ({ key: item.id, section: "伏笔", title: item.title, text: item.setup, evidenceIds: item.evidence_ids })) ?? []),
-      ...(viewData.deep_analysis?.conflicts.map((item) => ({ key: item.id, section: "冲突", title: item.title, text: `${item.goals} ${item.obstacles} ${item.stakes} ${item.resolution}`, evidenceIds: item.evidence_ids })) ?? []),
-      ...(viewData.deep_analysis?.claims.map((item) => ({ key: item.id, section: "分析结论", title: item.claim_text, text: item.scope, evidenceIds: item.evidence_ids })) ?? []),
+      ...viewData.characters.map((item) => ({ key: item.id, view: "characters" as WorkbenchView, section: "人物", title: item.name, text: `${item.description} ${item.role_reason} ${item.identities.join(" ")} ${item.goals.join(" ")} ${item.motivations.join(" ")} ${item.abilities.join(" ")} ${item.secrets.join(" ")} ${item.arc_summary}`, evidenceIds: item.evidence_ids })),
+      ...viewData.events.map((item) => ({ key: item.id, view: "events" as WorkbenchView, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")} ${item.location} ${item.trigger} ${item.process} ${item.outcome} ${item.impact}`, evidenceIds: item.evidence_ids })),
+      ...viewData.phases.map((item) => ({ key: item.id, view: "plot" as WorkbenchView, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
+      ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, view: "facts" as WorkbenchView, section: "事实", title: item.subject, text: `${item.predicate} ${item.value} ${item.timeline_note}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.world_rules.map((item) => ({ key: item.id, view: "world" as WorkbenchView, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.foreshadowing.map((item) => ({ key: item.id, view: "foreshadowing" as WorkbenchView, section: "伏笔", title: item.title, text: item.setup, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.conflicts.map((item) => ({ key: item.id, view: "conflicts" as WorkbenchView, section: "冲突", title: item.title, text: `${item.goals} ${item.obstacles} ${item.stakes} ${item.resolution}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.claims.map((item) => ({ key: item.id, view: "overview" as WorkbenchView, section: "分析结论", title: item.claim_text, text: item.scope, evidenceIds: item.evidence_ids })) ?? []),
     ];
     return entries.filter((item) => `${item.title} ${item.text}`.toLocaleLowerCase("zh-CN").includes(query));
   }, [viewData, searchQuery]);
@@ -322,6 +331,15 @@ function FormalWorkbench({
     return () => { active = false; };
   }, [viewData.run_id, viewData.deep_revision, viewData.deep_analysis, stateChapter]);
   const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], world_rules: [] };
+  const openWorkbenchItem = (targetView: WorkbenchView, id: string) => {
+    setSearchQuery("");
+    setFocusTarget({ view: targetView, id });
+    onViewChange(targetView);
+  };
+  const focusClass = (id: string) => focusTarget?.id === id && focusTarget.view === view ? " workbench-focused" : "";
+  const characterForName = (name: string) => viewData.characters.find(
+    (item) => item.name === name || item.aliases.includes(name),
+  );
   const evidenceButtons = (evidenceIds: string[], label = "查看原文") => (
     <div className="evidence-buttons">
       {evidenceIds.map((evidenceId, index) => (
@@ -486,6 +504,7 @@ function FormalWorkbench({
                   <span>{item.section}</span>
                   <h4>{item.title}</h4>
                   <p>{item.text}</p>
+                  <button type="button" className="text-action" onClick={() => openWorkbenchItem(item.view, item.key)}>打开这项内容</button>
                   {evidenceButtons(item.evidenceIds)}
                 </article>
               ))}
@@ -520,7 +539,7 @@ function FormalWorkbench({
               )}
               <div className="phase-overview-list">
                 {viewData.phases.map((phase, index) => (
-                  <article className="phase-card" key={phase.id}>
+                  <article className={`phase-card${focusClass(phase.id)}`} data-workbench-id={phase.id} key={phase.id}>
                     <header><span>阶段 {index + 1}</span><h3>{phase.title}</h3></header>
                     <p>{phase.summary}</p>
                     {phase.people.length > 0 && <small>参与人物：{phase.people.join("、")}</small>}
@@ -533,7 +552,7 @@ function FormalWorkbench({
                 <header><h3>地点、组织与重要事物</h3><span>{viewData.related_entities.length} 个</span></header>
                 <div>{viewData.related_entities.map((entity) => <span key={entity.id}>{ENTITY_LABELS[entity.entity_type]}：{entity.name}</span>)}</div>
               </div>
-              {viewData.deep_analysis?.claims.length ? <section className="insight-group overview-claims"><header><div><span>带证据的专项判断</span><h3>分析结论</h3></div><b>{viewData.deep_analysis.claims.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.claims.map((claim) => <article className="formal-card" key={claim.id}><header><div><span>{claim.claim_kind === "FACT" ? "事实判断" : claim.claim_kind === "INFERENCE" ? "推断" : claim.claim_kind === "PATTERN" ? "叙事模式" : "解释"}</span><h3>{claim.claim_text}</h3></div><i className={claim.verification_status !== "SUPPORTED" ? "needs-review" : ""}>{CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</i></header><small>适用范围：{claim.scope}</small>{claim.verification_note && <small>{claim.verification_note}</small>}{evidenceButtons(claim.evidence_ids, "查看支持证据")}{claim.counter_evidence_ids.length > 0 && evidenceButtons(claim.counter_evidence_ids, "查看反面证据")}</article>)}</div></section> : null}
+              {viewData.deep_analysis?.claims.length ? <section className="insight-group overview-claims"><header><div><span>带证据的专项判断</span><h3>分析结论</h3></div><b>{viewData.deep_analysis.claims.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.claims.map((claim) => <article className={`formal-card${focusClass(claim.id)}`} data-workbench-id={claim.id} key={claim.id}><header><div><span>{claim.claim_kind === "FACT" ? "事实判断" : claim.claim_kind === "INFERENCE" ? "推断" : claim.claim_kind === "PATTERN" ? "叙事模式" : "解释"}</span><h3>{claim.claim_text}</h3></div><i className={claim.verification_status !== "SUPPORTED" ? "needs-review" : ""}>{CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</i></header><small>适用范围：{claim.scope}</small>{claim.verification_note && <small>{claim.verification_note}</small>}{evidenceButtons(claim.evidence_ids, "查看支持证据")}{claim.counter_evidence_ids.length > 0 && evidenceButtons(claim.counter_evidence_ids, "查看反面证据")}</article>)}</div></section> : null}
             </>
           )}
 
@@ -554,7 +573,7 @@ function FormalWorkbench({
           {!searchQuery.trim() && view === "characters" && (
             <div className="formal-card-list">
               {viewData.characters.map((character) => (
-                <article className="formal-card" key={character.id}>
+                <article className={`formal-card${focusClass(character.id)}`} data-workbench-id={character.id} key={character.id}>
                   <header>
                     <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
                     <i className={character.status === "UNCERTAIN" || character.role === "UNCLASSIFIED" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? "角色作用待确认" : "角色定位已生成"}</i>
@@ -578,19 +597,20 @@ function FormalWorkbench({
                     <span>{character.first_chapter_ordinal ? `第 ${character.first_chapter_ordinal} 章首次出现` : "章节位置待定"}</span>
                     <span>{character.event_ids.length} 个相关事件</span>
                   </div>
+                  {character.event_ids.length > 0 && <div className="association-links"><strong>相关事件</strong>{character.event_ids.map((eventId) => { const relatedEvent = viewData.events.find((item) => item.id === eventId); return relatedEvent ? <button type="button" key={eventId} onClick={() => openWorkbenchItem("events", eventId)}>{relatedEvent.title}</button> : null; })}</div>}
                   {evidenceButtons(character.evidence_ids)}
                   {markProblemButton("CHARACTER", character.id, character.name)}
                 </article>
               ))}
               {!viewData.characters.length && <p className="result-empty">当前没有整理出人物档案。</p>}
-              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><strong>{relation.source_name} ↔ {relation.target_name}</strong><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化：{relation.changes.join("；")}</small>}{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
+              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={name}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化：{relation.changes.join("；")}</small>}{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
             </div>
           )}
 
           {!searchQuery.trim() && view === "plot" && (
             <div className="formal-card-list">
               {viewData.phases.map((phase, index) => (
-                <article className="formal-card phase-detail-card" key={phase.id}>
+                <article className={`formal-card phase-detail-card${focusClass(phase.id)}`} data-workbench-id={phase.id} key={phase.id}>
                   <header><div><span>阶段 {index + 1}</span><h3>{phase.title}</h3></div><i>{phase.chapter_titles.join("、") || "章节待定"}</i></header>
                   <p>{phase.situation}</p>
                   {phase.goal && <small>阶段目标：{phase.goal}</small>}
@@ -598,7 +618,7 @@ function FormalWorkbench({
                   <div className="phase-event-list">
                     {phase.event_ids.map((eventId) => {
                       const event = viewData.events.find((item) => item.id === eventId);
-                      return event ? <div key={event.id}><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><strong>{event.title}</strong></div> : null;
+                      return event ? <button type="button" key={event.id} onClick={() => openWorkbenchItem("events", event.id)}><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><strong>{event.title}</strong></button> : null;
                     })}
                   </div>
                   {phase.outcome && <p><strong>结果：</strong>{phase.outcome}</p>}
@@ -614,11 +634,11 @@ function FormalWorkbench({
           {!searchQuery.trim() && view === "events" && (
             <div className="formal-card-list">
               {viewData.events.map((event) => (
-                <article className="formal-card event-formal-card" key={event.id}>
+                <article className={`formal-card event-formal-card${focusClass(event.id)}`} data-workbench-id={event.id} key={event.id}>
                   <header><div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div><i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "待抽查" : event.chapter_titles.join("、") || "章节待定"}</i></header>
                   <p>{event.summary}</p>
                   <div className="event-nature"><strong>{NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</strong><span>{event.boundary_note}</span></div>
-                  {event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}
+                  {event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={name}>{name}</span>; })}</div>}
                   {event.related_entities.length > 0 && <small>相关地点、组织或事物：{event.related_entities.join("、")}</small>}
                   {event.location && <small>发生地点：{event.location}</small>}
                   <dl className="event-detail-grid">
@@ -640,10 +660,10 @@ function FormalWorkbench({
             <div className="deep-analysis-view">
               <div className="workbench-callout"><strong>按原文推进顺序查看</strong><span>事件会标明真实发生、回忆、传闻、谎言、误解、推测或重复提及；多段依据不会被错误拼成一段连续正文。</span></div>
               <div className="event-timeline">
-                {viewData.events.map((event, index) => <article key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}{evidenceButtons(event.evidence_ids)}</div></article>)}
+                {viewData.events.map((event, index) => <article className={focusClass(event.id).trim()} data-workbench-id={event.id} key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={name}>{name}</span>; })}</div>}{evidenceButtons(event.evidence_ids)}</div></article>)}
                 {!viewData.events.length && <p className="result-empty">当前没有整理出事件时间线。</p>}
               </div>
-              {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><strong>{relation.source_title} → {relation.target_title}</strong><span>{EVENT_RELATION_LABELS[relation.relation] ?? "关联方式待核对"}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
+              {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><div className="relation-object-links"><button type="button" onClick={() => openWorkbenchItem("events", relation.source_event_id)}>{relation.source_title}</button><span>→</span><button type="button" onClick={() => openWorkbenchItem("events", relation.target_event_id)}>{relation.target_title}</button></div><span>{EVENT_RELATION_LABELS[relation.relation] ?? "关联方式待核对"}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
             </div>
           )}
 
@@ -666,7 +686,7 @@ function FormalWorkbench({
                     <header><div><span>第 {stateChapter} 章时仍然成立</span><h3>世界事实</h3></div><b>{pointInTime.facts.length}</b></header>
                     <div className="formal-card-list compact-list">
                       {pointInTime.facts.map((fact) => (
-                        <article className="formal-card" key={fact.id}>
+                        <article className={`formal-card${focusClass(fact.id)}`} data-workbench-id={fact.id} key={fact.id}>
                           <header><div><span>{FACT_TYPE_LABELS[fact.fact_type] ?? "事实"}</span><h3>{fact.subject}</h3></div><i className={fact.timeline_status === "CONFLICTING" || fact.status === "UNCERTAIN" ? "needs-review" : ""}>{FACT_TIMELINE_LABELS[fact.timeline_status] ?? "事实版本"}</i></header>
                           <p><strong>{fact.predicate}：</strong>{fact.value}</p>
                           <small>有效范围：第 {fact.valid_from_chapter} 章起{fact.valid_to_chapter ? `，至第 ${fact.valid_to_chapter} 章` : "，当前仍成立"}</small>
@@ -729,7 +749,7 @@ function FormalWorkbench({
             <div className="deep-analysis-view">
               {!viewData.deep_analysis ? <div className="workbench-callout"><strong>世界设定仍在整理</strong><span>系统完成证据校验后，会在这里显示地点、组织、能力、限制、代价和例外。</span></div> : <>
                 <div className="chapter-state-selector"><div><strong>按章节查看当时已经出现的设定</strong><span>后面的章节不会提前泄露到这个视图。</span></div><label htmlFor="world-state-chapter">截至</label><select id="world-state-chapter" value={stateChapter} onChange={(event) => setStateChapter(Number(event.target.value))}>{viewData.chapters.map((chapter) => <option value={chapter.ordinal} key={chapter.ordinal}>第 {chapter.ordinal} 章 · {chapter.title}</option>)}</select></div>
-                <section className="insight-group"><header><div><span>限制、代价和例外都会保留</span><h3>世界规则</h3></div><b>{pointInTime.world_rules.length}</b></header><div className="formal-card-list compact-list">{pointInTime.world_rules.map((rule) => <article className="formal-card" key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div><i>第 {rule.discovered_chapter} 章起可知</i></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>)}{!pointInTime.world_rules.length && <p className="result-empty">截至这一章，原文尚未明确建立世界规则。</p>}</div></section>
+                <section className="insight-group"><header><div><span>限制、代价和例外都会保留</span><h3>世界规则</h3></div><b>{pointInTime.world_rules.length}</b></header><div className="formal-card-list compact-list">{pointInTime.world_rules.map((rule) => <article className={`formal-card${focusClass(rule.id)}`} data-workbench-id={rule.id} key={rule.id}><header><div><span>世界设定</span><h3>{rule.title}</h3></div><i>第 {rule.discovered_chapter} 章起可知</i></header><p>{rule.description}</p>{rule.limitations.length > 0 && <small>限制：{rule.limitations.join("；")}</small>}{rule.costs.length > 0 && <small>代价：{rule.costs.join("；")}</small>}{rule.exceptions.length > 0 && <small>例外：{rule.exceptions.join("；")}</small>}{evidenceButtons(rule.evidence_ids)}</article>)}{!pointInTime.world_rules.length && <p className="result-empty">截至这一章，原文尚未明确建立世界规则。</p>}</div></section>
               </>}
             </div>
           )}
@@ -743,7 +763,7 @@ function FormalWorkbench({
                     <header><div><span>叙事承诺账本</span><h3>伏笔与回收</h3></div><b>{viewData.deep_analysis.foreshadowing.length}</b></header>
                     <div className="formal-card-list compact-list">
                       {viewData.deep_analysis.foreshadowing.map((item) => (
-                        <article className="formal-card" key={item.id}><header><div><span>{FORESHADOWING_LABELS[item.lifecycle] ?? "伏笔"}</span><h3>{item.title}</h3></div><i>第 {item.setup_chapter} 章提出</i></header><p>{item.setup}</p>{item.payoff_chapter && <small>第 {item.payoff_chapter} 章出现回收</small>}{evidenceButtons(item.evidence_ids)}{markProblemButton("FORESHADOWING", item.id, item.title)}</article>
+                        <article className={`formal-card${focusClass(item.id)}`} data-workbench-id={item.id} key={item.id}><header><div><span>{FORESHADOWING_LABELS[item.lifecycle] ?? "伏笔"}</span><h3>{item.title}</h3></div><i>第 {item.setup_chapter} 章提出</i></header><p>{item.setup}</p>{item.payoff_chapter && <small>第 {item.payoff_chapter} 章出现回收</small>}{evidenceButtons(item.evidence_ids)}{markProblemButton("FORESHADOWING", item.id, item.title)}</article>
                       ))}
                       {!viewData.deep_analysis.foreshadowing.length && <p className="result-empty">当前没有足够证据确认伏笔。</p>}
                     </div>
@@ -754,7 +774,7 @@ function FormalWorkbench({
 
           {!searchQuery.trim() && view === "conflicts" && (
             <div className="deep-analysis-view">
-              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>冲突分析仍在整理</strong><span>系统会整理参与者目标、障碍、赌注、升级过程和当前结果。</span></div> : <section className="insight-group"><header><div><span>目标、障碍与赌注</span><h3>冲突</h3></div><b>{viewData.deep_analysis.conflicts.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.conflicts.map((conflict) => <article className="formal-card" key={conflict.id}><header><div><span>{CONFLICT_TYPE_LABELS[conflict.conflict_type] ?? "冲突类型待核对"} · {conflict.status === "RESOLVED" ? "已经解决" : conflict.status === "ESCALATING" ? "正在升级" : conflict.status === "SHIFTED" ? "冲突转向" : conflict.status === "UNCERTAIN" ? "尚不确定" : "仍未解决"}</span><h3>{conflict.title}</h3></div></header>{conflict.participants.length > 0 && <small>参与者：{conflict.participants.join("、")}</small>}{conflict.goals && <p><strong>目标：</strong>{conflict.goals}</p>}{conflict.obstacles && <p><strong>障碍：</strong>{conflict.obstacles}</p>}{conflict.stakes && <p><strong>赌注：</strong>{conflict.stakes}</p>}{conflict.escalation.length > 0 && <small>升级过程：{conflict.escalation.join("；")}</small>}{conflict.resolution && <p><strong>当前结果：</strong>{conflict.resolution}</p>}{evidenceButtons(conflict.evidence_ids)}{markProblemButton("CONFLICT", conflict.id, conflict.title)}</article>)}{!viewData.deep_analysis.conflicts.length && <p className="result-empty">当前没有整理出证据充分的冲突。</p>}</div></section>}
+              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>冲突分析仍在整理</strong><span>系统会整理参与者目标、障碍、赌注、升级过程和当前结果。</span></div> : <section className="insight-group"><header><div><span>目标、障碍与赌注</span><h3>冲突</h3></div><b>{viewData.deep_analysis.conflicts.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.conflicts.map((conflict) => <article className={`formal-card${focusClass(conflict.id)}`} data-workbench-id={conflict.id} key={conflict.id}><header><div><span>{CONFLICT_TYPE_LABELS[conflict.conflict_type] ?? "冲突类型待核对"} · {conflict.status === "RESOLVED" ? "已经解决" : conflict.status === "ESCALATING" ? "正在升级" : conflict.status === "SHIFTED" ? "冲突转向" : conflict.status === "UNCERTAIN" ? "尚不确定" : "仍未解决"}</span><h3>{conflict.title}</h3></div></header>{conflict.participants.length > 0 && <small>参与者：{conflict.participants.join("、")}</small>}{conflict.goals && <p><strong>目标：</strong>{conflict.goals}</p>}{conflict.obstacles && <p><strong>障碍：</strong>{conflict.obstacles}</p>}{conflict.stakes && <p><strong>赌注：</strong>{conflict.stakes}</p>}{conflict.escalation.length > 0 && <small>升级过程：{conflict.escalation.join("；")}</small>}{conflict.resolution && <p><strong>当前结果：</strong>{conflict.resolution}</p>}{evidenceButtons(conflict.evidence_ids)}{markProblemButton("CONFLICT", conflict.id, conflict.title)}</article>)}{!viewData.deep_analysis.conflicts.length && <p className="result-empty">当前没有整理出证据充分的冲突。</p>}</div></section>}
             </div>
           )}
 
