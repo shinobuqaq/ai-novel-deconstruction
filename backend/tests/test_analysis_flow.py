@@ -56,6 +56,7 @@ ANALYSIS_OUTPUT = {
             "process": "林舟看见桌上放着一封写有自己名字的密信。",
             "outcome": "林舟确认有人专门给自己留下了密信。",
             "impact": "林舟决定追查寄信人的身份和目的。",
+            "discovery_routes": ["INFORMATION_CHANGE"],
             "evidence_quotes": ["桌上放着一封写着他名字的密信"],
             "confidence": 94,
         }
@@ -522,7 +523,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/artifacts/{completed_task['result_artifact_id']}/content"
     ).json()
     assert artifact["request"]["prompt_id"] == "entities_events"
-    assert artifact["request"]["prompt_version"] == "1.2.0"
+    assert artifact["request"]["prompt_version"] == "1.3.0"
     assert artifact["request"]["source_version_id"] == version_id
     assert len(artifact["request"]["input_sha256"]) == 64
     assert "参与事件的人物" in artifact["request"]["instructions"]
@@ -553,6 +554,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["events"][0]["trigger"] == "林舟回到旧宅并进入房间。"
     assert projection["events"][0]["outcome"] == "林舟确认有人专门给自己留下了密信。"
     assert projection["events"][0]["boundary_status"] == "EXACT_SPAN"
+    assert projection["events"][0]["discovery_routes"] == ["INFORMATION_CHANGE"]
     assert len(projection["phases"]) == 1
     assert projection["phases"][0]["event_ids"] == [projection["events"][0]["id"]]
     assert projection["phases"][0]["title"] == "雨夜归来与密信出现"

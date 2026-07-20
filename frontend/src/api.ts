@@ -298,6 +298,7 @@ export type WorkbenchEvent = {
   impact: string;
   boundary_status: "EXACT_SPAN" | "MULTI_SPAN" | "UNRESOLVED";
   boundary_note: string;
+  discovery_routes: Array<"ACTION" | "STATE_CHANGE" | "INFORMATION_CHANGE" | "RELATION_CHANGE" | "DOCUMENT_CONTEXT">;
 };
 
 export type WorkbenchPhase = {

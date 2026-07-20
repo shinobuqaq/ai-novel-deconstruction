@@ -283,9 +283,17 @@ def _event_candidate_groups(
         exact_key = (_normalize(event.title), event.event_type, narrative_mode)
         evidence_ids = set(_read_json(event.evidence_ids_json))
         matched_index: int | None = None
-        for index, (key, _items, group_evidence) in enumerate(groups):
+        for index, (key, items, group_evidence) in enumerate(groups):
             same_contract = key[1:] == exact_key[1:]
-            if key == exact_key or (same_contract and evidence_ids.intersection(group_evidence)):
+            overlaps_existing_span = any(
+                event.start_char < existing.end_char
+                and existing.start_char < event.end_char
+                for existing in items
+            )
+            if same_contract and (
+                evidence_ids.intersection(group_evidence)
+                or (key == exact_key and overlaps_existing_span)
+            ):
                 matched_index = index
                 break
         if matched_index is None:
@@ -471,6 +479,12 @@ def build_workbench_projection(
         canonical_id = f"cev_{_hash(f'{run_id}:{normalized_title}:{event_type}:{narrative_mode}')[:32]}"
         evidence_ids = _unique([item for event in group for item in _read_json(event.evidence_ids_json)])
         event_details = [_read_object(item.details_json) for item in group]
+        discovery_routes = _unique([
+            str(route)
+            for details in event_details
+            for route in details.get("discovery_routes", [])
+            if route
+        ])
 
         def longest_detail(name: str) -> str:
             values = [str(item.get(name) or "") for item in event_details]
@@ -533,6 +547,7 @@ def build_workbench_projection(
             "impact": longest_detail("impact"),
             "boundary_status": boundary_status,
             "boundary_note": boundary_note,
+            "discovery_routes": discovery_routes,
         })
     events.sort(key=lambda item: (item["start_char"], item["title"]))
 

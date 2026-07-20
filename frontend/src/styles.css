@@ -361,7 +361,7 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .chapter-state-selector > div { display: grid; gap: 3px; }
 .chapter-state-selector strong { color: #245d68; font-size: 12px; }
 .chapter-state-selector span, .chapter-state-selector label { color: #607580; font-size: 11px; }
-.chapter-state-selector select { min-height: 34px; padding: 5px 8px; border: 1px solid #b9cdd1; border-radius: 5px; background: #fff; color: #263843; }
+.chapter-state-selector select { min-height: 34px; min-width: 240px; padding: 5px 8px; border: 1px solid #b9cdd1; border-radius: 5px; background: #fff; color: #263843; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .search-results { display: grid; gap: 9px; }
 .search-results > header { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 7px; border-bottom: 1px solid #dce2e7; }
 .search-results > header h3 { margin: 0; font-size: 16px; }

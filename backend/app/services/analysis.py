@@ -48,7 +48,7 @@ DEEP_ANALYSIS_TASK_KIND = "analysis.deep_insights"
 HIERARCHICAL_DIGEST_TASK_KIND = "analysis.hierarchical_digest"
 ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
-ANALYSIS_PROMPT_VERSION = "1.2.0"
+ANALYSIS_PROMPT_VERSION = "1.3.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.6.0"
 DEEP_PROMPT_ID = "deep_insights"
@@ -671,6 +671,13 @@ class EventProposal(BaseModel):
     process: str = Field(default="", max_length=1000)
     outcome: str = Field(default="", max_length=800)
     impact: str = Field(default="", max_length=800)
+    discovery_routes: list[Literal[
+        "ACTION",
+        "STATE_CHANGE",
+        "INFORMATION_CHANGE",
+        "RELATION_CHANGE",
+        "DOCUMENT_CONTEXT",
+    ]] = Field(default_factory=list, max_length=5)
     evidence_quotes: list[str] = Field(min_length=1, max_length=3)
     confidence: int = Field(ge=0, le=100)
 
@@ -2555,6 +2562,7 @@ def persist_analysis_output(
                         "process": proposal.process.strip(),
                         "outcome": proposal.outcome.strip(),
                         "impact": proposal.impact.strip(),
+                        "discovery_routes": list(proposal.discovery_routes),
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -2571,14 +2579,27 @@ def persist_analysis_output(
         else:
             candidate.evidence_ids_json = _merge_json_list(candidate.evidence_ids_json, evidence_ids)
             candidate.participants_json = _merge_json_list(candidate.participants_json, proposal.participants)
+            try:
+                current_details = json.loads(candidate.details_json)
+            except json.JSONDecodeError:
+                current_details = {}
+            if not isinstance(current_details, dict):
+                current_details = {}
+            current_routes = current_details.get("discovery_routes", [])
+            if not isinstance(current_routes, list):
+                current_routes = []
             candidate.details_json = json.dumps(
                 {
                     "narrative_mode": proposal.narrative_mode,
-                    "location": proposal.location.strip(),
-                    "trigger": proposal.trigger.strip(),
-                    "process": proposal.process.strip(),
-                    "outcome": proposal.outcome.strip(),
-                    "impact": proposal.impact.strip(),
+                    "location": max(str(current_details.get("location") or ""), proposal.location.strip(), key=len),
+                    "trigger": max(str(current_details.get("trigger") or ""), proposal.trigger.strip(), key=len),
+                    "process": max(str(current_details.get("process") or ""), proposal.process.strip(), key=len),
+                    "outcome": max(str(current_details.get("outcome") or ""), proposal.outcome.strip(), key=len),
+                    "impact": max(str(current_details.get("impact") or ""), proposal.impact.strip(), key=len),
+                    "discovery_routes": sorted({
+                        *(str(value) for value in current_routes),
+                        *proposal.discovery_routes,
+                    }),
                 },
                 ensure_ascii=False,
                 sort_keys=True,

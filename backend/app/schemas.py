@@ -402,6 +402,7 @@ class WorkbenchEventRead(BaseModel):
     impact: str = ""
     boundary_status: str = "UNRESOLVED"
     boundary_note: str = ""
+    discovery_routes: list[str] = Field(default_factory=list)
 
 
 class WorkbenchPhaseRead(BaseModel):

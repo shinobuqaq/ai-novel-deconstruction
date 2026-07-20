@@ -1185,6 +1185,7 @@ def _workbench_target_ids(projection: dict) -> set[str]:
         "fact_versions",
         "state_changes",
         "actor_knowledge",
+        "knowledge_transfers",
         "world_rules",
         "foreshadowing",
         "conflicts",
@@ -1455,6 +1456,7 @@ def deep_analysis_diff(
         "fact_versions",
         "state_changes",
         "actor_knowledge",
+        "knowledge_transfers",
         "world_rules",
         "foreshadowing",
         "conflicts",
@@ -1469,6 +1471,8 @@ def deep_analysis_diff(
             return f"{item.get('subject')}:{item.get('aspect')}:{item.get('chapter_ordinal')}"
         if collection == "actor_knowledge":
             return f"{item.get('actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+        if collection == "knowledge_transfers":
+            return f"{item.get('source_actor')}:{item.get('target_actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
         if collection == "scene_analysis":
             return str(item.get("chapter_ordinal"))
         if collection == "claims":
@@ -1482,6 +1486,8 @@ def deep_analysis_diff(
             return f"{item.get('subject', '未知对象')}：{item.get('aspect', '状态变化')}"
         if collection == "actor_knowledge":
             return f"{item.get('actor', '未知人物')}：{item.get('proposition', '认知变化')}"
+        if collection == "knowledge_transfers":
+            return f"{item.get('source_actor', '未知来源')} → {item.get('target_actor', '未知人物')}：{item.get('proposition', '信息传播')}"
         if collection == "scene_analysis":
             return f"第 {item.get('chapter_ordinal', '?')} 章：{item.get('summary', '场景与节奏')}"
         if collection == "claims":

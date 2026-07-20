@@ -71,6 +71,14 @@ const EVENT_LABELS: Record<string, string> = {
   OTHER: "其他",
 };
 
+const EVENT_DISCOVERY_ROUTE_LABELS: Record<string, string> = {
+  ACTION: "明确行动",
+  STATE_CHANGE: "状态变化",
+  INFORMATION_CHANGE: "信息变化",
+  RELATION_CHANGE: "关系变化",
+  DOCUMENT_CONTEXT: "跨段上下文",
+};
+
 const NARRATIVE_MODE_LABELS: Record<string, string> = {
   ACTUAL: "真实发生",
   MEMORY: "回忆",
@@ -722,7 +730,7 @@ function FormalWorkbench({
                     {event.outcome && <div><dt>结果</dt><dd>{event.outcome}</dd></div>}
                     {event.impact && <div><dt>后续影响</dt><dd>{event.impact}</dd></div>}
                   </dl>
-                  <div className="character-meta"><span>{event.chapter_titles.join("、") || "章节待定"}</span><span>原文依据 {event.evidence_ids.length} 处</span><span>置信度 {event.confidence}%</span>{event.mention_count > 1 && <span>合并 {event.mention_count} 次提及</span>}</div>
+                  <div className="character-meta"><span>{event.chapter_titles.join("、") || "章节待定"}</span><span>原文依据 {event.evidence_ids.length} 处</span><span>{event.discovery_routes.length > 0 ? `发现路线：${event.discovery_routes.map((route) => EVENT_DISCOVERY_ROUTE_LABELS[route] ?? "语义识别").join("、")}` : "旧版本未记录发现路线"}</span><span>置信度 {event.confidence}%</span>{event.mention_count > 1 && <span>合并 {event.mention_count} 次提及</span>}</div>
                   {evidenceButtons(event.evidence_ids)}
                   {markProblemButton("EVENT", event.id, event.title)}
                 </article>

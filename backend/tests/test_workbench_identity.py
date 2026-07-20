@@ -38,6 +38,8 @@ def _event(
     *,
     event_type: str = "DISCOVERY",
     narrative_mode: str = "ACTUAL",
+    start_char: int = 10,
+    end_char: int = 20,
 ) -> EventCandidate:
     return EventCandidate(
         id=event_id,
@@ -50,8 +52,8 @@ def _event(
         participants_json='["林舟"]',
         details_json=json.dumps({"narrative_mode": narrative_mode}, ensure_ascii=False),
         evidence_ids_json=json.dumps(evidence_ids, ensure_ascii=False),
-        start_char=10,
-        end_char=20,
+        start_char=start_char,
+        end_char=end_char,
         status="VALID",
         confidence=80,
         created_by_task_id="tsk_identity",
@@ -158,6 +160,15 @@ def test_event_candidates_with_alternate_titles_need_shared_exact_evidence() -> 
     assert ["e1", "e2"] in grouped_ids
     assert ["e3"] in grouped_ids
     assert ["e4"] in grouped_ids
+
+
+def test_same_event_title_in_distant_passages_stays_as_separate_mentions() -> None:
+    groups = _event_candidate_groups([
+        _event("e1", "林舟收到密信", ["span-1"], start_char=10, end_char=20),
+        _event("e2", "林舟收到密信", ["span-2"], start_char=500, end_char=510),
+    ])
+
+    assert [sorted(item.id for item in group) for _key, group in groups] == [["e1"], ["e2"]]
 
 
 def test_fact_timeline_keeps_expiry_reestablishment_and_conflicts() -> None:
