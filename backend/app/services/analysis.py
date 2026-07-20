@@ -89,6 +89,44 @@ DEEP_ANALYSIS_COLLECTIONS = (
 )
 NARRATIVE_REVISION_TARGETS = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
 NARRATIVE_COMPONENTS = ("overview", "characters", "plot", "relations")
+
+_NARRATIVE_STRUCTURED_REFERENCE_KEYS = {
+    "evidence_ids",
+    "event_ids",
+    "trigger_event_id",
+    "source_event_id",
+    "target_event_id",
+}
+_INTERNAL_REFERENCE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:evd|cev|ent|rel|phs|nsy|dpa|tsk|att|art)_[A-Za-z0-9]{8,64}(?![A-Za-z0-9])"
+)
+
+
+def _narrative_internal_reference_paths(
+    value: object,
+    path: str = "返回结果",
+) -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _NARRATIVE_STRUCTURED_REFERENCE_KEYS:
+                continue
+            paths.extend(_narrative_internal_reference_paths(item, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            paths.extend(_narrative_internal_reference_paths(item, f"{path}[{index}]"))
+    elif isinstance(value, str) and _INTERNAL_REFERENCE_PATTERN.search(value):
+        paths.append(path)
+    return paths
+
+
+def _raise_for_narrative_internal_references(value: object) -> None:
+    leaked_reference_paths = _narrative_internal_reference_paths(value)
+    if leaked_reference_paths:
+        raise ValueError(
+            "NARRATIVE_INTERNAL_ID_LEAK:"
+            + ",".join(leaked_reference_paths[:10])
+        )
 NARRATIVE_COMPONENT_LABELS = {
     "overview": "故事总览",
     "characters": "人物定位",
@@ -2878,6 +2916,8 @@ def enqueue_narrative_synthesis(
     *,
     force: bool = False,
     revision_requests: list[dict] | None = None,
+    components: list[str] | None = None,
+    enqueue_deep_after_narrative: bool = True,
 ) -> Task | None:
     existing = session.scalar(
         select(Task)
@@ -2912,7 +2952,17 @@ def enqueue_narrative_synthesis(
         str(item.get("target_kind") or "").upper()
         for item in requests
     }
-    if not requests or "STORY" in target_kinds:
+    if components is not None:
+        selected_components = {
+            str(component)
+            for component in components
+            if str(component) in NARRATIVE_COMPONENTS
+        }
+        components = [
+            component for component in NARRATIVE_COMPONENTS
+            if component in selected_components
+        ]
+    elif not requests or "STORY" in target_kinds:
         components = list(NARRATIVE_COMPONENTS)
     else:
         selected_components: set[str] = set()
@@ -2945,6 +2995,7 @@ def enqueue_narrative_synthesis(
                 "narrative_batch_id": batch_id,
                 "narrative_component": component,
                 "narrative_components": components,
+                "enqueue_deep_after_narrative": enqueue_deep_after_narrative,
             },
             model_profile.max_retries + 1,
         )
@@ -3185,6 +3236,7 @@ def persist_narrative_synthesis(
         for item in foundation["characters"]
         for name in [item["name"], *item.get("aliases", [])]
     }
+    _raise_for_narrative_internal_references(output.model_dump(mode="json"))
     all_evidence_ids: list[str] = []
     for item in [output.story_overview, *output.character_roles, *output.character_relations, *output.narrative_phases, *output.event_relations]:
         all_evidence_ids.extend(item.evidence_ids)
@@ -3280,6 +3332,7 @@ def persist_narrative_synthesis(
         existing.payload_json = payload_json
         existing.created_by_task_id = task.id
         existing.created_by_attempt_id = attempt_id
+        existing.created_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(existing)
     return PersistedNarrativeSynthesis(existing.id)
@@ -3315,6 +3368,7 @@ def persist_narrative_component(
     component_payloads: dict[str, dict] = {
         current_component: output.model_dump(mode="json")
     }
+    _raise_for_narrative_internal_references(component_payloads[current_component])
     sibling_tasks = list(session.scalars(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)

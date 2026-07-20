@@ -153,6 +153,12 @@ def _deep_consistency_message(reason_code: str) -> str:
     )
 
 
+def _narrative_consistency_message(reason_code: str) -> str:
+    if reason_code.startswith("NARRATIVE_INTERNAL_ID_LEAK"):
+        return "在线 AI 把系统内部证据编号写进了给用户阅读的正文。系统已拒绝保存这份结果，并会自动重试。"
+    return "在线 AI 返回的故事结构引用了不存在的人物、事件或原文证据。系统会自动重试。"
+
+
 def _attempt_diagnostics(
     provider_payload: dict,
     response: ProviderResponse,
@@ -171,6 +177,9 @@ def _attempt_diagnostics(
         "input_chars": len(model_input),
         "output_chars": len(response.raw_text),
     }
+    request_input_path = provider_payload.get("request_input_path")
+    if isinstance(request_input_path, str) and request_input_path:
+        diagnostics["request_input_path"] = request_input_path
     repairs = response.parameters.get("json_repairs")
     if isinstance(repairs, list) and repairs:
         diagnostics["json_repairs"] = [str(item) for item in repairs[:10]]
@@ -209,6 +218,21 @@ def _persist_failed_model_output(
     path = task_dir / f"{claim.current_attempt_id}.txt"
     temporary_path = Path(f"{path}.tmp")
     temporary_path.write_text(raw_text, encoding="utf-8")
+    temporary_path.replace(path)
+    return path.relative_to(settings.workspace_dir).as_posix()
+
+
+def _persist_model_input(
+    settings: Settings,
+    claim: ClaimedTask,
+    input_text: str,
+) -> str:
+    diagnostics_root = settings.workspace_dir / "diagnostics" / "model-call-inputs"
+    task_dir = diagnostics_root / claim.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    path = task_dir / f"{claim.current_attempt_id}.txt"
+    temporary_path = Path(f"{path}.tmp")
+    temporary_path.write_text(input_text, encoding="utf-8")
     temporary_path.replace(path)
     return path.relative_to(settings.workspace_dir).as_posix()
 
@@ -360,9 +384,23 @@ async def execute_task(
         provider_payload["provider_route_index"] = route_index
         provider_payload["provider_service_id"] = str(route.get("service_id") or "")
         provider_payload["provider_model"] = str(route.get("model") or "")
+    if claim.kind in ANALYSIS_TASK_KINDS:
+        try:
+            provider_payload["request_input_path"] = _persist_model_input(
+                settings,
+                claim,
+                str(provider_payload.get("input") or ""),
+            )
+        except OSError:
+            # The online call can still proceed. Diagnostics will make the
+            # missing transcript explicit instead of breaking the analysis.
+            pass
     try:
         response = await provider.complete(task_kind=claim.kind, payload=provider_payload)
-    except ProviderError:
+    except ProviderError as exc:
+        if provider_payload.get("request_input_path"):
+            exc.diagnostics = dict(exc.diagnostics)
+            exc.diagnostics["request_input_path"] = provider_payload["request_input_path"]
         raise
     except Exception as exc:
         raise ProviderError(
@@ -528,15 +566,16 @@ async def execute_task(
                         output=narrative_output,
                     )
             except ValueError as exc:
+                reason_code = str(exc)
                 raise ProviderError(
                     code="PROVIDER_INVALID_OUTPUT",
-                    message="在线 AI 返回的故事结构引用了不存在的人物、事件或原文证据。",
+                    message=_narrative_consistency_message(reason_code),
                     retryable=True,
                     diagnostics=_attempt_diagnostics(
                         provider_payload,
                         response,
                         phase="reference_validation",
-                        reason_code=str(exc),
+                        reason_code=reason_code,
                     ),
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
@@ -651,6 +690,7 @@ async def execute_task(
                 ).hexdigest(),
                 "model_profile_id": provider_payload.get("model_profile_id"),
                 "context": provider_payload.get("context_manifest"),
+                "input": request_input,
             }
         if persisted_analysis is not None:
             artifact_payload["accepted"] = {
@@ -717,7 +757,7 @@ async def execute_task(
                     enqueue_narrative_synthesis(session, settings, run)
                 elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
                     payload_requests = payload.get("revision_requests", [])
-                    if payload_requests:
+                    if payload_requests and payload.get("enqueue_deep_after_narrative", True):
                         enqueue_deep_analysis(
                             session,
                             settings,

@@ -280,6 +280,27 @@ class StaticAnalysisProvider:
         )
 
 
+class InternalIdLeakProvider(StaticAnalysisProvider):
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        response = await super().complete(task_kind=task_kind, payload=payload)
+        if task_kind != "analysis.narrative_synthesis":
+            return response
+        parsed = json.loads(json.dumps(response.parsed, ensure_ascii=False))
+        if "story_overview" in parsed:
+            foundation = json.loads(payload["input"])
+            evidence_id = foundation["events"][0]["evidence_ids"][0]
+            parsed["story_overview"]["synopsis"] += f"[{evidence_id}]"
+        return ProviderResponse(
+            raw_text=json.dumps(parsed, ensure_ascii=False),
+            parsed=parsed,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            provider_id=response.provider_id,
+            model=response.model,
+            parameters=response.parameters,
+        )
+
+
 class AuthenticationFailureProvider:
     name = "openai"
 
@@ -755,6 +776,22 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         "SUCCEEDED",
         "SUCCEEDED",
     ]
+    narrative_stage = next(
+        item for item in diagnostics["stages"]
+        if item["key"] == "analysis.narrative_synthesis"
+    )
+    assert len(narrative_stage["calls"]) == 4
+    overview_call = next(
+        item for item in narrative_stage["calls"]
+        if item["component"] == "overview"
+    )
+    assert overview_call["component_label"] == "故事总览"
+    call_content = client.get(
+        f"/api/analysis-runs/{run['id']}/attempts/{overview_call['attempt_id']}/content"
+    )
+    assert call_content.status_code == 200
+    assert "requested_component" in call_content.json()["input_text"]
+    assert "story_overview" in call_content.json()["output_text"]
 
     state_at_chapter = client.get(
         f"/api/analysis-runs/{run['id']}/state-at-chapter?chapter_ordinal=2"
@@ -776,6 +813,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert artifact["request"]["source_version_id"] == version_id
     assert len(artifact["request"]["input_sha256"]) == 64
     assert "参与事件的人物" in artifact["request"]["instructions"]
+    assert "林舟推开旧宅的木门" in artifact["request"]["input"]
 
     entities = client.get(f"/api/analysis-runs/{run['id']}/entities").json()
     events = client.get(f"/api/analysis-runs/{run['id']}/events").json()
@@ -1150,6 +1188,168 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
     assert repaired_payload["story_overview"]["development_path"]
     assert repaired_payload["story_overview"]["turning_points"]
     assert repaired_payload["story_overview"]["current_result"]
+
+
+def test_narrative_component_can_be_retried_without_rebuilding_other_sections(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    run = client.post(
+        f"/api/source-versions/{imported['version']['id']}/analysis/entities-events/start"
+    ).json()
+    registry = ProviderRegistry([StaticAnalysisProvider()])
+    for index in range(5):
+        with client.app.state.session_factory() as session:
+            claim = claim_next_task(
+                session, worker_id=f"component-retry-setup-{index}", lease_seconds=60
+            )
+        assert claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            claim,
+            registry,
+        )
+
+    with client.app.state.session_factory() as session:
+        synthesis = session.scalar(
+            select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run["id"])
+        )
+        assert synthesis is not None
+        payload = json.loads(synthesis.payload_json)
+        payload["story_overview"]["synopsis"] += "[evd_1234567890abcdef1234567890abcdef]"
+        synthesis.payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        session.commit()
+
+    cleaned = client.get(f"/api/analysis-runs/{run['id']}/workbench").json()
+    assert "evd_" not in cleaned["story_overview"]["synopsis"]
+
+    retry = client.post(
+        f"/api/analysis-runs/{run['id']}/narrative/components/overview/retry"
+    )
+    assert retry.status_code == 202
+    with client.app.state.session_factory() as session:
+        pending = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.status == TaskStatus.PENDING.value,
+            )
+        ))
+    assert len(pending) == 1
+    retry_payload = json.loads(pending[0].payload_json)
+    assert retry_payload["narrative_component"] == "overview"
+    assert retry_payload["narrative_components"] == ["overview"]
+    assert retry_payload["enqueue_deep_after_narrative"] is False
+
+    with client.app.state.session_factory() as session:
+        retry_claim = claim_next_task(
+            session, worker_id="component-retry-worker", lease_seconds=60
+        )
+    assert retry_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        retry_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        deep_tasks = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.kind == "analysis.deep_insights",
+            )
+        ))
+    assert deep_tasks == []
+    refreshed = client.get(f"/api/analysis-runs/{run['id']}/workbench").json()
+    assert refreshed["story_overview"]["synopsis"].startswith("林舟回到旧宅")
+
+    assert client.post(f"/api/analysis-runs/{run['id']}/deep/start").status_code == 202
+    with client.app.state.session_factory() as session:
+        deep_claim = claim_next_task(
+            session, worker_id="component-retry-initial-deep", lease_seconds=60
+        )
+    assert deep_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        deep_claim,
+        registry,
+    )
+    assert client.get(f"/api/analysis-runs/{run['id']}/workbench").json()["deep_status"] == "READY"
+
+    second_retry = client.post(
+        f"/api/analysis-runs/{run['id']}/narrative/components/plot/retry"
+    )
+    assert second_retry.status_code == 202
+    with client.app.state.session_factory() as session:
+        plot_retry_claim = claim_next_task(
+            session, worker_id="component-retry-plot-worker", lease_seconds=60
+        )
+    assert plot_retry_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        plot_retry_claim,
+        registry,
+    )
+    outdated = client.get(f"/api/analysis-runs/{run['id']}/workbench").json()
+    assert outdated["deep_status"] == "OUTDATED"
+    restart_deep = client.post(f"/api/analysis-runs/{run['id']}/deep/start")
+    assert restart_deep.status_code == 202
+    with client.app.state.session_factory() as session:
+        pending_deep = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.kind == "analysis.deep_insights",
+                Task.status == TaskStatus.PENDING.value,
+            )
+        ))
+    assert len(pending_deep) == 1
+
+
+def test_internal_ids_in_narrative_prose_are_rejected_before_publish(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    run = client.post(
+        f"/api/source-versions/{imported['version']['id']}/analysis/entities-events/start"
+    ).json()
+    registry = ProviderRegistry([InternalIdLeakProvider()])
+    with client.app.state.session_factory() as session:
+        foundation_claim = claim_next_task(
+            session, worker_id="id-leak-foundation", lease_seconds=60
+        )
+    assert foundation_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        foundation_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        narrative_claim = claim_next_task(
+            session, worker_id="id-leak-overview", lease_seconds=60
+        )
+    assert narrative_claim is not None
+    assert json.loads(narrative_claim.payload_json)["narrative_component"] == "overview"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        narrative_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        task = session.get(Task, narrative_claim.id)
+        assert task is not None
+        assert task.status == TaskStatus.RETRY_WAIT.value
+        assert "内部证据编号" in (task.last_error_message or "")
+        assert session.scalar(
+            select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run["id"])
+        ) is None
 
 
 def test_running_or_stale_attempt_candidates_are_not_visible(client) -> None:

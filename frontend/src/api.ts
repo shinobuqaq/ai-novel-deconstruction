@@ -202,6 +202,43 @@ export type AnalysisStageDiagnostic = {
   omitted_material_chars: number;
   omitted_material_reasons: Record<string, number>;
   latest_error: string | null;
+  calls: AnalysisCallDiagnostic[];
+};
+
+export type AnalysisCallDiagnostic = {
+  attempt_id: string;
+  task_id: string;
+  task_kind: string;
+  component: "overview" | "characters" | "plot" | "relations" | null;
+  component_label: string | null;
+  attempt_no: number;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  provider_name: string | null;
+  model: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  selected_material_count: number;
+  selected_material_chars: number;
+  omitted_material_count: number;
+  omitted_material_chars: number;
+  omitted_material_reasons: Record<string, number>;
+  error_message: string | null;
+  result_artifact_id: string | null;
+  has_input_content: boolean;
+  has_output_content: boolean;
+  can_retry_component: boolean;
+};
+
+export type AnalysisCallContent = {
+  attempt_id: string;
+  input_text: string | null;
+  output_text: string | null;
+  input_note: string | null;
+  output_note: string | null;
 };
 
 export type AnalysisRunDiagnostics = {
@@ -554,7 +591,7 @@ export type Workbench = {
   story_overview: WorkbenchStoryOverview | null;
   character_relations: WorkbenchCharacterRelation[];
   event_relations: WorkbenchEventRelation[];
-  deep_status: "READY" | "NOT_GENERATED";
+  deep_status: "READY" | "OUTDATED" | "NOT_GENERATED";
   deep_analysis: WorkbenchDeepAnalysis | null;
   deep_revision: number | null;
   chapters: WorkbenchChapterRef[];
@@ -701,6 +738,8 @@ export const api = {
     request<AnalysisCostEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
   analysisDiagnostics: (runId: string) =>
     request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
+  analysisCallContent: (runId: string, attemptId: string) =>
+    request<AnalysisCallContent>(`/api/analysis-runs/${runId}/attempts/${attemptId}/content`),
   confirmProviderSwitch: (runId: string, decision: "SWITCH" | "RETRY_CURRENT" | "STOP") =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/provider-switch`, {
       method: "POST",
@@ -731,6 +770,8 @@ export const api = {
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/recompute`, { method: "POST" }),
   repairNarrativeAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/repair`, { method: "POST" }),
+  retryNarrativeComponent: (runId: string, component: "overview" | "characters" | "plot" | "relations") =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/components/${component}/retry`, { method: "POST" }),
   deepAnalysisRevisions: (runId: string) =>
     request<DeepAnalysisRevision[]>(`/api/analysis-runs/${runId}/deep/revisions`),
   deepAnalysisDiff: (runId: string) =>

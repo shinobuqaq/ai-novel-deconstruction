@@ -45,6 +45,8 @@ from .repositories import (
 )
 from .schemas import (
     ArtifactRead,
+    AnalysisCallContentRead,
+    AnalysisCallDiagnosticRead,
     AnalysisRunRead,
     AnalysisCostEstimateRead,
     AnalysisRunDiagnosticsRead,
@@ -352,6 +354,13 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.deep_insights", "事实与核心分析"),
 )
 
+_NARRATIVE_COMPONENT_LABELS = {
+    "overview": "故事总览",
+    "characters": "人物档案",
+    "plot": "剧情阶段",
+    "relations": "人物与事件关系",
+}
+
 
 def _json_dict(value: str) -> dict:
     try:
@@ -465,6 +474,51 @@ def _analysis_run_diagnostics(
             if failed_attempts and stage_status != "SUCCEEDED"
             else None
         )
+        call_rows: list[AnalysisCallDiagnosticRead] = []
+        for task in stage_tasks:
+            task_payload = _json_dict(task.payload_json)
+            component = str(task_payload.get("narrative_component") or "") or None
+            for attempt in attempts_by_task.get(task.id, []):
+                attempt_usage = _json_dict(attempt.usage_json)
+                attempt_diagnostics = _json_dict(attempt.diagnostics_json)
+                context = attempt_diagnostics.get("context")
+                if not isinstance(context, dict):
+                    context = {}
+                artifact = session.scalar(
+                    select(Artifact).where(Artifact.created_by_attempt_id == attempt.id)
+                )
+                input_path = attempt_diagnostics.get("request_input_path")
+                output_path = attempt_diagnostics.get("raw_output_path")
+                call_rows.append(AnalysisCallDiagnosticRead(
+                    attempt_id=attempt.id,
+                    task_id=task.id,
+                    task_kind=task.kind,
+                    component=component,
+                    component_label=_NARRATIVE_COMPONENT_LABELS.get(component or ""),
+                    attempt_no=attempt.attempt_no,
+                    status=attempt.status,
+                    started_at=_as_utc(attempt.started_at),
+                    finished_at=_as_utc(attempt.finished_at),
+                    provider_name=attempt.provider_name,
+                    model=str(attempt_diagnostics.get("model") or "") or None,
+                    prompt_tokens=int(attempt_usage.get("prompt_tokens") or 0),
+                    completion_tokens=int(attempt_usage.get("completion_tokens") or 0),
+                    input_chars=int(attempt_diagnostics.get("input_chars") or 0),
+                    output_chars=int(attempt_diagnostics.get("output_chars") or 0),
+                    selected_material_count=int(context.get("selected_count") or 0),
+                    selected_material_chars=int(context.get("selected_chars") or 0),
+                    omitted_material_count=int(context.get("omitted_count") or 0),
+                    omitted_material_chars=int(context.get("omitted_chars") or 0),
+                    omitted_material_reasons={
+                        str(reason): int(count or 0)
+                        for reason, count in (context.get("omitted_reasons") or {}).items()
+                    },
+                    error_message=attempt.error_message,
+                    result_artifact_id=artifact.id if artifact is not None else None,
+                    has_input_content=bool(input_path or artifact is not None),
+                    has_output_content=bool(output_path or artifact is not None),
+                    can_retry_component=bool(component),
+                ))
         stage_rows.append(AnalysisStageDiagnosticRead(
             key=kind,
             label=label,
@@ -485,6 +539,7 @@ def _analysis_run_diagnostics(
             omitted_material_chars=sum(int(item.get("omitted_chars") or 0) for item in context_rows),
             omitted_material_reasons=omitted_reasons,
             latest_error=latest_error,
+            calls=call_rows,
         ))
 
     current = next(
@@ -1000,6 +1055,81 @@ def analysis_run_diagnostics_get(
     return _analysis_run_diagnostics(session, run)
 
 
+def _workspace_diagnostic_text(settings: Settings, relative_path: object) -> str | None:
+    if not isinstance(relative_path, str) or not relative_path:
+        return None
+    root = settings.workspace_dir.resolve()
+    path = (root / Path(relative_path)).resolve()
+    if path != root and root not in path.parents:
+        return None
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        return None
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/attempts/{attempt_id}/content",
+    response_model=AnalysisCallContentRead,
+)
+def analysis_call_content_get(
+    run_id: str,
+    attempt_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisCallContentRead:
+    attempt = session.scalar(
+        select(TaskAttempt)
+        .join(Task, Task.id == TaskAttempt.task_id)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(AnalysisRunTask.run_id == run_id, TaskAttempt.id == attempt_id)
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_ATTEMPT_NOT_FOUND")
+    settings: Settings = request.app.state.settings
+    diagnostics = _json_dict(attempt.diagnostics_json)
+    input_text = _workspace_diagnostic_text(settings, diagnostics.get("request_input_path"))
+    output_text = _workspace_diagnostic_text(settings, diagnostics.get("raw_output_path"))
+    artifact = session.scalar(
+        select(Artifact).where(Artifact.created_by_attempt_id == attempt.id)
+    )
+    if artifact is not None:
+        blob = session.get(ArtifactBlob, artifact.blob_id)
+        if blob is not None and blob.status == ArtifactStatus.READY.value:
+            raw = _workspace_diagnostic_text(settings, blob.relative_path)
+            if raw is not None:
+                try:
+                    artifact_payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    artifact_payload = {}
+                request_payload = artifact_payload.get("request")
+                if input_text is None and isinstance(request_payload, dict):
+                    stored_input = request_payload.get("input")
+                    if isinstance(stored_input, str):
+                        input_text = stored_input
+                if output_text is None and "response" in artifact_payload:
+                    output_text = json.dumps(
+                        artifact_payload["response"],
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+    return AnalysisCallContentRead(
+        attempt_id=attempt.id,
+        input_text=input_text,
+        output_text=output_text,
+        input_note=(
+            None
+            if input_text is not None
+            else "这次历史调用只保存了输入长度和校验指纹，无法还原当时的完整输入；从现在开始的新调用会保存完整输入。"
+        ),
+        output_note=(
+            None
+            if output_text is not None
+            else "这次调用没有留下可读取的模型输出，可能在收到响应前就已失败。"
+        ),
+    )
+
+
 @router.get(
     "/api/analysis-runs/{run_id}/entities",
     response_model=list[EntityCandidateRead],
@@ -1136,6 +1266,77 @@ def narrative_synthesis_start(
 
 
 @router.post(
+    "/api/analysis-runs/{run_id}/narrative/components/{component}/retry",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def narrative_component_retry(
+    run_id: str,
+    component: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    component = component.lower()
+    if component not in _NARRATIVE_COMPONENT_LABELS:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NARRATIVE_COMPONENT_NOT_FOUND", "message": "没有找到这个故事结构版块。"},
+        )
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+    )
+    if synthesis is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "故事结构还没有形成可用版本，暂时不能只重做其中一个版块。"},
+        )
+    active = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind.in_(("analysis.narrative_synthesis", "analysis.deep_insights")),
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ANALYSIS_UPDATE_RUNNING", "message": "当前还有分析任务正在处理，请完成或停止后再单独重做这个版块。"},
+        )
+    label = _NARRATIVE_COMPONENT_LABELS[component]
+    task = enqueue_narrative_synthesis(
+        session,
+        request.app.state.settings,
+        run,
+        force=True,
+        revision_requests=[{
+            "target_kind": component.upper(),
+            "target_id": None,
+            "target_label": label,
+            "category": "REGENERATE_COMPONENT",
+            "note": f"只重新生成{label}，保留其他已经成功的故事结构版块。",
+        }],
+        components=[component],
+        enqueue_deep_after_narrative=False,
+    )
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "基础人物和事件尚未准备完成，暂时不能重新生成。"},
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
     "/api/analysis-runs/{run_id}/narrative/repair",
     response_model=AnalysisRunRead,
     status_code=status.HTTP_202_ACCEPTED,
@@ -1233,7 +1434,34 @@ def deep_analysis_start(
     run = session.get(AnalysisRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
-    task = enqueue_deep_analysis(session, request.app.state.settings, run)
+    synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run_id)
+    )
+    latest_deep = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    force = bool(
+        synthesis is not None
+        and latest_deep is not None
+        and synthesis.created_at > latest_deep.created_at
+    )
+    task = enqueue_deep_analysis(
+        session,
+        request.app.state.settings,
+        run,
+        force=force,
+        revision_requests=([
+            {
+                "target_kind": "STORY",
+                "target_id": None,
+                "target_label": "更新后的故事结构",
+                "category": "NARRATIVE_UPDATED",
+                "note": "故事结构已有局部更新，请基于最新版本重新生成深层拆解。",
+            }
+        ] if force else None),
+    )
     if task is None:
         raise HTTPException(
             status_code=409,

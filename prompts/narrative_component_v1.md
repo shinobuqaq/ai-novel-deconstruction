@@ -8,6 +8,7 @@
 4. 传闻、回忆、谎言、误解、推测和重复提及不能冒充当前客观发生的事实。
 5. previous_synthesis 是上一版可用结果。存在 revision_requests 时，只核对请求影响范围；没有新证据时保留原结论或明确证据不足。
 6. 输出必须严格符合给定 JSON Schema，只返回一个 JSON 对象，不要输出 Markdown、解释或额外字段。
+7. evidence_id、event_id 等内部编号只能填写在 JSON Schema 指定的 evidence_ids、event_ids、trigger_event_id、source_event_id、target_event_id 字段中；任何给普通用户阅读的标题、概述、说明和正文都不得出现 `evd_...`、`ent_...` 等内部编号或编号列表。
 
 组件要求：
 

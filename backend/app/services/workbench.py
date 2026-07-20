@@ -52,6 +52,35 @@ def _unique_events(values: list[dict]) -> list[dict]:
     return result
 
 
+_INTERNAL_REFERENCE_TOKEN = r"(?:evd|cev|ent|rel|phs|nsy|dpa|tsk|att|art)_[A-Za-z0-9]{8,64}"
+_INTERNAL_REFERENCE_LIST = re.compile(
+    rf"\s*[\[（(]\s*{_INTERNAL_REFERENCE_TOKEN}(?:\s*[,，]\s*{_INTERNAL_REFERENCE_TOKEN})*\s*[\]）)]"
+)
+_INTERNAL_REFERENCE = re.compile(rf"(?<![A-Za-z0-9]){_INTERNAL_REFERENCE_TOKEN}(?![A-Za-z0-9])")
+_STRUCTURED_REFERENCE_KEYS = {
+    "evidence_ids", "event_ids", "trigger_event_id", "source_event_id", "target_event_id",
+}
+
+
+def _clean_legacy_narrative_references(value: object, key: str | None = None) -> object:
+    """Hide internal IDs leaked by older model outputs without altering real references."""
+    if key in _STRUCTURED_REFERENCE_KEYS:
+        return value
+    if isinstance(value, dict):
+        return {
+            item_key: _clean_legacy_narrative_references(item, item_key)
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_clean_legacy_narrative_references(item) for item in value]
+    if isinstance(value, str):
+        cleaned = _INTERNAL_REFERENCE_LIST.sub("", value)
+        cleaned = _INTERNAL_REFERENCE.sub("", cleaned)
+        cleaned = re.sub(r"[ \t]+([，。；：！？])", r"\1", cleaned)
+        return cleaned.strip()
+    return value
+
+
 _GENERIC_PERSON_ALIASES = {
     "他", "她", "它", "此人", "那人", "男人", "女人", "少年", "少女",
     "老人", "老师", "先生", "女士", "同学", "老板", "经理", "主任",
@@ -649,7 +678,9 @@ def build_workbench_projection(
         event_reference_map[legacy_id] = event
     if synthesis is not None:
         narrative_status = "READY"
-        payload = json.loads(synthesis.payload_json)
+        payload = _clean_legacy_narrative_references(
+            json.loads(synthesis.payload_json)
+        )
         story_overview = payload.get("story_overview")
         role_by_name = {
             _normalize(item.get("name", "")): item
@@ -736,7 +767,13 @@ def build_workbench_projection(
     deep_payload = None
     deep_revision = None
     if deep_analysis is not None:
-        deep_status = "READY"
+        deep_status = (
+            "OUTDATED"
+            if synthesis is not None
+            and deep_revision is None
+            and synthesis.created_at > deep_analysis.created_at
+            else "READY"
+        )
         deep_payload = json.loads(deep_analysis.payload_json)
         deep_revision = deep_analysis.revision_no
         _annotate_fact_timeline(deep_payload.get("fact_versions", []))

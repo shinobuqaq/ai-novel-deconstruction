@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AnalysisCallContent,
   AnalysisIssue,
   AnalysisCostEstimate,
   AnalysisRun,
@@ -207,6 +208,10 @@ const ANALYSIS_STAGE_STATUS_LABELS: Record<string, string> = {
   SUCCEEDED: "已经完成",
   FAILED: "处理失败",
   CANCELLED: "已经取消",
+  RETRYABLE_FAILED: "本次失败，系统已自动重试",
+  PERMANENT_FAILED: "处理失败",
+  LEASE_EXPIRED: "运行中断，系统已接续",
+  STALE: "旧尝试，结果未采用",
 };
 
 type WorkbenchView =
@@ -962,7 +967,7 @@ function FormalWorkbench({
         ) : viewData.narrative_status !== "READY" ? (
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
-          <><div><strong>第一阶段结果可以确认</strong><span>请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : "确认故事结构并继续"}</button></>
+          <><div><strong>{viewData.deep_status === "OUTDATED" ? "故事结构已经更新" : "第一阶段结果可以确认"}</strong><span>{viewData.deep_status === "OUTDATED" ? "当前深层拆解仍对应上一版故事结构，请基于最新总览、人物、剧情和关系重新生成。" : "请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。"}</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : viewData.deep_status === "OUTDATED" ? "基于最新故事结构重新生成" : "确认故事结构并继续"}</button></>
         ) : (
           <><div><strong>核心拆解已经生成</strong><span>所有重要结论均保留原文依据；证据不足或存在反证的内容会明确标出。</span></div>{analysisStatus === "REVIEW" && <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirmAnalysis}>{busy === "confirm-analysis" ? "正在保存确认" : "确认本次完整拆解"}</button>}</>
         )}
@@ -986,6 +991,8 @@ export default function ProductWorkbench() {
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
   const [analysisDiagnostics, setAnalysisDiagnostics] = useState<AnalysisRunDiagnostics | null>(null);
+  const [analysisCallContents, setAnalysisCallContents] = useState<Record<string, AnalysisCallContent>>({});
+  const [loadingCallContent, setLoadingCallContent] = useState("");
   const [analysisEstimate, setAnalysisEstimate] = useState<AnalysisCostEstimate | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
@@ -999,6 +1006,7 @@ export default function ProductWorkbench() {
     setEvidenceContext(null);
     if (!run) {
       setAnalysisDiagnostics(null);
+      setAnalysisCallContents({});
       return;
     }
     setAnalysisDiagnostics(await api.analysisDiagnostics(run.id));
@@ -1019,6 +1027,7 @@ export default function ProductWorkbench() {
     setChapterContent(null);
     setAnalysisRun(null);
     setAnalysisDiagnostics(null);
+    setAnalysisCallContents({});
     setAnalysisEstimate(null);
     setWorkbench(null);
     setEvidenceContext(null);
@@ -1256,6 +1265,34 @@ export default function ProductWorkbench() {
       setBusy("repair-narrative");
       setError("");
       await loadAnalysisResults(await api.repairNarrativeAnalysis(analysisRun.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleLoadCallContent(attemptId: string) {
+    if (!analysisRun || analysisCallContents[attemptId] || loadingCallContent === attemptId) return;
+    try {
+      setLoadingCallContent(attemptId);
+      setError("");
+      const content = await api.analysisCallContent(analysisRun.id, attemptId);
+      setAnalysisCallContents((current) => ({ ...current, [attemptId]: content }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoadingCallContent("");
+    }
+  }
+
+  async function handleRetryNarrativeComponent(component: "overview" | "characters" | "plot" | "relations", label: string) {
+    if (!analysisRun) return;
+    if (!window.confirm(`将只重新生成“${label}”，其他已经成功的版块不会重做。这个版块会发起新的在线 AI 请求；如果服务失败或输出不合格，系统可能按当前设置自动重试，因此可能产生少量费用。是否继续？`)) return;
+    try {
+      setBusy(`retry-component-${component}`);
+      setError("");
+      await loadAnalysisResults(await api.retryNarrativeComponent(analysisRun.id, component));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1665,30 +1702,87 @@ export default function ProductWorkbench() {
                             </header>
                             <div className="analysis-stage-list">
                               {analysisDiagnostics.stages.map((stage, index) => (
-                                <article className={stage.status.toLowerCase()} key={stage.key}>
-                                  <b>{index + 1}</b>
-                                  <div>
-                                    <strong>{stage.label}</strong>
-                                    <span>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</span>
-                                    {stage.selected_material_count > 0 && (
-                                      <small>
-                                        {stage.attempt_count} 次请求累计放入 {formatNumber(stage.selected_material_count)} 份输入片段
-                                        {stage.omitted_material_count > 0
-                                          ? `；另有 ${formatNumber(stage.omitted_material_count)} 份因对应请求长度有限而未放入`
-                                          : "；候选输入片段均已放入对应请求"}
-                                      </small>
-                                    )}
-                                    {stage.latest_error && <small>{stage.latest_error}</small>}
+                                <details className={`analysis-stage-detail ${stage.status.toLowerCase()}`} key={stage.key}>
+                                  <summary>
+                                    <b>{index + 1}</b>
+                                    <span>
+                                      <strong>{stage.label}</strong>
+                                      <small>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</small>
+                                    </span>
+                                  </summary>
+                                  <div className="analysis-stage-body">
+                                    {stage.latest_error && <p className="analysis-call-error">{stage.latest_error}</p>}
+                                    {stage.calls.length === 0 ? (
+                                      <p>这个阶段还没有调用在线 AI。</p>
+                                    ) : stage.calls.map((call, callIndex) => {
+                                      const content = analysisCallContents[call.attempt_id];
+                                      const callLabel = call.component_label || `${stage.label}第 ${callIndex + 1} 批`;
+                                      return (
+                                        <details className="analysis-call-detail" key={call.attempt_id}>
+                                          <summary>
+                                            <span>
+                                              <strong>第 {callIndex + 1} 次 · {callLabel}</strong>
+                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}</small>
+                                            </span>
+                                            <span className="analysis-call-totals">
+                                              <small>{call.prompt_tokens || call.input_chars ? `输入约 ${formatNumber(call.prompt_tokens)} 令牌 / ${formatNumber(call.input_chars)} 字符` : "输入规模未记录"}</small>
+                                              <small>{call.completion_tokens || call.output_chars ? `输出约 ${formatNumber(call.completion_tokens)} 令牌 / ${formatNumber(call.output_chars)} 字符` : "输出规模未记录"}</small>
+                                            </span>
+                                          </summary>
+                                          <div className="analysis-call-body">
+                                            {call.selected_material_count > 0 && (
+                                              <p className="material-budget-explanation">
+                                                这次调用放入了 <strong>{formatNumber(call.selected_material_count)}</strong> 份候选输入片段
+                                                {call.omitted_material_count > 0
+                                                  ? `，另有 ${formatNumber(call.omitted_material_count)} 份低优先级片段因本次输入长度有限而未放入。`
+                                                  : "，候选片段均已放入。"}
+                                                这不代表原文被删除，也不代表对应章节没有分析。
+                                              </p>
+                                            )}
+                                            {call.error_message && <p className="analysis-call-error">{call.error_message}</p>}
+                                            <details
+                                              className="analysis-call-transcript"
+                                              onToggle={(event) => {
+                                                if (event.currentTarget.open) void handleLoadCallContent(call.attempt_id);
+                                              }}
+                                            >
+                                              <summary>展开查看这次调用的具体输入和输出</summary>
+                                              {loadingCallContent === call.attempt_id && !content ? (
+                                                <p>正在读取调用记录……</p>
+                                              ) : content ? (
+                                                <div className="analysis-transcript-grid">
+                                                  <section>
+                                                    <h4>实际输入</h4>
+                                                    {content.input_text !== null ? <pre>{content.input_text}</pre> : <p>{content.input_note}</p>}
+                                                  </section>
+                                                  <section>
+                                                    <h4>实际输出</h4>
+                                                    {content.output_text !== null ? <pre>{content.output_text}</pre> : <p>{content.output_note}</p>}
+                                                  </section>
+                                                </div>
+                                              ) : null}
+                                            </details>
+                                            {call.can_retry_component && call.component && call.status === "SUCCEEDED" && (
+                                              <div className="analysis-call-actions">
+                                                <button
+                                                  type="button"
+                                                  className="secondary-button"
+                                                  disabled={Boolean(busy)}
+                                                  onClick={() => void handleRetryNarrativeComponent(call.component!, callLabel)}
+                                                >
+                                                  {busy === `retry-component-${call.component}` ? `正在重新生成${callLabel}` : `只重新生成${callLabel}`}
+                                                </button>
+                                                <small>只为这一版块新建任务，其他成功结果保持不变；任务内仍按当前设置处理失败重试。</small>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </details>
+                                      );
+                                    })}
                                   </div>
-                                </article>
+                                </details>
                               ))}
                             </div>
-                            {analysisDiagnostics.stages.some((stage) => stage.selected_material_count > 0) && (
-                              <p className="material-budget-explanation">
-                                <strong>这里的“输入片段”不是删除原文：</strong>
-                                它包括章节导航、人物、事件、设定和原文证据等模型输入。数字按每次请求累计，同一片段可能在不同请求或重试中重复计算；未放入某次请求，只表示该次请求装不下全部候选片段，不代表整章没有分析或原文被丢弃。
-                              </p>
-                            )}
                           </section>
                         )}
 

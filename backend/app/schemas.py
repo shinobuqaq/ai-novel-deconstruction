@@ -298,6 +298,42 @@ class AnalysisRunRead(BaseModel):
     provider_confirmation: ProviderConfirmationRead | None = None
 
 
+class AnalysisCallDiagnosticRead(BaseModel):
+    attempt_id: str
+    task_id: str
+    task_kind: str
+    component: str | None = None
+    component_label: str | None = None
+    attempt_no: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    provider_name: str | None = None
+    model: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    input_chars: int = 0
+    output_chars: int = 0
+    selected_material_count: int = 0
+    selected_material_chars: int = 0
+    omitted_material_count: int = 0
+    omitted_material_chars: int = 0
+    omitted_material_reasons: dict[str, int] = Field(default_factory=dict)
+    error_message: str | None = None
+    result_artifact_id: str | None = None
+    has_input_content: bool = False
+    has_output_content: bool = False
+    can_retry_component: bool = False
+
+
+class AnalysisCallContentRead(BaseModel):
+    attempt_id: str
+    input_text: str | None = None
+    output_text: str | None = None
+    input_note: str | None = None
+    output_note: str | None = None
+
+
 class AnalysisStageDiagnosticRead(BaseModel):
     key: str
     label: str
@@ -318,6 +354,7 @@ class AnalysisStageDiagnosticRead(BaseModel):
     omitted_material_chars: int = 0
     omitted_material_reasons: dict[str, int] = Field(default_factory=dict)
     latest_error: str | None
+    calls: list[AnalysisCallDiagnosticRead] = Field(default_factory=list)
 
 
 class AnalysisRunDiagnosticsRead(BaseModel):
