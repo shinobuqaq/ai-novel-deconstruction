@@ -23,11 +23,21 @@ class ProviderError(Exception):
         message: str,
         retryable: bool,
         retry_after_seconds: float | None = None,
+        diagnostics: dict[str, Any] | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        provider_name: str | None = None,
+        model: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
         self.retry_after_seconds = retry_after_seconds
+        self.diagnostics = diagnostics or {}
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.provider_name = provider_name
+        self.model = model
 
 
 @runtime_checkable

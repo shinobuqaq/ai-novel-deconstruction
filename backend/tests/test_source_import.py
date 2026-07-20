@@ -132,6 +132,11 @@ def test_markdown_import_counts_chapters_without_preface(client) -> None:
     assert response.status_code == 201
     assert response.json()["version"]["chapter_count"] == 2
     assert len(response.json()["units"]) == 3
+    first_chapter = response.json()["units"][1]
+    content = client.get(f"/api/chapters/{first_chapter['id']}/content").json()
+    assert content["content"].startswith("正文")
+    assert not content["content"].startswith("## 第一章")
+    assert content["start_char"] > first_chapter["start_char"]
 
 
 def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> None:
@@ -161,7 +166,8 @@ def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> No
     assert confirmed.json()["status"] == "CONFIRMED"
 
     chapter = client.get(f"/api/chapters/{result['units'][0]['id']}/content").json()
-    assert chapter["content"] == "第一章 开始\n张三推开了门。\n"
+    assert chapter["content"] == "张三推开了门。\n"
+    assert chapter["start_char"] > result["units"][0]["start_char"]
 
     with client.app.state.session_factory() as session:
         evidence_id = session.scalar(select(EvidenceSpan.id))

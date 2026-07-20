@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:18000";
 
 export type Project = {
   id: string;
@@ -133,6 +133,10 @@ export type AnalysisProfile = {
   reasoning_effort: "auto" | "none" | "low" | "medium" | "high";
   timeout_seconds: number;
   max_retries: number;
+  context_window_tokens: number | null;
+  input_price_per_million_tokens: number | null;
+  output_price_per_million_tokens: number | null;
+  price_currency: "USD" | "CNY";
 };
 
 export type ModelSettings = {
@@ -164,6 +168,57 @@ export type AnalysisRun = {
   confirmed_at: string | null;
 };
 
+export type AnalysisStageDiagnostic = {
+  key: string;
+  label: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  task_count: number;
+  attempt_count: number;
+  retry_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  actual_cost: number | null;
+  cost_currency: string | null;
+  cost_complete: boolean;
+  selected_material_count: number;
+  selected_material_chars: number;
+  omitted_material_count: number;
+  omitted_material_chars: number;
+  omitted_material_reasons: Record<string, number>;
+  latest_error: string | null;
+};
+
+export type AnalysisRunDiagnostics = {
+  run_id: string;
+  current_step: string;
+  attempt_count: number;
+  retry_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  actual_cost: number | null;
+  cost_currency: string | null;
+  cost_complete: boolean;
+  stages: AnalysisStageDiagnostic[];
+};
+
+export type AnalysisCostEstimate = {
+  source_version_id: string;
+  batch_count: number;
+  planned_call_count: number;
+  retry_ceiling_call_count: number;
+  estimated_input_tokens: number;
+  maximum_output_tokens: number;
+  maximum_cost_without_retries: number | null;
+  maximum_cost_with_retries: number | null;
+  cost_currency: string | null;
+  pricing_available: boolean;
+  basis: string;
+};
+
 export type EntityCandidate = {
   id: string;
   run_id: string;
@@ -190,6 +245,310 @@ export type EventCandidate = {
   end_char: number;
   status: "VALID" | "UNCERTAIN";
   confidence: number;
+};
+
+export type WorkbenchCharacter = {
+  id: string;
+  name: string;
+  aliases: string[];
+  description: string;
+  evidence_ids: string[];
+  event_ids: string[];
+  first_chapter_ordinal: number | null;
+  first_chapter_title: string | null;
+  last_chapter_ordinal: number | null;
+  last_chapter_title: string | null;
+  appearance_count: number;
+  activity_level: string;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+  role: "PROTAGONIST" | "CORE_SUPPORTING" | "IMPORTANT_SUPPORTING" | "MINOR" | "UNCLASSIFIED";
+  role_reason: string;
+  identities: string[];
+  goals: string[];
+  motivations: string[];
+  abilities: string[];
+  secrets: string[];
+  important_experiences: string[];
+  current_state: string;
+  arc_summary: string;
+  identity_notes: string[];
+};
+
+export type WorkbenchEvent = {
+  id: string;
+  title: string;
+  event_type: string;
+  summary: string;
+  people: string[];
+  related_entities: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  start_char: number;
+  end_char: number;
+  mention_count: number;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+  narrative_mode: "ACTUAL" | "MEMORY" | "REPORT" | "LIE" | "MISUNDERSTANDING" | "HYPOTHESIS" | "REPEATED_MENTION" | "UNCERTAIN";
+  location: string;
+  trigger: string;
+  process: string;
+  outcome: string;
+  impact: string;
+  boundary_status: "EXACT_SPAN" | "MULTI_SPAN" | "UNRESOLVED";
+  boundary_note: string;
+  discovery_routes: Array<"ACTION" | "STATE_CHANGE" | "INFORMATION_CHANGE" | "RELATION_CHANGE" | "DOCUMENT_CONTEXT">;
+};
+
+export type WorkbenchPhase = {
+  id: string;
+  title: string;
+  summary: string;
+  event_ids: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  people: string[];
+  situation: string;
+  goal: string;
+  obstacle: string;
+  key_actions: string[];
+  outcome: string;
+  change: string;
+  next_hook: string;
+};
+
+export type WorkbenchStoryOverview = {
+  premise: string;
+  synopsis: string;
+  protagonist: string;
+  protagonist_goal: string;
+  central_conflict: string;
+  opening_situation: string;
+  development_path: string[];
+  turning_points: string[];
+  current_situation: string;
+  current_result: string;
+  unresolved_questions: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterRelation = {
+  source_name: string;
+  target_name: string;
+  relation: string;
+  current_state: string;
+  changes: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchEventRelation = {
+  source_event_id: string;
+  target_event_id: string;
+  relation: string;
+  explanation: string;
+  evidence_ids: string[];
+  source_title: string;
+  target_title: string;
+};
+
+export type WorkbenchFactVersion = {
+  id: string;
+  subject: string;
+  predicate: string;
+  value: string;
+  fact_type: string;
+  status: string;
+  valid_from_chapter: number;
+  valid_to_chapter: number | null;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  timeline_version: number;
+  timeline_status: "ACTIVE" | "EXPIRED" | "REESTABLISHED" | "CONFLICTING";
+  timeline_note: string;
+};
+
+export type WorkbenchStateChange = {
+  id: string;
+  subject: string;
+  aspect: string;
+  before: string;
+  after: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
+export type WorkbenchActorKnowledge = {
+  id: string;
+  actor: string;
+  proposition: string;
+  state: string;
+  chapter_ordinal: number;
+  evidence_ids: string[];
+};
+
+export type WorkbenchKnowledgeTransfer = {
+  id: string;
+  source_actor: string;
+  target_actor: string;
+  proposition: string;
+  transfer_type: "WITNESSED" | "TOLD" | "OVERHEARD" | "RUMOR" | "MISREPRESENTED" | "RETRACTED";
+  resulting_state: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
+export type WorkbenchWorldRule = {
+  id: string;
+  title: string;
+  description: string;
+  limitations: string[];
+  costs: string[];
+  exceptions: string[];
+  evidence_ids: string[];
+  discovered_chapter: number;
+};
+
+export type WorkbenchForeshadowing = {
+  id: string;
+  title: string;
+  setup: string;
+  lifecycle: string;
+  setup_chapter: number;
+  payoff_chapter: number | null;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchConflict = {
+  id: string;
+  title: string;
+  conflict_type: string;
+  participants: string[];
+  goals: string;
+  obstacles: string;
+  stakes: string;
+  escalation: string[];
+  resolution: string;
+  status: string;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchSceneAnalysis = {
+  id: string;
+  chapter_ordinal: number;
+  function: string;
+  summary: string;
+  information_released: string[];
+  action_dialogue_balance: string;
+  pace: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchClaim = {
+  id: string;
+  claim_kind: string;
+  claim_text: string;
+  scope: string;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  verification_status: string;
+  verification_note: string;
+  confidence: number;
+};
+
+export type WorkbenchDeepAnalysis = {
+  fact_versions: WorkbenchFactVersion[];
+  state_changes: WorkbenchStateChange[];
+  actor_knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
+  world_rules: WorkbenchWorldRule[];
+  foreshadowing: WorkbenchForeshadowing[];
+  conflicts: WorkbenchConflict[];
+  scene_analysis: WorkbenchSceneAnalysis[];
+  claims: WorkbenchClaim[];
+};
+
+export type WorkbenchChapterRef = {
+  ordinal: number;
+  title: string;
+};
+
+export type AnalysisIssue = {
+  id: string;
+  run_id: string;
+  target_kind: string;
+  target_id: string | null;
+  target_label: string;
+  category: string;
+  note: string;
+  status: "OPEN" | "RESOLVED";
+  created_at: string;
+  resolved_at: string | null;
+};
+
+export type DeepRevisionImpactSection = {
+  key: string;
+  label: string;
+  reason: string;
+  item_count: number;
+  item_labels: string[];
+};
+
+export type DeepRevisionImpact = {
+  mode: "NONE" | "TARGETED" | "STORY_WIDE";
+  issue_count: number;
+  summary: string;
+  sections: DeepRevisionImpactSection[];
+};
+
+export type DeepAnalysisRevision = {
+  revision_no: number;
+  created_at: string;
+  prompt_version: string;
+};
+
+export type DeepAnalysisDiff = {
+  from_revision: number;
+  to_revision: number;
+  added: Record<string, string[]>;
+  removed: Record<string, string[]>;
+  changed: Record<string, string[]>;
+  changed_counts: Record<string, number>;
+};
+
+export type Workbench = {
+  run_id: string;
+  source_version_id: string;
+  status: string;
+  characters: WorkbenchCharacter[];
+  related_entities: EntityCandidate[];
+  events: WorkbenchEvent[];
+  phases: WorkbenchPhase[];
+  narrative_status: "READY" | "INCOMPLETE" | "NOT_GENERATED";
+  story_overview: WorkbenchStoryOverview | null;
+  character_relations: WorkbenchCharacterRelation[];
+  event_relations: WorkbenchEventRelation[];
+  deep_status: "READY" | "NOT_GENERATED";
+  deep_analysis: WorkbenchDeepAnalysis | null;
+  deep_revision: number | null;
+  chapters: WorkbenchChapterRef[];
+};
+
+export type WorkbenchStateAtChapter = {
+  run_id: string;
+  deep_revision: number | null;
+  chapter_ordinal: number;
+  chapter_title: string;
+  facts: WorkbenchFactVersion[];
+  states: WorkbenchStateChange[];
+  knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
+  world_rules: WorkbenchWorldRule[];
 };
 
 export type EvidenceContext = {
@@ -317,10 +676,39 @@ export const api = {
     request<AnalysisRun>(`/api/source-versions/${versionId}/analysis/entities-events/start`, {
       method: "POST",
     }),
+  analysisEstimate: (versionId: string) =>
+    request<AnalysisCostEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
+  analysisDiagnostics: (runId: string) =>
+    request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
   analysisEntities: (runId: string) =>
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
+  analysisWorkbench: (runId: string, deepRevision?: number) =>
+    request<Workbench>(`/api/analysis-runs/${runId}/workbench${deepRevision ? `?deep_revision=${deepRevision}` : ""}`),
+  stateAtChapter: (runId: string, chapterOrdinal: number, deepRevision?: number) =>
+    request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
+  startDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
+  analysisIssues: (runId: string) =>
+    request<AnalysisIssue[]>(`/api/analysis-runs/${runId}/issues`),
+  deepAnalysisImpact: (runId: string) =>
+    request<DeepRevisionImpact>(`/api/analysis-runs/${runId}/deep/recompute-impact`),
+  createAnalysisIssue: (runId: string, payload: { target_kind: string; target_id: string | null; target_label: string; category: string; note: string }) =>
+    request<AnalysisIssue>(`/api/analysis-runs/${runId}/issues`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  resolveAnalysisIssue: (issueId: string) =>
+    request<AnalysisIssue>(`/api/analysis-issues/${issueId}/resolve`, { method: "POST" }),
+  recomputeDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/recompute`, { method: "POST" }),
+  repairNarrativeAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/repair`, { method: "POST" }),
+  deepAnalysisRevisions: (runId: string) =>
+    request<DeepAnalysisRevision[]>(`/api/analysis-runs/${runId}/deep/revisions`),
+  deepAnalysisDiff: (runId: string) =>
+    request<DeepAnalysisDiff>(`/api/analysis-runs/${runId}/deep/diff`),
   confirmAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/confirm`, { method: "POST" }),
   evidenceContext: (evidenceId: string) =>

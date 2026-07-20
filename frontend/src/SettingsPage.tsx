@@ -35,10 +35,23 @@ function serviceDraft(service: ModelService): ServiceDraft {
 }
 
 function connectionLabel(service: ModelService) {
-  if (service.last_test_status === "CONNECTED") return "连接正常";
-  if (service.last_test_status === "FAILED") return "连接失败";
+  if (service.last_test_status === "CONNECTED") return "上次测试通过";
+  if (service.last_test_status === "FAILED") return "上次测试失败";
   if (service.configured) return "已保存，尚未测试";
   return "尚未连接";
+}
+
+function testTimeLabel(service: ModelService) {
+  if (!service.last_tested_at) return "尚未进行连接测试";
+  const parsed = new Date(service.last_tested_at);
+  if (Number.isNaN(parsed.getTime())) return "测试时间无法读取";
+  return `上次测试：${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed)}`;
 }
 
 export default function SettingsPage() {
@@ -65,7 +78,14 @@ export default function SettingsPage() {
       setSelectedServiceId(selected.id);
       setDraft(serviceDraft(selected));
     }
-    setProfileDraft(loaded.analysis_profiles[0] ?? null);
+    const profile = loaded.analysis_profiles[0];
+    setProfileDraft(profile ? {
+      ...profile,
+      context_window_tokens: profile.context_window_tokens ?? null,
+      input_price_per_million_tokens: profile.input_price_per_million_tokens ?? null,
+      output_price_per_million_tokens: profile.output_price_per_million_tokens ?? null,
+      price_currency: profile.price_currency ?? "USD",
+    } : null);
   }
 
   useEffect(() => {
@@ -170,6 +190,10 @@ export default function SettingsPage() {
       reasoning_effort: profileDraft.reasoning_effort,
       timeout_seconds: profileDraft.timeout_seconds,
       max_retries: profileDraft.max_retries,
+      context_window_tokens: profileDraft.context_window_tokens,
+      input_price_per_million_tokens: profileDraft.input_price_per_million_tokens,
+      output_price_per_million_tokens: profileDraft.output_price_per_million_tokens,
+      price_currency: profileDraft.price_currency,
     });
     setProfileDraft(saved);
     await loadSettings(saved.service_id);
@@ -280,6 +304,7 @@ export default function SettingsPage() {
                       <span className={`connection-state ${service.last_test_status.toLowerCase()}`}>
                         {connectionLabel(service)}
                       </span>
+                      <small>{testTimeLabel(service)}</small>
                     </button>
                   ))}
                   {selectedServiceId === "new" && <button type="button" className="active"><strong>新模型服务</strong><span>尚未保存</span></button>}
@@ -301,7 +326,8 @@ export default function SettingsPage() {
                   </label>
                   {selectedService && (
                     <div className="connection-summary">
-                      <div><span>当前状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <div><span>测试状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <small>{testTimeLabel(selectedService)}</small>
                       <p>{selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}</p>
                     </div>
                   )}
@@ -439,6 +465,11 @@ export default function SettingsPage() {
                       <input type="number" min="1" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
                       <small>限制单次模型返回的最大内容量；实际可用上限由所选模型决定。</small>
                     </label>
+                    <label>模型上下文长度 <span>{profileDraft.context_window_tokens === null ? "自动" : profileDraft.context_window_tokens}</span>
+                      <span className="inline-check"><input type="checkbox" checked={profileDraft.context_window_tokens === null} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: event.target.checked ? null : Math.max(32768, profileDraft.max_output_tokens + 1000) })} />未提供可靠数值</span>
+                      <input type="number" min={profileDraft.max_output_tokens + 1000} max="10000000" step="1" disabled={profileDraft.context_window_tokens === null} value={profileDraft.context_window_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: Number(event.target.value) })} />
+                      <small>服务明确提供时可填写；系统会先扣除回复空间再安排小说材料。自动模式不会根据模型名称猜测。</small>
+                    </label>
                     <label>单次超时（秒）
                       <input type="number" min="10" max="1800" value={profileDraft.timeout_seconds} onChange={(event) => setProfileDraft({ ...profileDraft, timeout_seconds: Number(event.target.value) })} />
                       <small>长篇批次和强推理模型需要更长等待时间。</small>
@@ -447,6 +478,36 @@ export default function SettingsPage() {
                       <input type="number" min="0" max="10" value={profileDraft.max_retries} onChange={(event) => setProfileDraft({ ...profileDraft, max_retries: Number(event.target.value) })} />
                       <small>只对超时、限流和临时故障自动重试。</small>
                     </label>
+                    <fieldset className="pricing-field">
+                      <legend>模型单价与费用估算 <span>{profileDraft.input_price_per_million_tokens === null ? "未设置" : profileDraft.price_currency}</span></legend>
+                      <label className="inline-check pricing-toggle">
+                        <input
+                          type="checkbox"
+                          checked={profileDraft.input_price_per_million_tokens === null}
+                          onChange={(event) => setProfileDraft({
+                            ...profileDraft,
+                            input_price_per_million_tokens: event.target.checked ? null : 0,
+                            output_price_per_million_tokens: event.target.checked ? null : 0,
+                          })}
+                        />
+                        服务没有提供可靠单价
+                      </label>
+                      <div className="pricing-inputs">
+                        <label>输入单价（每百万令牌）
+                          <input type="number" min="0" max="1000000" step="0.000001" disabled={profileDraft.input_price_per_million_tokens === null} value={profileDraft.input_price_per_million_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, input_price_per_million_tokens: Number(event.target.value) })} />
+                        </label>
+                        <label>输出单价（每百万令牌）
+                          <input type="number" min="0" max="1000000" step="0.000001" disabled={profileDraft.output_price_per_million_tokens === null} value={profileDraft.output_price_per_million_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, output_price_per_million_tokens: Number(event.target.value) })} />
+                        </label>
+                        <label>计价币种
+                          <select disabled={profileDraft.input_price_per_million_tokens === null} value={profileDraft.price_currency} onChange={(event) => setProfileDraft({ ...profileDraft, price_currency: event.target.value as "USD" | "CNY" })}>
+                            <option value="USD">美元（USD）</option>
+                            <option value="CNY">人民币（CNY）</option>
+                          </select>
+                        </label>
+                      </div>
+                      <small>单价只用于本机估算和记录；系统不会根据模型名称猜价格。修改单价不会改写以前运行保存的费用。</small>
+                    </fieldset>
                   </div>
                 )}
                 <footer className="settings-actions profile-actions">

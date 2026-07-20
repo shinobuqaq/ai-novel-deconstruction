@@ -17,12 +17,33 @@ DEFAULT_SERVICE_ID = "openai-default"
 ENTITIES_EVENTS_PROFILE_ID = "entities-events"
 SUPPORTED_SERVICE_TYPES = {"OPENAI", "OPENAI_COMPATIBLE"}
 SUPPORTED_REASONING_EFFORTS = {"auto", "none", "low", "medium", "high"}
+SUPPORTED_PRICE_CURRENCIES = {"USD", "CNY"}
 CAPABILITY_UNTESTED = "UNTESTED"
 CAPABILITY_SUPPORTED = "SUPPORTED"
 CAPABILITY_FAILED = "FAILED"
 STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
 STRUCTURED_JSON_ONLY = "JSON_ONLY"
 STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
+
+# JSON Schema files used by the application may contain document metadata such
+# as `$id` and `$schema`. Those keywords are valid JSON Schema, but several
+# OpenAI-compatible gateways (including Gemini adapters) reject them when they
+# are placed inside a structured-output request. Keep the full schema locally
+# and remove only wire-incompatible metadata at the provider boundary.
+_WIRE_SCHEMA_METADATA = {"$schema", "$id", "$comment"}
+
+
+def schema_for_provider(value: object) -> object:
+    """Return a provider-compatible copy of a JSON Schema value."""
+    if isinstance(value, dict):
+        return {
+            key: schema_for_provider(item)
+            for key, item in value.items()
+            if key not in _WIRE_SCHEMA_METADATA
+        }
+    if isinstance(value, list):
+        return [schema_for_provider(item) for item in value]
+    return value
 
 
 class ModelSettingsError(ValueError):
@@ -72,6 +93,10 @@ class AnalysisProfile:
     reasoning_effort: str
     timeout_seconds: float
     max_retries: int
+    context_window_tokens: int | None = None
+    input_price_per_million_tokens: float | None = None
+    output_price_per_million_tokens: float | None = None
+    price_currency: str = "USD"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +227,22 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=float(item.get("timeout_seconds", 180)),
                 max_retries=int(item.get("max_retries", 2)),
+                context_window_tokens=(
+                    int(item["context_window_tokens"])
+                    if item.get("context_window_tokens") is not None
+                    else None
+                ),
+                input_price_per_million_tokens=(
+                    float(item["input_price_per_million_tokens"])
+                    if item.get("input_price_per_million_tokens") is not None
+                    else None
+                ),
+                output_price_per_million_tokens=(
+                    float(item["output_price_per_million_tokens"])
+                    if item.get("output_price_per_million_tokens") is not None
+                    else None
+                ),
+                price_currency=str(item.get("price_currency") or "USD").upper(),
             )
         )
     if not profiles:
@@ -328,6 +369,10 @@ def save_analysis_profile(
     reasoning_effort: str,
     timeout_seconds: float,
     max_retries: int,
+    context_window_tokens: int | None = None,
+    input_price_per_million_tokens: float | None = None,
+    output_price_per_million_tokens: float | None = None,
+    price_currency: str = "USD",
 ) -> AnalysisProfile:
     current = read_model_settings(settings)
     if not any(item.id == service_id for item in current.services):
@@ -345,6 +390,22 @@ def save_analysis_profile(
         raise ModelSettingsError("TIMEOUT_INVALID", "超时时间必须在 10 到 1800 秒之间。")
     if not 0 <= max_retries <= 10:
         raise ModelSettingsError("MAX_RETRIES_INVALID", "重试次数必须在 0 到 10 之间。")
+    if context_window_tokens is not None:
+        if not 1 <= context_window_tokens <= 10_000_000:
+            raise ModelSettingsError("CONTEXT_WINDOW_INVALID", "模型上下文长度必须在 1 到 10000000 之间。")
+        if context_window_tokens < max_output_tokens + 1_000:
+            raise ModelSettingsError(
+                "CONTEXT_WINDOW_TOO_SMALL",
+                "模型上下文长度至少要比最大输出长度多 1000，才能留出分析输入空间。",
+            )
+    if (input_price_per_million_tokens is None) != (output_price_per_million_tokens is None):
+        raise ModelSettingsError("MODEL_PRICING_INCOMPLETE", "输入单价和输出单价需要同时填写，或者都留空。")
+    for price in (input_price_per_million_tokens, output_price_per_million_tokens):
+        if price is not None and not 0 <= price <= 1_000_000:
+            raise ModelSettingsError("MODEL_PRICE_INVALID", "每百万令牌单价必须在 0 到 1000000 之间。")
+    currency = price_currency.strip().upper()
+    if currency not in SUPPORTED_PRICE_CURRENCIES:
+        raise ModelSettingsError("MODEL_PRICE_CURRENCY_INVALID", "计价币种目前支持美元或人民币。")
     existing = next((item for item in current.analysis_profiles if item.id == profile_id), None)
     saved = AnalysisProfile(
         id=profile_id,
@@ -357,6 +418,10 @@ def save_analysis_profile(
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
+        context_window_tokens=context_window_tokens,
+        input_price_per_million_tokens=input_price_per_million_tokens,
+        output_price_per_million_tokens=output_price_per_million_tokens,
+        price_currency=currency,
     )
     profiles = tuple(saved if item.id == profile_id else item for item in current.analysis_profiles)
     if existing is None:
@@ -379,6 +444,31 @@ def resolve_analysis_profile(
     if not profile.model:
         raise ModelSettingsError("MODEL_REQUIRED", "请先到设置中心选择分析模型。")
     return service, profile
+
+
+def model_cost_snapshot(
+    profile: AnalysisProfile,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> dict[str, float | int | str] | None:
+    if (
+        profile.input_price_per_million_tokens is None
+        or profile.output_price_per_million_tokens is None
+    ):
+        return None
+    input_cost = prompt_tokens * profile.input_price_per_million_tokens / 1_000_000
+    output_cost = completion_tokens * profile.output_price_per_million_tokens / 1_000_000
+    return {
+        "currency": profile.price_currency,
+        "input_price_per_million_tokens": profile.input_price_per_million_tokens,
+        "output_price_per_million_tokens": profile.output_price_per_million_tokens,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "input_cost": round(input_cost, 8),
+        "output_cost": round(output_cost, 8),
+        "total_cost": round(input_cost + output_cost, 8),
+    }
 
 
 def _friendly_connection_error(response: httpx.Response) -> ModelSettingsError:
@@ -435,6 +525,9 @@ async def discover_models(
 
 
 PROBE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "model_capability_probe.schema.json",
+    "title": "Model capability probe",
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
     "required": ["ok"],
@@ -457,6 +550,7 @@ def _probe_body(
     reasoning_effort: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     instructions = '只返回 JSON 对象 {"ok": true}，不要输出解释或 Markdown。'
+    wire_schema = schema_for_provider(PROBE_SCHEMA)
     if service.service_type == "OPENAI":
         body: dict[str, Any] = {
             "model": model,
@@ -471,7 +565,7 @@ def _probe_body(
                     "type": "json_schema",
                     "name": "model_capability_probe",
                     "strict": True,
-                    "schema": PROBE_SCHEMA,
+                    "schema": wire_schema,
                 }
             }
         if temperature is not None:
@@ -495,7 +589,7 @@ def _probe_body(
             "json_schema": {
                 "name": "model_capability_probe",
                 "strict": True,
-                "schema": PROBE_SCHEMA,
+                "schema": wire_schema,
             },
         }
     if temperature is not None:
@@ -786,6 +880,10 @@ def write_openai_config(
         reasoning_effort=profile.reasoning_effort,
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
+        context_window_tokens=profile.context_window_tokens,
+        input_price_per_million_tokens=profile.input_price_per_million_tokens,
+        output_price_per_million_tokens=profile.output_price_per_million_tokens,
+        price_currency=profile.price_currency,
     )
 
     # Keep the old file current for older branches and local rollback.

@@ -16,16 +16,19 @@ from .models import (
     ArtifactStatus,
     AnalysisRun,
     AnalysisRunTask,
+    AnalysisIssue,
     CandidateStatus,
     EntityCandidate,
     EvidenceSpan,
     EventCandidate,
+    DeepAnalysis,
     Project,
     SourceDocument,
     SourceIssue,
     SourceUnit,
     SourceVersion,
     Task,
+    TaskAttempt,
     TaskStatus,
 )
 from .repositories import (
@@ -41,12 +44,22 @@ from .repositories import (
 from .schemas import (
     ArtifactRead,
     AnalysisRunRead,
+    AnalysisCostEstimateRead,
+    AnalysisRunDiagnosticsRead,
+    AnalysisStageDiagnosticRead,
+    AnalysisIssueCreate,
+    AnalysisIssueRead,
+    DeepRevisionImpactRead,
     AnalysisProfileRead,
     AnalysisProfileWrite,
     EntityCandidateRead,
     EvidenceContextRead,
     EvidenceSpanRead,
     EventCandidateRead,
+    WorkbenchRead,
+    WorkbenchStateAtChapterRead,
+    DeepAnalysisDiffRead,
+    DeepAnalysisRevisionRead,
     ModelCatalogRead,
     ModelConnectionRead,
     ModelProbeRead,
@@ -71,15 +84,21 @@ from .services.source_import import (
     confirm_source_version,
     import_source,
     resolve_source_issue,
+    source_unit_display_content,
     source_text,
 )
 from .services.analysis import (
     ANALYSIS_STAGE,
     analysis_run_progress,
     confirm_analysis_run,
+    estimate_analysis_cost,
+    build_deep_revision_impact,
+    enqueue_deep_analysis,
+    enqueue_narrative_synthesis,
     refresh_analysis_run,
     start_entities_events_run,
 )
+from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
     ModelService,
@@ -140,6 +159,10 @@ def _analysis_profile_read(profile: AnalysisProfile) -> AnalysisProfileRead:
         reasoning_effort=profile.reasoning_effort,
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
+        context_window_tokens=profile.context_window_tokens,
+        input_price_per_million_tokens=profile.input_price_per_million_tokens,
+        output_price_per_million_tokens=profile.output_price_per_million_tokens,
+        price_currency=profile.price_currency,
     )
 
 
@@ -249,6 +272,186 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),
+    )
+
+
+_ANALYSIS_STAGE_DIAGNOSTICS = (
+    ("analysis.entities_events", "人物与事件抽取"),
+    ("analysis.hierarchical_digest", "长篇分层整理"),
+    ("analysis.narrative_synthesis", "故事结构整理"),
+    ("analysis.deep_insights", "事实与核心分析"),
+)
+
+
+def _json_dict(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _analysis_run_diagnostics(
+    session: Session,
+    run: AnalysisRun,
+) -> AnalysisRunDiagnosticsRead:
+    tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(AnalysisRunTask.run_id == run.id)
+        .order_by(AnalysisRunTask.batch_index)
+    ))
+    task_ids = [task.id for task in tasks]
+    attempts = (
+        list(session.scalars(
+            select(TaskAttempt)
+            .where(TaskAttempt.task_id.in_(task_ids))
+            .order_by(TaskAttempt.started_at)
+        ))
+        if task_ids
+        else []
+    )
+    attempts_by_task: dict[str, list[TaskAttempt]] = {}
+    for attempt in attempts:
+        attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
+
+    def cost_summary(usage_rows: list[dict]) -> tuple[float | None, str | None, bool]:
+        billed_rows = [
+            item
+            for item in usage_rows
+            if int(item.get("prompt_tokens") or 0) + int(item.get("completion_tokens") or 0) > 0
+        ]
+        if not billed_rows:
+            return None, None, False
+        cost_rows = [item.get("cost") for item in billed_rows]
+        if not all(isinstance(item, dict) for item in cost_rows):
+            return None, None, False
+        currencies = {
+            str(item.get("currency") or "")
+            for item in cost_rows
+            if isinstance(item, dict)
+        }
+        if len(currencies) != 1:
+            return None, None, False
+        total = sum(
+            float(item.get("total_cost") or 0)
+            for item in cost_rows
+            if isinstance(item, dict)
+        )
+        return round(total, 8), currencies.pop(), True
+
+    stage_rows: list[AnalysisStageDiagnosticRead] = []
+    for kind, label in _ANALYSIS_STAGE_DIAGNOSTICS:
+        stage_tasks = [task for task in tasks if task.kind == kind]
+        if kind == "analysis.hierarchical_digest" and not stage_tasks:
+            continue
+        stage_attempts = [
+            attempt
+            for task in stage_tasks
+            for attempt in attempts_by_task.get(task.id, [])
+        ]
+        if any(task.status == TaskStatus.FAILED.value for task in stage_tasks):
+            stage_status = "FAILED"
+        elif any(
+            task.status in {
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.CANCEL_REQUESTED.value,
+            }
+            for task in stage_tasks
+        ):
+            stage_status = "RUNNING"
+        elif stage_tasks and all(
+            task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks
+        ):
+            stage_status = "SUCCEEDED"
+        elif stage_tasks and all(
+            task.status == TaskStatus.CANCELLED.value for task in stage_tasks
+        ):
+            stage_status = "CANCELLED"
+        else:
+            stage_status = "PENDING"
+
+        usage = [_json_dict(attempt.usage_json) for attempt in stage_attempts]
+        stage_cost, stage_currency, stage_cost_complete = cost_summary(usage)
+        diagnostics = [
+            _json_dict(attempt.diagnostics_json) for attempt in stage_attempts
+        ]
+        context_rows = [
+            item.get("context")
+            for item in diagnostics
+            if isinstance(item.get("context"), dict)
+        ]
+        omitted_reasons: dict[str, int] = {}
+        for context in context_rows:
+            for reason, count in (context.get("omitted_reasons") or {}).items():
+                omitted_reasons[str(reason)] = omitted_reasons.get(str(reason), 0) + int(count or 0)
+        failed_attempts = [
+            attempt for attempt in stage_attempts if attempt.error_message
+        ]
+        latest_error = (
+            failed_attempts[-1].error_message
+            if failed_attempts and stage_status != "SUCCEEDED"
+            else None
+        )
+        stage_rows.append(AnalysisStageDiagnosticRead(
+            key=kind,
+            label=label,
+            status=stage_status,
+            task_count=len(stage_tasks),
+            attempt_count=len(stage_attempts),
+            retry_count=sum(max(0, task.attempts - 1) for task in stage_tasks),
+            prompt_tokens=sum(int(item.get("prompt_tokens") or 0) for item in usage),
+            completion_tokens=sum(int(item.get("completion_tokens") or 0) for item in usage),
+            input_chars=sum(int(item.get("input_chars") or 0) for item in diagnostics),
+            output_chars=sum(int(item.get("output_chars") or 0) for item in diagnostics),
+            actual_cost=stage_cost,
+            cost_currency=stage_currency,
+            cost_complete=stage_cost_complete,
+            selected_material_count=sum(int(item.get("selected_count") or 0) for item in context_rows),
+            selected_material_chars=sum(int(item.get("selected_chars") or 0) for item in context_rows),
+            omitted_material_count=sum(int(item.get("omitted_count") or 0) for item in context_rows),
+            omitted_material_chars=sum(int(item.get("omitted_chars") or 0) for item in context_rows),
+            omitted_material_reasons=omitted_reasons,
+            latest_error=latest_error,
+        ))
+
+    current = next(
+        (row.label for row in stage_rows if row.status != "SUCCEEDED"),
+        "全部分析已经完成",
+    )
+    actual_cost, cost_currency, cost_complete = cost_summary(
+        [_json_dict(attempt.usage_json) for attempt in attempts]
+    )
+    return AnalysisRunDiagnosticsRead(
+        run_id=run.id,
+        current_step=current,
+        attempt_count=sum(row.attempt_count for row in stage_rows),
+        retry_count=sum(row.retry_count for row in stage_rows),
+        prompt_tokens=sum(row.prompt_tokens for row in stage_rows),
+        completion_tokens=sum(row.completion_tokens for row in stage_rows),
+        input_chars=sum(row.input_chars for row in stage_rows),
+        output_chars=sum(row.output_chars for row in stage_rows),
+        actual_cost=actual_cost,
+        cost_currency=cost_currency,
+        cost_complete=cost_complete,
+        stages=stage_rows,
+    )
+
+
+def _analysis_issue_read(issue: AnalysisIssue) -> AnalysisIssueRead:
+    return AnalysisIssueRead(
+        id=issue.id,
+        run_id=issue.run_id,
+        target_kind=issue.target_kind,
+        target_id=issue.target_id,
+        target_label=issue.target_label,
+        category=issue.category,
+        note=issue.note,
+        status=issue.status,
+        created_at=_as_utc(issue.created_at),
+        resolved_at=_as_utc(issue.resolved_at),
     )
 
 
@@ -515,6 +718,10 @@ def analysis_profiles_update(
             reasoning_effort=payload.reasoning_effort,
             timeout_seconds=payload.timeout_seconds,
             max_retries=payload.max_retries,
+            context_window_tokens=payload.context_window_tokens,
+            input_price_per_million_tokens=payload.input_price_per_million_tokens,
+            output_price_per_million_tokens=payload.output_price_per_million_tokens,
+            price_currency=payload.price_currency,
         )
     except ModelSettingsError as error:
         raise _model_settings_error(error) from error
@@ -709,6 +916,20 @@ def entities_events_latest(
 
 
 @router.get(
+    "/api/analysis-runs/{run_id}/diagnostics",
+    response_model=AnalysisRunDiagnosticsRead,
+)
+def analysis_run_diagnostics_get(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisRunDiagnosticsRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    return _analysis_run_diagnostics(session, run)
+
+
+@router.get(
     "/api/analysis-runs/{run_id}/entities",
     response_model=list[EntityCandidateRead],
 )
@@ -756,6 +977,546 @@ def analysis_events_list(
     return [_event_candidate_read(item) for item in candidates]
 
 
+@router.get(
+    "/api/analysis-runs/{run_id}/workbench",
+    response_model=WorkbenchRead,
+)
+def analysis_workbench_get(
+    run_id: str,
+    deep_revision: int | None = None,
+    session: Session = Depends(get_db),
+) -> WorkbenchRead:
+    try:
+        projection = build_workbench_projection(
+            session,
+            run_id,
+            deep_revision=deep_revision,
+        )
+    except ValueError as error:
+        if str(error) == "ANALYSIS_RUN_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
+        if str(error) == "DEEP_ANALYSIS_REVISION_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "DEEP_ANALYSIS_REVISION_NOT_FOUND", "message": "没有找到这个拆解版本。"},
+            ) from error
+        raise
+    return WorkbenchRead.model_validate(projection)
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/state-at-chapter",
+    response_model=WorkbenchStateAtChapterRead,
+)
+def analysis_state_at_chapter_get(
+    run_id: str,
+    chapter_ordinal: int,
+    deep_revision: int | None = None,
+    session: Session = Depends(get_db),
+) -> WorkbenchStateAtChapterRead:
+    try:
+        projection = build_state_at_chapter_projection(
+            session,
+            run_id,
+            chapter_ordinal,
+            deep_revision=deep_revision,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code == "ANALYSIS_RUN_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND") from error
+        if code == "DEEP_ANALYSIS_REVISION_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail={"code": code, "message": "没有找到这个拆解版本。"},
+            ) from error
+        if code == "CHAPTER_ORDINAL_INVALID":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": code, "message": "请选择这本小说中存在的章节。"},
+            ) from error
+        raise
+    return WorkbenchStateAtChapterRead.model_validate(projection)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/narrative/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def narrative_synthesis_start(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    task = enqueue_narrative_synthesis(session, request.app.state.settings, run)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUNDATION_ANALYSIS_NOT_READY",
+                "message": "人物和事件基础分析尚未完成，暂时不能整理完整故事结构。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/narrative/repair",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def narrative_synthesis_repair(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    projection = build_workbench_projection(session, run_id)
+    missing = [
+        item["name"]
+        for item in projection.get("characters", [])
+        if item.get("role") == "UNCLASSIFIED"
+    ]
+    if not missing:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_REPAIR_NOT_NEEDED", "message": "人物和剧情结构已经完整，不需要重新整理。"},
+        )
+    active = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind.in_(("analysis.narrative_synthesis", "analysis.deep_insights")),
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+            )),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ANALYSIS_REPAIR_RUNNING", "message": "人物和剧情正在重新整理，请等待当前处理完成。"},
+        )
+    task = enqueue_narrative_synthesis(
+        session,
+        request.app.state.settings,
+        run,
+        force=True,
+        revision_requests=[{
+            "target_kind": "CHARACTER",
+            "target_id": None,
+            "target_label": "人物角色覆盖",
+            "category": "INCOMPLETE",
+            "note": f"以下人物尚未完成角色定位：{'、'.join(missing)}。请重新整理全部人物、关系和剧情阶段。",
+        }],
+    )
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "基础人物与事件尚未准备完成，暂时不能重新整理。"},
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/source-versions/{version_id}/analysis/entities-events/estimate",
+    response_model=AnalysisCostEstimateRead,
+)
+def entities_events_estimate(
+    version_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisCostEstimateRead:
+    version = session.get(SourceVersion, version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
+    try:
+        estimate = estimate_analysis_cost(session, request.app.state.settings, version)
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return AnalysisCostEstimateRead.model_validate(estimate)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/deep/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def deep_analysis_start(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    task = enqueue_deep_analysis(session, request.app.state.settings, run)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NARRATIVE_SYNTHESIS_NOT_READY",
+                "message": "故事结构尚未整理完成，暂时不能生成事实状态和核心拆解。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+def _workbench_target_ids(projection: dict) -> set[str]:
+    ids: set[str] = set()
+    for collection in (
+        projection.get("characters", []),
+        projection.get("events", []),
+        projection.get("phases", []),
+        projection.get("related_entities", []),
+    ):
+        ids.update(item.get("id") for item in collection if item.get("id"))
+    deep = projection.get("deep_analysis") or {}
+    for name in (
+        "fact_versions",
+        "state_changes",
+        "actor_knowledge",
+        "knowledge_transfers",
+        "world_rules",
+        "foreshadowing",
+        "conflicts",
+        "scene_analysis",
+        "claims",
+    ):
+        ids.update(item.get("id") for item in deep.get(name, []) if item.get("id"))
+    return ids
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/issues",
+    response_model=list[AnalysisIssueRead],
+)
+def analysis_issues_list(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[AnalysisIssueRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    issues = session.scalars(
+        select(AnalysisIssue)
+        .where(AnalysisIssue.run_id == run_id)
+        .order_by(AnalysisIssue.created_at.desc())
+    )
+    return [_analysis_issue_read(issue) for issue in issues]
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/issues",
+    response_model=AnalysisIssueRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def analysis_issue_create(
+    run_id: str,
+    payload: AnalysisIssueCreate,
+    session: Session = Depends(get_db),
+) -> AnalysisIssueRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    if payload.target_id:
+        projection = build_workbench_projection(session, run_id)
+        if payload.target_id not in _workbench_target_ids(projection):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ANALYSIS_TARGET_NOT_FOUND",
+                    "message": "要标记的问题对象已经不存在，请刷新工作台后再试。",
+                },
+            )
+    issue = AnalysisIssue(
+        run_id=run_id,
+        target_kind=payload.target_kind.strip(),
+        target_id=payload.target_id,
+        target_label=payload.target_label.strip(),
+        category=payload.category.strip(),
+        note=payload.note.strip(),
+        status="OPEN",
+    )
+    session.add(issue)
+    session.commit()
+    session.refresh(issue)
+    return _analysis_issue_read(issue)
+
+
+@router.post(
+    "/api/analysis-issues/{issue_id}/resolve",
+    response_model=AnalysisIssueRead,
+)
+def analysis_issue_resolve(
+    issue_id: str,
+    session: Session = Depends(get_db),
+) -> AnalysisIssueRead:
+    issue = session.get(AnalysisIssue, issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_ISSUE_NOT_FOUND")
+    issue.status = "RESOLVED"
+    issue.resolved_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(issue)
+    return _analysis_issue_read(issue)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/deep/recompute",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def deep_analysis_recompute(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    active = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == "analysis.deep_insights",
+            Task.status.in_((TaskStatus.PENDING.value, TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value)),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DEEP_ANALYSIS_RUNNING", "message": "深层拆解正在处理中，请等待当前结果完成。"},
+        )
+    issues = list(session.scalars(
+        select(AnalysisIssue).where(
+            AnalysisIssue.run_id == run_id,
+            AnalysisIssue.status == "OPEN",
+        )
+    ))
+    if not issues:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NO_OPEN_ANALYSIS_ISSUES", "message": "请先标记需要重新检查的问题。"},
+        )
+    revision_requests = [
+        {
+            "issue_id": issue.id,
+            "target_kind": issue.target_kind,
+            "target_id": issue.target_id,
+            "target_label": issue.target_label,
+            "category": issue.category,
+            "note": issue.note,
+        }
+        for issue in issues
+    ]
+    narrative_targets = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
+    needs_narrative = any(
+        issue.target_kind in narrative_targets for issue in issues
+    )
+    if needs_narrative:
+        active_narrative = session.scalar(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run_id,
+                Task.kind == "analysis.narrative_synthesis",
+                Task.status.in_((TaskStatus.PENDING.value, TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value)),
+            )
+        )
+        if active_narrative is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "NARRATIVE_SYNTHESIS_RUNNING", "message": "故事结构正在重新整理，请等待当前结果完成。"},
+            )
+        task = enqueue_narrative_synthesis(
+            session,
+            request.app.state.settings,
+            run,
+            force=True,
+            revision_requests=revision_requests,
+        )
+    else:
+        task = enqueue_deep_analysis(
+            session,
+            request.app.state.settings,
+            run,
+            force=True,
+            revision_requests=revision_requests,
+        )
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NARRATIVE_SYNTHESIS_NOT_READY", "message": "故事结构尚未完成，暂时不能重新分析。"},
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/recompute-impact",
+    response_model=DeepRevisionImpactRead,
+)
+def deep_analysis_recompute_impact(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> DeepRevisionImpactRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    issues = list(session.scalars(
+        select(AnalysisIssue).where(
+            AnalysisIssue.run_id == run_id,
+            AnalysisIssue.status == "OPEN",
+        ).order_by(AnalysisIssue.created_at),
+    ))
+    previous = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    previous_payload = json.loads(previous.payload_json) if previous is not None else None
+    requests = [
+        {
+            "issue_id": issue.id,
+            "target_kind": issue.target_kind,
+            "target_id": issue.target_id,
+            "target_label": issue.target_label,
+            "category": issue.category,
+            "note": issue.note,
+        }
+        for issue in issues
+    ]
+    return DeepRevisionImpactRead.model_validate(
+        build_deep_revision_impact(requests, previous_payload)
+    )
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/revisions",
+    response_model=list[DeepAnalysisRevisionRead],
+)
+def deep_analysis_revisions(
+    run_id: str,
+    session: Session = Depends(get_db),
+) -> list[DeepAnalysisRevisionRead]:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    rows = session.scalars(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no)
+    )
+    return [
+        DeepAnalysisRevisionRead(
+            revision_no=row.revision_no,
+            created_at=_as_utc(row.created_at),
+            prompt_version=row.prompt_version,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/analysis-runs/{run_id}/deep/diff",
+    response_model=DeepAnalysisDiffRead,
+)
+def deep_analysis_diff(
+    run_id: str,
+    from_revision: int | None = None,
+    to_revision: int | None = None,
+    session: Session = Depends(get_db),
+) -> DeepAnalysisDiffRead:
+    if session.get(AnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    rows = list(session.scalars(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run_id)
+        .order_by(DeepAnalysis.revision_no)
+    ))
+    if len(rows) < 2:
+        raise HTTPException(status_code=409, detail={"code": "DEEP_REVISION_NOT_ENOUGH", "message": "当前还没有两个可比较的拆解版本。"})
+    by_revision = {row.revision_no: row for row in rows}
+    from_revision = from_revision or rows[-2].revision_no
+    to_revision = to_revision or rows[-1].revision_no
+    before = by_revision.get(from_revision)
+    after = by_revision.get(to_revision)
+    if before is None or after is None or before.revision_no == after.revision_no:
+        raise HTTPException(status_code=422, detail={"code": "DEEP_REVISION_INVALID", "message": "要比较的拆解版本不存在。"})
+
+    collections = (
+        "fact_versions",
+        "state_changes",
+        "actor_knowledge",
+        "knowledge_transfers",
+        "world_rules",
+        "foreshadowing",
+        "conflicts",
+        "scene_analysis",
+        "claims",
+    )
+
+    def key_for(collection: str, item: dict) -> str:
+        if collection == "fact_versions":
+            return f"{item.get('subject')}:{item.get('predicate')}:{item.get('valid_from_chapter')}"
+        if collection == "state_changes":
+            return f"{item.get('subject')}:{item.get('aspect')}:{item.get('chapter_ordinal')}"
+        if collection == "actor_knowledge":
+            return f"{item.get('actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+        if collection == "knowledge_transfers":
+            return f"{item.get('source_actor')}:{item.get('target_actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+        if collection == "scene_analysis":
+            return str(item.get("chapter_ordinal"))
+        if collection == "claims":
+            return f"{item.get('claim_kind')}:{item.get('scope')}:{item.get('claim_text')}"
+        return str(item.get("title"))
+
+    def label_for(collection: str, item: dict, fallback: str) -> str:
+        if collection == "fact_versions":
+            return f"{item.get('subject', '未知对象')}：{item.get('predicate', '事实')}"
+        if collection == "state_changes":
+            return f"{item.get('subject', '未知对象')}：{item.get('aspect', '状态变化')}"
+        if collection == "actor_knowledge":
+            return f"{item.get('actor', '未知人物')}：{item.get('proposition', '认知变化')}"
+        if collection == "knowledge_transfers":
+            return f"{item.get('source_actor', '未知来源')} → {item.get('target_actor', '未知人物')}：{item.get('proposition', '信息传播')}"
+        if collection == "scene_analysis":
+            return f"第 {item.get('chapter_ordinal', '?')} 章：{item.get('summary', '场景与节奏')}"
+        if collection == "claims":
+            return str(item.get("claim_text") or fallback)
+        return str(item.get("title") or fallback)
+    before_payload = json.loads(before.payload_json)
+    after_payload = json.loads(after.payload_json)
+    added: dict[str, list[str]] = {}
+    removed: dict[str, list[str]] = {}
+    changed: dict[str, list[str]] = {}
+    changed_counts: dict[str, int] = {}
+    for collection in collections:
+        old = {key_for(collection, item): item for item in before_payload.get(collection, [])}
+        new = {key_for(collection, item): item for item in after_payload.get(collection, [])}
+        added[collection] = [label_for(collection, new[key], key) for key in sorted(new.keys() - old.keys())]
+        removed[collection] = [label_for(collection, old[key], key) for key in sorted(old.keys() - new.keys())]
+        changed_keys = [key for key in sorted(new.keys() & old.keys()) if new[key] != old[key]]
+        changed[collection] = [label_for(collection, new[key], key) for key in changed_keys]
+        changed_counts[collection] = len(changed_keys)
+    return DeepAnalysisDiffRead(
+        from_revision=before.revision_no,
+        to_revision=after.revision_no,
+        added=added,
+        removed=removed,
+        changed=changed,
+        changed_counts=changed_counts,
+    )
+
+
 @router.post(
     "/api/analysis-runs/{run_id}/confirm",
     response_model=AnalysisRunRead,
@@ -790,14 +1551,15 @@ def source_unit_content(
         text = source_text(request.app.state.settings, unit.source_version)
     except SourceImportError as error:
         raise _source_error(error) from error
+    display_start, content = source_unit_display_content(text, unit)
     return SourceUnitContentRead(
         id=unit.id,
         source_version_id=unit.source_version_id,
         ordinal=unit.ordinal,
         title=unit.title,
-        start_char=unit.start_char,
+        start_char=display_start,
         end_char=unit.end_char,
-        content=text[unit.start_char:unit.end_char],
+        content=content,
     )
 
 
