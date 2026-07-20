@@ -17,6 +17,7 @@ from ..services.provider_config import (
     schema_for_provider,
 )
 from .base import ProviderError, ProviderResponse
+from .json_output import JsonTextParseError, parse_json_text
 
 
 class OpenAIResponsesProvider:
@@ -220,18 +221,45 @@ class OpenAIResponsesProvider:
                 output_text = body["choices"][0]["message"]["content"]
             if not isinstance(output_text, str):
                 raise TypeError("OUTPUT_TEXT_MISSING")
-            parsed = json.loads(output_text)
-        except (ValueError, KeyError, StopIteration, TypeError, json.JSONDecodeError) as exc:
+            parsed_json = parse_json_text(output_text)
+            parsed = parsed_json.value
+        except JsonTextParseError as exc:
             cost = model_cost_snapshot(
                 profile,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             )
+            diagnostics = exc.diagnostics()
+            if cost is not None:
+                diagnostics["cost"] = cost
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message="在线 AI 没有返回符合要求的结构化结果，系统会自动重试。",
+                message="在线 AI 返回的 JSON 格式无法由程序安全修复，系统会自动重试。",
                 retryable=True,
-                diagnostics={"cost": cost} if cost is not None else {},
+                diagnostics=diagnostics,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                provider_name=service.id,
+                model=profile.model,
+                raw_text=exc.raw_text,
+            ) from exc
+        except (ValueError, KeyError, StopIteration, TypeError) as exc:
+            cost = model_cost_snapshot(
+                profile,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            diagnostics: dict[str, object] = {
+                "phase": "response_envelope",
+                "classification": "missing_output_text",
+            }
+            if cost is not None:
+                diagnostics["cost"] = cost
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message="在线 AI 已响应，但响应中没有可识别的正文结果，系统会自动重试。",
+                retryable=True,
+                diagnostics=diagnostics,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 provider_name=service.id,
@@ -259,6 +287,7 @@ class OpenAIResponsesProvider:
                 "max_retries": profile.max_retries,
                 "context_window_tokens": profile.context_window_tokens,
                 "cost": cost,
+                "json_repairs": list(parsed_json.repairs),
             },
         )
 

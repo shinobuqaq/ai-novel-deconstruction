@@ -982,6 +982,62 @@ def test_openai_invalid_output_is_retryable(tmp_path: Path) -> None:
     assert caught.value.retryable is True
 
 
+def test_openai_safe_json_repair_avoids_retry(tmp_path: Path) -> None:
+    output_text = '结果如下：\n```json\n{"entities": [], "events": [],}\n```'
+    response_body = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": output_text}],
+            }
+        ],
+        "usage": {"input_tokens": 23, "output_tokens": 11},
+    }
+    provider = OpenAIResponsesProvider(
+        _provider_settings(tmp_path),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response_body)
+        ),
+    )
+
+    result = _run_provider(provider)
+
+    assert result.parsed == {"entities": [], "events": []}
+    assert result.parameters["json_repairs"] == [
+        "extract_markdown_code_block",
+        "remove_trailing_commas",
+    ]
+
+
+def test_openai_invalid_json_exposes_safe_parse_diagnostics(tmp_path: Path) -> None:
+    output_text = '{"entities": [], "events": ['
+    response_body = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": output_text}],
+            }
+        ],
+        "usage": {"input_tokens": 23, "output_tokens": 11},
+    }
+    provider = OpenAIResponsesProvider(
+        _provider_settings(tmp_path),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response_body)
+        ),
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        _run_provider(provider)
+
+    assert caught.value.code == "PROVIDER_INVALID_OUTPUT"
+    assert caught.value.raw_text == output_text
+    assert caught.value.diagnostics["phase"] == "json_decode"
+    assert caught.value.diagnostics["classification"] == "likely_truncated_output"
+    assert "raw_output_sha256" in caught.value.diagnostics
+    assert "raw_text" not in caught.value.diagnostics
+
+
 def test_openai_structured_output_is_parsed(tmp_path: Path) -> None:
     output_text = json.dumps({"entities": [], "events": []})
     response_body = {

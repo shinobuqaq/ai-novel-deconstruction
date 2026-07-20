@@ -28,6 +28,7 @@ class ProviderError(Exception):
         completion_tokens: int = 0,
         provider_name: str | None = None,
         model: str | None = None,
+        raw_text: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -38,6 +39,7 @@ class ProviderError(Exception):
         self.completion_tokens = completion_tokens
         self.provider_name = provider_name
         self.model = model
+        self.raw_text = raw_text
 
 
 @runtime_checkable

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -154,6 +155,9 @@ def _attempt_diagnostics(
         "input_chars": len(model_input),
         "output_chars": len(response.raw_text),
     }
+    repairs = response.parameters.get("json_repairs")
+    if isinstance(repairs, list) and repairs:
+        diagnostics["json_repairs"] = [str(item) for item in repairs[:10]]
     context_manifest = provider_payload.get("context_manifest")
     if isinstance(context_manifest, dict):
         # Keep the diagnostic compact enough for the task table while still
@@ -176,6 +180,21 @@ def _attempt_diagnostics(
     if reason_code:
         diagnostics["reason_code"] = reason_code[:200]
     return diagnostics
+
+
+def _persist_failed_model_output(
+    settings: Settings,
+    claim: ClaimedTask,
+    raw_text: str,
+) -> str:
+    diagnostics_root = settings.workspace_dir / "diagnostics" / "model-output-failures"
+    task_dir = diagnostics_root / claim.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    path = task_dir / f"{claim.current_attempt_id}.txt"
+    temporary_path = Path(f"{path}.tmp")
+    temporary_path.write_text(raw_text, encoding="utf-8")
+    temporary_path.replace(path)
+    return path.relative_to(settings.workspace_dir).as_posix()
 
 
 async def execute_task(
@@ -238,6 +257,7 @@ async def execute_task(
             completion_tokens=response.completion_tokens,
             provider_name=response.provider_id or provider.name,
             model=response.model,
+            raw_text=response.raw_text,
         )
 
     persisted_analysis = None
@@ -262,6 +282,7 @@ async def execute_task(
                 completion_tokens=response.completion_tokens,
                 provider_name=response.provider_id or provider.name,
                 model=response.model,
+                raw_text=response.raw_text,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -327,6 +348,7 @@ async def execute_task(
                     completion_tokens=response.completion_tokens,
                     provider_name=response.provider_id or provider.name,
                     model=response.model,
+                    raw_text=response.raw_text,
                 ) from exc
     elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
         try:
@@ -346,6 +368,7 @@ async def execute_task(
                 completion_tokens=response.completion_tokens,
                 provider_name=response.provider_id or provider.name,
                 model=response.model,
+                raw_text=response.raw_text,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -377,6 +400,7 @@ async def execute_task(
                     completion_tokens=response.completion_tokens,
                     provider_name=response.provider_id or provider.name,
                     model=response.model,
+                    raw_text=response.raw_text,
                 ) from exc
     elif claim.kind == DEEP_ANALYSIS_TASK_KIND:
         try:
@@ -396,6 +420,7 @@ async def execute_task(
                 completion_tokens=response.completion_tokens,
                 provider_name=response.provider_id or provider.name,
                 model=response.model,
+                raw_text=response.raw_text,
             ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
@@ -429,6 +454,7 @@ async def execute_task(
                     completion_tokens=response.completion_tokens,
                     provider_name=response.provider_id or provider.name,
                     model=response.model,
+                    raw_text=response.raw_text,
                 ) from exc
 
     with session_factory() as session:
@@ -589,6 +615,18 @@ def execute_task_sync(
             if isinstance(exc.diagnostics.get("cost"), dict):
                 failure_usage["cost"] = exc.diagnostics["cost"]
             failure_provider_name = exc.provider_name or failure_provider_name
+            if exc.raw_text is not None:
+                failure_diagnostics = dict(failure_diagnostics)
+                try:
+                    failure_diagnostics["raw_output_path"] = _persist_failed_model_output(
+                        settings,
+                        claim,
+                        exc.raw_text,
+                    )
+                except OSError as diagnostic_error:
+                    failure_diagnostics["raw_output_persist_error"] = type(
+                        diagnostic_error
+                    ).__name__
         else:
             if isinstance(exc, ValueError) and str(exc).startswith(
                 "UNSUPPORTED_TASK_KIND:"
