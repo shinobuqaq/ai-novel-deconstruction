@@ -1,8 +1,12 @@
 # Prompt Registry
 
-这里保存已经进入真实分析链的任务级提示词。当前人物与事件抽取使用：
+这里保存已经进入真实分析链的任务级提示词。当前任务与提示词对应关系：
 
 - `entities_events_v1.md`
+- `hierarchical_digest_v1.md`
+- `narrative_component_v1.md`
+- `narrative_synthesis_v1.md`（只为兼容已经创建的旧任务，新任务按四个独立组件执行）
+- `deep_insights_v1.md`
 
 每个正式提示词至少包含：
 

@@ -164,6 +164,9 @@ export type AnalysisRun = {
   failed_batches: number;
   failure_code: string | null;
   failure_message: string | null;
+  has_usable_result: boolean;
+  usable_result_level: "NONE" | "FOUNDATION" | "STORY" | "FULL";
+  latest_update_failed: boolean;
   created_at: string;
   finished_at: string | null;
   confirmed_at: string | null;
@@ -351,6 +354,13 @@ export type WorkbenchCharacterRelation = {
   relation: string;
   current_state: string;
   changes: string[];
+  change_history: Array<{
+    chapter_ordinal: number;
+    before: string;
+    after: string;
+    trigger_event_id: string | null;
+    evidence_ids: string[];
+  }>;
   evidence_ids: string[];
 };
 

@@ -22,6 +22,7 @@ from .models import (
     EvidenceSpan,
     EventCandidate,
     DeepAnalysis,
+    NarrativeSynthesis,
     Project,
     SourceDocument,
     SourceIssue,
@@ -257,15 +258,44 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
     refresh_analysis_run(session, run)
     completed, failed = analysis_run_progress(session, run)
     failure = session.execute(
-        select(Task.last_error_code, Task.last_error_message)
+        select(Task.last_error_code, Task.last_error_message, AnalysisRunTask.batch_index)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
         .where(
             AnalysisRunTask.run_id == run.id,
             Task.status == TaskStatus.FAILED.value,
         )
-        .order_by(AnalysisRunTask.batch_index)
+        .order_by(AnalysisRunTask.batch_index.desc())
         .limit(1)
     ).one_or_none()
+    synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run.id)
+    )
+    deep_analysis = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run.id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
+    usable_task_ids = {
+        value
+        for value in [
+            synthesis.created_by_task_id if synthesis is not None else None,
+            deep_analysis.created_by_task_id if deep_analysis is not None else None,
+        ]
+        if value
+    }
+    usable_batch_index = session.scalar(
+        select(AnalysisRunTask.batch_index)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            AnalysisRunTask.task_id.in_(usable_task_ids),
+        )
+        .order_by(AnalysisRunTask.batch_index.desc())
+        .limit(1)
+    ) if usable_task_ids else None
+    latest_update_failed = bool(
+        failure
+        and (usable_batch_index is None or int(failure[2]) > int(usable_batch_index))
+    )
     waiting_task = session.scalar(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
@@ -300,6 +330,14 @@ def _analysis_run_read(session: Session, run: AnalysisRun) -> AnalysisRunRead:
         failed_batches=failed,
         failure_code=failure[0] if failure else None,
         failure_message=failure[1] if failure else None,
+        has_usable_result=synthesis is not None,
+        usable_result_level=(
+            "FULL" if deep_analysis is not None
+            else "STORY" if synthesis is not None
+            else "FOUNDATION" if completed > 0
+            else "NONE"
+        ),
+        latest_update_failed=latest_update_failed,
         created_at=_as_utc(run.created_at),
         finished_at=_as_utc(run.finished_at),
         confirmed_at=_as_utc(run.confirmed_at),

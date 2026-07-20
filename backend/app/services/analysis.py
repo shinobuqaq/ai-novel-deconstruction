@@ -26,6 +26,7 @@ from ..models import (
     EventCandidate,
     EvidenceSpan,
     DeepAnalysis,
+    Artifact,
     NarrativeSynthesis,
     SourceUnit,
     SourceVersion,
@@ -52,7 +53,7 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.3.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.6.0"
+NARRATIVE_PROMPT_VERSION = "2.0.0"
 DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.7.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
@@ -87,6 +88,13 @@ DEEP_ANALYSIS_COLLECTIONS = (
     "entity_resolutions",
 )
 NARRATIVE_REVISION_TARGETS = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
+NARRATIVE_COMPONENTS = ("overview", "characters", "plot", "relations")
+NARRATIVE_COMPONENT_LABELS = {
+    "overview": "故事总览",
+    "characters": "人物定位",
+    "plot": "剧情阶段",
+    "relations": "人物关系与事件因果",
+}
 DEEP_TARGET_COLLECTIONS = {
     "FACT": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"},
     "STATE": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"},
@@ -725,6 +733,16 @@ class CharacterRoleProposal(BaseModel):
     evidence_ids: list[str] = Field(min_length=1, max_length=8)
 
 
+class CharacterRelationChangeProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chapter_ordinal: int = Field(ge=1)
+    before: str = Field(default="", max_length=500)
+    after: str = Field(min_length=1, max_length=500)
+    trigger_event_id: str | None = Field(default=None, max_length=80)
+    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+
+
 class CharacterRelationProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -733,6 +751,7 @@ class CharacterRelationProposal(BaseModel):
     relation: str = Field(min_length=1, max_length=160)
     current_state: str = Field(default="", max_length=500)
     changes: list[str] = Field(default_factory=list, max_length=6)
+    change_history: list[CharacterRelationChangeProposal] = Field(default_factory=list, max_length=12)
     evidence_ids: list[str] = Field(min_length=1, max_length=8)
 
 
@@ -769,6 +788,39 @@ class NarrativeSynthesisOutput(BaseModel):
     character_relations: list[CharacterRelationProposal] = Field(max_length=200)
     narrative_phases: list[NarrativePhaseProposal] = Field(max_length=40)
     event_relations: list[EventRelationProposal] = Field(max_length=300)
+
+
+class NarrativeOverviewOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    story_overview: StoryOverviewProposal
+
+
+class NarrativeCharactersOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    character_roles: list[CharacterRoleProposal] = Field(max_length=100)
+
+
+class NarrativePlotOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    narrative_phases: list[NarrativePhaseProposal] = Field(max_length=40)
+
+
+class NarrativeRelationsOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    character_relations: list[CharacterRelationProposal] = Field(max_length=200)
+    event_relations: list[EventRelationProposal] = Field(max_length=300)
+
+
+NARRATIVE_COMPONENT_MODELS: dict[str, type[BaseModel]] = {
+    "overview": NarrativeOverviewOutput,
+    "characters": NarrativeCharactersOutput,
+    "plot": NarrativePlotOutput,
+    "relations": NarrativeRelationsOutput,
+}
 
 
 class HierarchicalDigestOutput(BaseModel):
@@ -912,7 +964,11 @@ class EntityResolutionProposal(BaseModel):
     canonical_name: str = Field(min_length=1, max_length=120)
     merged_names: list[str] = Field(min_length=2, max_length=10)
     entity_type: Literal["PERSON", "ORGANIZATION", "PLACE", "OBJECT", "OTHER"]
+    resolution_type: Literal["ALIAS", "TITLE", "PSEUDONYM", "FALSE_IDENTITY", "IDENTITY_REVEAL"] = "ALIAS"
     reason: str = Field(min_length=1, max_length=600)
+    valid_from_chapter: int | None = Field(default=None, ge=1)
+    valid_to_chapter: int | None = Field(default=None, ge=1)
+    confidence: int = Field(default=80, ge=0, le=100)
     evidence_ids: list[str] = Field(min_length=1, max_length=12)
 
 
@@ -1711,10 +1767,10 @@ def estimate_analysis_cost(
     estimated_input_tokens = (
         batch_input_chars
         + hierarchy_input_chars
-        + context_budget.budget_chars * 2
+        + context_budget.budget_chars * (len(NARRATIVE_COMPONENTS) + 1)
     )
     planned_call_count = (
-        len(batches) + range_digest_count + stage_digest_count + 2
+        len(batches) + range_digest_count + stage_digest_count + len(NARRATIVE_COMPONENTS) + 1
     )
     maximum_output_tokens = planned_call_count * profile.max_output_tokens
     provider_routes = snapshot_provider_routes(settings, profile.id)
@@ -1752,7 +1808,7 @@ def estimate_analysis_cost(
         "cost_currency": profile.price_currency if normal_cost is not None else None,
         "pricing_available": normal_cost is not None,
         "basis": (
-            "按当前分批数量、必要的长篇范围与阶段整理、两次全局分析、最大输出设置"
+            "按当前分批数量、必要的长篇范围与阶段整理、四个故事结构小任务、一次深层分析和最大输出设置"
             "和字符数近似令牌数计算；"
             + (
                 "备用服务价格可能不同，因此只显示主服务正常完成的金额，不猜测切换后的总金额；"
@@ -1923,6 +1979,15 @@ def _inline_model_schema(model: type[BaseModel]) -> dict:
 def _narrative_prompt() -> str:
     path = Path(__file__).resolve().parents[3] / "prompts" / "narrative_synthesis_v1.md"
     return path.read_text(encoding="utf-8").strip()
+
+
+def _narrative_component_prompt(component: str) -> str:
+    path = Path(__file__).resolve().parents[3] / "prompts" / "narrative_component_v1.md"
+    template = path.read_text(encoding="utf-8").strip()
+    label = NARRATIVE_COMPONENT_LABELS.get(component)
+    if label is None:
+        raise ValueError("NARRATIVE_COMPONENT_INVALID")
+    return template.replace("{{component}}", component).replace("{{component_label}}", label)
 
 
 def _deep_prompt() -> str:
@@ -2158,12 +2223,30 @@ def provider_payload_for_narrative_synthesis(
         "previous_synthesis": selected.get("previous_synthesis"),
         "revision_requests": selected.get("revision_requests", []),
     }
+    component = str(task_payload.get("narrative_component") or "").strip()
+    if component:
+        output_model = NARRATIVE_COMPONENT_MODELS.get(component)
+        if output_model is None:
+            raise ValueError("NARRATIVE_COMPONENT_INVALID")
+        input_payload["requested_component"] = {
+            "key": component,
+            "label": NARRATIVE_COMPONENT_LABELS[component],
+            "batch_id": str(task_payload.get("narrative_batch_id") or ""),
+        }
+        instructions = _narrative_component_prompt(component)
+        output_schema = _inline_model_schema(output_model)
+        prompt_id = f"{NARRATIVE_PROMPT_ID}.{component}"
+    else:
+        # Backward compatibility for tasks created before component splitting.
+        instructions = _narrative_prompt()
+        output_schema = _inline_model_schema(NarrativeSynthesisOutput)
+        prompt_id = NARRATIVE_PROMPT_ID
     return {
-        "instructions": _narrative_prompt(),
+        "instructions": instructions,
         "input": json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
-        "output_schema": _inline_model_schema(NarrativeSynthesisOutput),
+        "output_schema": output_schema,
         "model_profile_id": str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
-        "prompt_id": NARRATIVE_PROMPT_ID,
+        "prompt_id": prompt_id,
         "prompt_version": NARRATIVE_PROMPT_VERSION,
         "source_version_id": version.id,
         "source_char_start": 0,
@@ -2323,6 +2406,22 @@ def parse_narrative_synthesis(value: dict) -> NarrativeSynthesisOutput:
     except ValidationError as exc:
         raise StructuredOutputValidationError(
             "NARRATIVE_OUTPUT_INVALID",
+            _validation_errors(exc),
+        ) from exc
+
+
+def parse_narrative_component(component: str, value: dict) -> BaseModel:
+    model = NARRATIVE_COMPONENT_MODELS.get(component)
+    if model is None:
+        raise StructuredOutputValidationError(
+            "NARRATIVE_COMPONENT_INVALID",
+            [{"path": ["requested_component"], "type": "literal_error", "message": "未知故事结构组件"}],
+        )
+    try:
+        return model.model_validate(value)
+    except ValidationError as exc:
+        raise StructuredOutputValidationError(
+            "NARRATIVE_COMPONENT_OUTPUT_INVALID",
             _validation_errors(exc),
         ) from exc
 
@@ -2561,6 +2660,15 @@ def persist_analysis_output(
         identity_key = _hash(
             f"{_normalized_name(proposal.title)}:{proposal.narrative_mode}:{event_start}:{event_end}"
         )
+        normalized_details = {
+            "narrative_mode": proposal.narrative_mode,
+            "location": proposal.location.strip(),
+            "trigger": proposal.trigger.strip() or "当前原文证据没有明确说明直接起因。",
+            "process": proposal.process.strip() or proposal.summary.strip(),
+            "outcome": proposal.outcome.strip() or "当前原文证据没有明确说明事件结果。",
+            "impact": proposal.impact.strip() or "当前原文证据没有明确说明后续影响。",
+            "discovery_routes": list(proposal.discovery_routes) or ["DOCUMENT_CONTEXT"],
+        }
         candidate = session.scalar(
             select(EventCandidate).where(
                 EventCandidate.run_id == run.id,
@@ -2578,19 +2686,7 @@ def persist_analysis_output(
                 event_type=proposal.event_type,
                 summary=proposal.summary.strip(),
                 participants_json=json.dumps(proposal.participants, ensure_ascii=False),
-                details_json=json.dumps(
-                    {
-                        "narrative_mode": proposal.narrative_mode,
-                        "location": proposal.location.strip(),
-                        "trigger": proposal.trigger.strip(),
-                        "process": proposal.process.strip(),
-                        "outcome": proposal.outcome.strip(),
-                        "impact": proposal.impact.strip(),
-                        "discovery_routes": list(proposal.discovery_routes),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
+                details_json=json.dumps(normalized_details, ensure_ascii=False, sort_keys=True),
                 evidence_ids_json=json.dumps(evidence_ids, ensure_ascii=False),
                 start_char=event_start,
                 end_char=event_end,
@@ -2614,15 +2710,15 @@ def persist_analysis_output(
                 current_routes = []
             candidate.details_json = json.dumps(
                 {
-                    "narrative_mode": proposal.narrative_mode,
-                    "location": max(str(current_details.get("location") or ""), proposal.location.strip(), key=len),
-                    "trigger": max(str(current_details.get("trigger") or ""), proposal.trigger.strip(), key=len),
-                    "process": max(str(current_details.get("process") or ""), proposal.process.strip(), key=len),
-                    "outcome": max(str(current_details.get("outcome") or ""), proposal.outcome.strip(), key=len),
-                    "impact": max(str(current_details.get("impact") or ""), proposal.impact.strip(), key=len),
+                    "narrative_mode": normalized_details["narrative_mode"],
+                    "location": max(str(current_details.get("location") or ""), str(normalized_details["location"]), key=len),
+                    "trigger": max(str(current_details.get("trigger") or ""), str(normalized_details["trigger"]), key=len),
+                    "process": max(str(current_details.get("process") or ""), str(normalized_details["process"]), key=len),
+                    "outcome": max(str(current_details.get("outcome") or ""), str(normalized_details["outcome"]), key=len),
+                    "impact": max(str(current_details.get("impact") or ""), str(normalized_details["impact"]), key=len),
                     "discovery_routes": sorted({
                         *(str(value) for value in current_routes),
-                        *proposal.discovery_routes,
+                        *(str(value) for value in normalized_details["discovery_routes"]),
                     }),
                 },
                 ensure_ascii=False,
@@ -2811,35 +2907,65 @@ def enqueue_narrative_synthesis(
         return None
     if not enqueue_hierarchical_digests(session, settings, run):
         return None
-    task_payload, task_max_attempts = prepare_task_provider_routes(
-        settings,
-        {
-            "run_id": run.id,
-            "source_version_id": run.source_version_id,
-            "provider_name": "openai",
-            "model_profile_id": model_profile.id,
-            "revision_requests": revision_requests or [],
-        },
-        model_profile.max_retries + 1,
-    )
-    task = Task(
-        project_id=run.source_version.document.project_id,
-        kind=NARRATIVE_SYNTHESIS_TASK_KIND,
-        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
-        max_attempts=task_max_attempts,
-    )
-    session.add(task)
-    session.flush()
+    requests = revision_requests or []
+    target_kinds = {
+        str(item.get("target_kind") or "").upper()
+        for item in requests
+    }
+    if not requests or "STORY" in target_kinds:
+        components = list(NARRATIVE_COMPONENTS)
+    else:
+        selected_components: set[str] = set()
+        if "CHARACTER" in target_kinds:
+            selected_components.update({"characters", "relations"})
+        if target_kinds.intersection({"PLOT", "EVENT"}):
+            selected_components.update({"overview", "plot", "relations"})
+        if "RELATION" in target_kinds:
+            selected_components.add("relations")
+        components = [
+            component
+            for component in NARRATIVE_COMPONENTS
+            if component in (selected_components or set(NARRATIVE_COMPONENTS))
+        ]
+    batch_id = f"nrb_{_hash(f'{run.id}:{datetime.now(timezone.utc).isoformat()}')[:32]}"
     next_index = max(
         (link.batch_index for link in run.task_links),
         default=run.total_batches,
-    ) + 1
-    session.add(AnalysisRunTask(run_id=run.id, task_id=task.id, batch_index=next_index))
+    )
+    created: list[Task] = []
+    for component in components:
+        task_payload, task_max_attempts = prepare_task_provider_routes(
+            settings,
+            {
+                "run_id": run.id,
+                "source_version_id": run.source_version_id,
+                "provider_name": "openai",
+                "model_profile_id": model_profile.id,
+                "revision_requests": requests,
+                "narrative_batch_id": batch_id,
+                "narrative_component": component,
+                "narrative_components": components,
+            },
+            model_profile.max_retries + 1,
+        )
+        task = Task(
+            project_id=run.source_version.document.project_id,
+            kind=NARRATIVE_SYNTHESIS_TASK_KIND,
+            payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+            max_attempts=task_max_attempts,
+        )
+        session.add(task)
+        session.flush()
+        next_index += 1
+        session.add(AnalysisRunTask(run_id=run.id, task_id=task.id, batch_index=next_index))
+        created.append(task)
     run.total_batches = next_index
     run.status = AnalysisRunStatus.PENDING.value
     session.commit()
-    session.refresh(task)
-    return task
+    if not created:
+        return None
+    session.refresh(created[0])
+    return created[0]
 
 
 def _narrative_phase_key(item: dict) -> tuple[str, ...]:
@@ -3062,6 +3188,9 @@ def persist_narrative_synthesis(
     all_evidence_ids: list[str] = []
     for item in [output.story_overview, *output.character_roles, *output.character_relations, *output.narrative_phases, *output.event_relations]:
         all_evidence_ids.extend(item.evidence_ids)
+    for relation in output.character_relations:
+        for change in relation.change_history:
+            all_evidence_ids.extend(change.evidence_ids)
     if not set(all_evidence_ids).issubset(valid_evidence_ids):
         raise ValueError("NARRATIVE_EVIDENCE_REFERENCE_INVALID")
     if not _normalized_name(output.story_overview.protagonist) in valid_character_names:
@@ -3107,6 +3236,13 @@ def persist_narrative_synthesis(
     ):
         raise ValueError("NARRATIVE_EVENT_RELATION_REFERENCE_INVALID")
     if any(
+        change.chapter_ordinal > version.chapter_count
+        or (change.trigger_event_id is not None and change.trigger_event_id not in valid_event_ids)
+        for relation in output.character_relations
+        for change in relation.change_history
+    ):
+        raise ValueError("NARRATIVE_RELATION_CHANGE_REFERENCE_INVALID")
+    if any(
         not set(item.event_ids).issubset(valid_event_ids)
         for item in output.narrative_phases
     ):
@@ -3147,6 +3283,107 @@ def persist_narrative_synthesis(
     session.commit()
     session.refresh(existing)
     return PersistedNarrativeSynthesis(existing.id)
+
+
+def persist_narrative_component(
+    session: Session,
+    settings: Settings,
+    *,
+    task: Task,
+    attempt_id: str,
+    task_payload: dict,
+    output: BaseModel,
+) -> PersistedNarrativeSynthesis | None:
+    """Assemble one narrative batch only after every requested part succeeded.
+
+    Completed sibling responses are read from their immutable JSON artifacts.
+    The current response is supplied directly because its task artifact is
+    written only after this validation step. Older usable synthesis fields fill
+    components that a targeted repair deliberately did not request.
+    """
+    run = session.get(AnalysisRun, task_payload.get("run_id"))
+    batch_id = str(task_payload.get("narrative_batch_id") or "")
+    current_component = str(task_payload.get("narrative_component") or "")
+    expected = [
+        str(value)
+        for value in task_payload.get("narrative_components", [])
+        if str(value) in NARRATIVE_COMPONENT_MODELS
+    ]
+    if run is None or not batch_id or current_component not in expected:
+        raise ValueError("NARRATIVE_COMPONENT_BATCH_INVALID")
+
+    component_payloads: dict[str, dict] = {
+        current_component: output.model_dump(mode="json")
+    }
+    sibling_tasks = list(session.scalars(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run.id,
+            Task.kind == NARRATIVE_SYNTHESIS_TASK_KIND,
+            Task.id != task.id,
+        )
+    ))
+    for sibling in sibling_tasks:
+        try:
+            sibling_payload = json.loads(sibling.payload_json)
+        except json.JSONDecodeError:
+            continue
+        component = str(sibling_payload.get("narrative_component") or "")
+        if (
+            sibling_payload.get("narrative_batch_id") != batch_id
+            or component not in expected
+            or sibling.status != TaskStatus.SUCCEEDED.value
+            or not sibling.result_artifact_id
+        ):
+            continue
+        artifact = session.get(Artifact, sibling.result_artifact_id)
+        if artifact is None or artifact.status != "READY":
+            continue
+        path = settings.workspace_dir / Path(artifact.relative_path)
+        try:
+            raw = path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != artifact.content_hash:
+                raise ValueError("NARRATIVE_COMPONENT_ARTIFACT_HASH_INVALID")
+            artifact_payload = json.loads(raw)
+            response = artifact_payload["response"]
+            parsed = parse_narrative_component(component, response)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError("NARRATIVE_COMPONENT_ARTIFACT_INVALID") from exc
+        component_payloads[component] = parsed.model_dump(mode="json")
+
+    if any(component not in component_payloads for component in expected):
+        return None
+
+    previous = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run.id)
+    )
+    if previous is not None:
+        assembled = json.loads(previous.payload_json)
+    else:
+        assembled = {
+            "story_overview": None,
+            "character_roles": [],
+            "character_relations": [],
+            "narrative_phases": [],
+            "event_relations": [],
+        }
+    for component in expected:
+        assembled.update(component_payloads[component])
+    try:
+        full_output = NarrativeSynthesisOutput.model_validate(assembled)
+    except ValidationError as exc:
+        raise StructuredOutputValidationError(
+            "NARRATIVE_ASSEMBLY_INVALID",
+            _validation_errors(exc),
+        ) from exc
+    return persist_narrative_synthesis(
+        session,
+        task=task,
+        attempt_id=attempt_id,
+        task_payload=task_payload,
+        output=full_output,
+    )
 
 
 def enqueue_deep_analysis(
@@ -3447,6 +3684,20 @@ def persist_deep_analysis(
             or len(entity_ids) != len(normalized_names)
             or None in entity_ids
             or resolved_names.intersection(normalized_names)
+            or (
+                resolution.valid_from_chapter is not None
+                and resolution.valid_from_chapter > version.chapter_count
+            )
+            or (
+                resolution.valid_to_chapter is not None
+                and (
+                    resolution.valid_to_chapter > version.chapter_count
+                    or (
+                        resolution.valid_from_chapter is not None
+                        and resolution.valid_to_chapter < resolution.valid_from_chapter
+                    )
+                )
+            )
         ):
             raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")
         resolved_names.update(normalized_names)
@@ -3551,15 +3802,32 @@ def refresh_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
     ))
     if not tasks:
         return run
-    if any(task.status == TaskStatus.FAILED.value for task in tasks):
-        run.status = AnalysisRunStatus.FAILED.value
-    elif any(
+    synthesis = session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run.id)
+    )
+    deep_analysis = session.scalar(
+        select(DeepAnalysis.id).where(DeepAnalysis.run_id == run.id).limit(1)
+    )
+    if any(
         task.status == TaskStatus.WAITING_CONFIRMATION.value
         for task in tasks
     ):
         run.status = AnalysisRunStatus.WAITING_CONFIRMATION.value
     elif any(task.status in {TaskStatus.RUNNING.value, TaskStatus.RETRY_WAIT.value} for task in tasks):
         run.status = AnalysisRunStatus.RUNNING.value
+    elif any(task.status == TaskStatus.PENDING.value for task in tasks):
+        run.status = AnalysisRunStatus.PENDING.value
+    elif synthesis is not None:
+        # Historical or latest repair failures do not invalidate the last
+        # successfully assembled workbench. The API reports the failed update
+        # separately so the user can keep reading and decide whether to retry.
+        if run.confirmed_at is not None and deep_analysis is not None:
+            run.status = AnalysisRunStatus.CONFIRMED.value
+        else:
+            run.status = AnalysisRunStatus.REVIEW.value
+        run.finished_at = datetime.now(timezone.utc)
+    elif any(task.status == TaskStatus.FAILED.value for task in tasks):
+        run.status = AnalysisRunStatus.FAILED.value
     elif all(task.status == TaskStatus.SUCCEEDED.value for task in tasks):
         if not any(task.kind == NARRATIVE_SYNTHESIS_TASK_KIND for task in tasks):
             run.status = AnalysisRunStatus.PENDING.value

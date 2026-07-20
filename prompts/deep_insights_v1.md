@@ -30,6 +30,6 @@
 - conflicts：冲突双方、目标、障碍、赌注、升级、结果和当前状态。没有明确对抗关系时不要制造冲突。
 - scene_analysis：按章节或明显场景说明功能、信息释放、行动/对话比例和节奏。无法可靠区分场景时按章节输出，并将不确定性体现在内容中。
 - claims：输出少量最重要的 FACT、INFERENCE、PATTERN、INTERPRETATION 或 COMPARATIVE 主张。不要把所有摘要句都写成主张。
-- entity_resolutions：处理人物、组织、地点、物品和其他实体的重复名称或简称。merged_names 必须全部来自输入中的 characters 或 related_entities，且类型一致；canonical_name 必须是 merged_names 中最清楚的一个名称。只有原文证据足以确认是同一对象时才合并；相似、上下级关系、同姓同名、通用称呼或同类对象不能合并。人物只有在原文直接说明别名、化名、假身份或明确身份揭示时才允许提出合并；不能用共同事件、相似描述或出现次数单独证明同一人物。每次合并必须引用直接证据，并保留可抽查的 reason。
+- entity_resolutions：处理人物、组织、地点、物品和其他实体的重复名称或简称。merged_names 必须全部来自输入中的 characters 或 related_entities，且类型一致；canonical_name 必须是 merged_names 中最清楚的一个名称。用 resolution_type 区分别名、称谓、化名、假身份和身份揭示；只在特定章节范围成立时填写 valid_from_chapter / valid_to_chapter，并给出 confidence。只有原文证据足以确认是同一对象时才合并；相似、上下级关系、同姓同名、通用称呼或同类对象不能合并。人物只有在原文直接说明别名、化名、假身份或明确身份揭示时才允许提出合并；不能用共同事件、相似描述或出现次数单独证明同一人物。每次合并必须引用直接证据，并保留可抽查的 reason。
 
 宁可少输出、保留 UNCERTAIN 或证据不足，也不要为了填满列表而编造结果。

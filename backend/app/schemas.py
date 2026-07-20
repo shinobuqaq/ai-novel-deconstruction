@@ -289,6 +289,9 @@ class AnalysisRunRead(BaseModel):
     failed_batches: int
     failure_code: str | None
     failure_message: str | None
+    has_usable_result: bool = False
+    usable_result_level: str = "NONE"
+    latest_update_failed: bool = False
     created_at: datetime
     finished_at: datetime | None
     confirmed_at: datetime | None
@@ -467,6 +470,7 @@ class WorkbenchCharacterRelationRead(BaseModel):
     relation: str
     current_state: str
     changes: list[str]
+    change_history: list[dict] = Field(default_factory=list)
     evidence_ids: list[str]
 
 

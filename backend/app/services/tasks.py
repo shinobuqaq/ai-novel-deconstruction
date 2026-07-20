@@ -31,11 +31,13 @@ from .analysis import (
     enqueue_narrative_synthesis,
     parse_deep_analysis,
     parse_hierarchical_digest,
+    parse_narrative_component,
     parse_narrative_synthesis,
     parse_provider_output,
     persist_analysis_output,
     persist_deep_analysis,
     persist_hierarchical_digest,
+    persist_narrative_component,
     persist_narrative_synthesis,
     provider_payload_for_deep_analysis,
     provider_payload_for_hierarchical_digest,
@@ -65,6 +67,11 @@ _OUTPUT_FIELD_LABELS = {
     "story_overview": "故事总览",
     "character_roles": "人物档案",
     "character_relations": "人物关系",
+    "change_history": "关系变化时间线",
+    "chapter_ordinal": "小说章节",
+    "before": "变化前",
+    "after": "变化后",
+    "trigger_event_id": "触发事件",
     "narrative_phases": "剧情阶段",
     "event_relations": "事件关系",
     "discovery_routes": "事件发现依据",
@@ -471,8 +478,13 @@ async def execute_task(
                     raw_text=response.raw_text,
                 ) from exc
     elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
+        component = str(payload.get("narrative_component") or "")
         try:
-            narrative_output = parse_narrative_synthesis(response.parsed)
+            narrative_output = (
+                parse_narrative_component(component, response.parsed)
+                if component
+                else parse_narrative_synthesis(response.parsed)
+            )
         except StructuredOutputValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
@@ -498,13 +510,23 @@ async def execute_task(
             if task is None:
                 raise ValueError("TASK_NOT_FOUND")
             try:
-                persisted_narrative = persist_narrative_synthesis(
-                    session,
-                    task=task,
-                    attempt_id=claim.current_attempt_id,
-                    task_payload=payload,
-                    output=narrative_output,
-                )
+                if component:
+                    persisted_narrative = persist_narrative_component(
+                        session,
+                        settings,
+                        task=task,
+                        attempt_id=claim.current_attempt_id,
+                        task_payload=payload,
+                        output=narrative_output,
+                    )
+                else:
+                    persisted_narrative = persist_narrative_synthesis(
+                        session,
+                        task=task,
+                        attempt_id=claim.current_attempt_id,
+                        task_payload=payload,
+                        output=narrative_output,
+                    )
             except ValueError as exc:
                 raise ProviderError(
                     code="PROVIDER_INVALID_OUTPUT",
@@ -586,7 +608,11 @@ async def execute_task(
             if claim.kind == ANALYSIS_TASK_KIND
             else "analysis.hierarchical_digest.result"
             if claim.kind == HIERARCHICAL_DIGEST_TASK_KIND
-            else "analysis.narrative_synthesis.result"
+            else (
+                f"analysis.narrative_synthesis.{payload.get('narrative_component')}.result"
+                if payload.get("narrative_component")
+                else "analysis.narrative_synthesis.result"
+            )
             if claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND
             else "analysis.deep_insights.result"
             if claim.kind == DEEP_ANALYSIS_TASK_KIND

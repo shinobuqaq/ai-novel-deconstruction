@@ -211,8 +211,24 @@ def _apply_person_resolutions(
         ])
         if resolution:
             reason = str(resolution.get("reason") or "原文直接身份关系").strip()
+            resolution_label = {
+                "ALIAS": "别名",
+                "TITLE": "称谓",
+                "PSEUDONYM": "化名",
+                "FALSE_IDENTITY": "假身份",
+                "IDENTITY_REVEAL": "身份揭示",
+            }.get(str(resolution.get("resolution_type") or "ALIAS"), "身份关系")
+            valid_from = resolution.get("valid_from_chapter")
+            valid_to = resolution.get("valid_to_chapter")
+            range_note = (
+                f"（第 {valid_from} 至 {valid_to} 章）"
+                if valid_from and valid_to
+                else f"（第 {valid_from} 章起）" if valid_from
+                else f"（截至第 {valid_to} 章）" if valid_to
+                else ""
+            )
             identity_notes.append(
-                f"依据原文身份关系合并展示：{'、'.join(resolution.get('merged_names', []))}。依据：{reason}"
+                f"依据原文{resolution_label}{range_note}合并展示：{'、'.join(resolution.get('merged_names', []))}。依据：{reason}"
             )
         first_candidates = [
             character.get("first_chapter_ordinal")
@@ -541,10 +557,10 @@ def build_workbench_projection(
             "confidence": max(item.confidence for item in group),
             "narrative_mode": narrative_mode,
             "location": longest_detail("location"),
-            "trigger": longest_detail("trigger"),
-            "process": longest_detail("process"),
-            "outcome": longest_detail("outcome"),
-            "impact": longest_detail("impact"),
+            "trigger": longest_detail("trigger") or "当前原文证据没有明确说明直接起因。",
+            "process": longest_detail("process") or max((item.summary for item in group), key=len),
+            "outcome": longest_detail("outcome") or "当前原文证据没有明确说明事件结果。",
+            "impact": longest_detail("impact") or "当前原文证据没有明确说明后续影响。",
             "boundary_status": boundary_status,
             "boundary_note": boundary_note,
             "discovery_routes": discovery_routes,

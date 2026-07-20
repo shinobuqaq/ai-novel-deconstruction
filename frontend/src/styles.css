@@ -283,6 +283,11 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .phase-card p, .formal-card p { margin: 0; color: #34424e; font-size: 13px; line-height: 1.65; }
 .phase-card small, .formal-card small { color: #687985; font-size: 11px; line-height: 1.5; }
 .formal-card .identity-note { padding: 7px 9px; border-left: 3px solid #c69b45; background: #fff9ec; color: #725820; }
+.relation-change-history { display: grid; gap: 7px; margin-top: 8px; }
+.relation-change-history > div { display: grid; gap: 4px; padding: 8px 10px; border-left: 3px solid #78a8b5; background: #f5fafb; }
+.relation-change-history b { color: #326b79; font-size: 11px; }
+.relation-change-history span { color: #52646e; font-size: 12px; line-height: 1.55; }
+.relation-change-history button { justify-self: start; }
 .formal-card header > div { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .formal-card header > div > span { flex: 0 0 auto; padding: 3px 6px; border-radius: 4px; background: #e6f0f2; }
 .formal-card header i { flex: 0 0 auto; color: #4d7180; font-size: 11px; font-style: normal; }

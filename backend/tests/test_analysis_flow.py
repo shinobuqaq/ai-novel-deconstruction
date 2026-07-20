@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.models import AnalysisRunTask, EntityCandidate, EventCandidate, NarrativeSynthesis, Task, TaskAttempt, TaskStatus
+from app.models import AnalysisRun, AnalysisRunTask, EntityCandidate, EventCandidate, NarrativeSynthesis, Task, TaskAttempt, TaskStatus
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
@@ -128,6 +128,15 @@ class StaticAnalysisProvider:
                 ],
                 "event_relations": [],
             }
+            component = (foundation.get("requested_component") or {}).get("key")
+            component_fields = {
+                "overview": ("story_overview",),
+                "characters": ("character_roles",),
+                "plot": ("narrative_phases",),
+                "relations": ("character_relations", "event_relations"),
+            }
+            if component:
+                output = {key: output[key] for key in component_fields[component]}
         else:
             assert task_kind == "analysis.deep_insights"
             foundation = json.loads(payload["input"])
@@ -611,8 +620,8 @@ def test_analysis_estimate_uses_local_batches_and_saved_pricing(client) -> None:
     assert response.status_code == 200
     estimate = response.json()
     assert estimate["batch_count"] == 1
-    assert estimate["planned_call_count"] == 3
-    assert estimate["retry_ceiling_call_count"] == 9
+    assert estimate["planned_call_count"] == 6
+    assert estimate["retry_ceiling_call_count"] == 18
     assert estimate["pricing_available"] is True
     assert estimate["cost_currency"] == "USD"
     assert estimate["maximum_cost_without_retries"] > 0
@@ -666,30 +675,34 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert progress["status"] == "PENDING"
     assert progress["completed_batches"] == 1
     assert progress["failed_batches"] == 0
-    assert progress["total_batches"] == 2
+    assert progress["total_batches"] == 5
 
-    with client.app.state.session_factory() as session:
-        narrative_claim = claim_next_task(
-            session,
-            worker_id="narrative-test-worker",
-            lease_seconds=60,
+    narrative_components = set()
+    for index in range(4):
+        with client.app.state.session_factory() as session:
+            narrative_claim = claim_next_task(
+                session,
+                worker_id=f"narrative-test-worker-{index}",
+                lease_seconds=60,
+            )
+        assert narrative_claim is not None
+        assert narrative_claim.kind == "analysis.narrative_synthesis"
+        narrative_components.add(json.loads(narrative_claim.payload_json)["narrative_component"])
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            narrative_claim,
+            registry,
         )
-    assert narrative_claim is not None
-    assert narrative_claim.kind == "analysis.narrative_synthesis"
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        narrative_claim,
-        registry,
-    )
+    assert narrative_components == {"overview", "characters", "plot", "relations"}
 
     progress = client.get(
         f"/api/source-versions/{version_id}/analysis/entities-events"
     ).json()
     assert progress["status"] == "REVIEW"
-    assert progress["completed_batches"] == 2
+    assert progress["completed_batches"] == 5
     assert progress["failed_batches"] == 0
-    assert progress["total_batches"] == 2
+    assert progress["total_batches"] == 5
 
     foundation_workbench = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
@@ -702,7 +715,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     )
     assert continue_analysis.status_code == 202
     assert continue_analysis.json()["status"] == "PENDING"
-    assert continue_analysis.json()["total_batches"] == 3
+    assert continue_analysis.json()["total_batches"] == 6
 
     with client.app.state.session_factory() as session:
         deep_claim = claim_next_task(
@@ -723,20 +736,20 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/source-versions/{version_id}/analysis/entities-events"
     ).json()
     assert progress["status"] == "REVIEW"
-    assert progress["completed_batches"] == 3
+    assert progress["completed_batches"] == 6
     assert progress["failed_batches"] == 0
 
     diagnostics = client.get(
         f"/api/analysis-runs/{run['id']}/diagnostics"
     ).json()
-    assert diagnostics["attempt_count"] == 3
+    assert diagnostics["attempt_count"] == 6
     assert diagnostics["retry_count"] == 0
-    assert diagnostics["prompt_tokens"] == 360
-    assert diagnostics["completion_tokens"] == 240
-    assert diagnostics["actual_cost"] == pytest.approx(0.0084)
+    assert diagnostics["prompt_tokens"] == 720
+    assert diagnostics["completion_tokens"] == 480
+    assert diagnostics["actual_cost"] == pytest.approx(0.0168)
     assert diagnostics["cost_currency"] == "CNY"
     assert diagnostics["cost_complete"] is True
-    assert all(item["actual_cost"] == pytest.approx(0.0028) for item in diagnostics["stages"])
+    assert [item["actual_cost"] for item in diagnostics["stages"]] == pytest.approx([0.0028, 0.0112, 0.0028])
     assert [item["status"] for item in diagnostics["stages"]] == [
         "SUCCEEDED",
         "SUCCEEDED",
@@ -982,6 +995,69 @@ def test_invalid_model_structure_records_safe_field_diagnostics(client) -> None:
     assert "raw_text" not in stored
 
 
+def test_failed_update_keeps_last_usable_workbench_in_review(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+    registry = ProviderRegistry([StaticAnalysisProvider()])
+
+    for index in range(5):
+        with client.app.state.session_factory() as session:
+            claim = claim_next_task(
+                session, worker_id=f"usable-result-worker-{index}", lease_seconds=60
+            )
+        assert claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            claim,
+            registry,
+        )
+
+    with client.app.state.session_factory() as session:
+        analysis_run = session.get(AnalysisRun, run["id"])
+        assert analysis_run is not None
+        failed_task = Task(
+            project_id=analysis_run.source_version.document.project_id,
+            kind="analysis.narrative_synthesis",
+            payload_json=json.dumps({
+                "run_id": run["id"],
+                "source_version_id": version_id,
+                "narrative_component": "overview",
+            }),
+            status=TaskStatus.FAILED.value,
+            max_attempts=1,
+            attempts=1,
+            last_error_code="PROVIDER_INVALID_OUTPUT",
+            last_error_message="最近一次故事总览更新格式不完整。",
+        )
+        session.add(failed_task)
+        session.flush()
+        next_index = analysis_run.total_batches + 1
+        session.add(AnalysisRunTask(
+            run_id=run["id"], task_id=failed_task.id, batch_index=next_index
+        ))
+        analysis_run.total_batches = next_index
+        session.commit()
+
+    result = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    )
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["status"] == "REVIEW"
+    assert payload["has_usable_result"] is True
+    assert payload["usable_result_level"] == "STORY"
+    assert payload["latest_update_failed"] is True
+    assert payload["failure_code"] == "PROVIDER_INVALID_OUTPUT"
+    workbench = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert workbench.status_code == 200
+    assert workbench.json()["narrative_status"] == "READY"
+
+
 def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> None:
     imported = _import_confirmed_novel(client)
     client.put("/api/settings/openai", json={"api_key": "sk-test"})
@@ -1002,18 +1078,19 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
         foundation_claim,
         registry,
     )
-    with client.app.state.session_factory() as session:
-        narrative_claim = claim_next_task(
-            session, worker_id="legacy-narrative-worker", lease_seconds=60
+    for index in range(4):
+        with client.app.state.session_factory() as session:
+            narrative_claim = claim_next_task(
+                session, worker_id=f"legacy-narrative-worker-{index}", lease_seconds=60
+            )
+        assert narrative_claim is not None
+        assert narrative_claim.kind == "analysis.narrative_synthesis"
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            narrative_claim,
+            registry,
         )
-    assert narrative_claim is not None
-    assert narrative_claim.kind == "analysis.narrative_synthesis"
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        narrative_claim,
-        registry,
-    )
 
     with client.app.state.session_factory() as session:
         synthesis = session.scalar(
@@ -1047,19 +1124,23 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
     repair = client.post(f"/api/analysis-runs/{run['id']}/narrative/repair")
     assert repair.status_code == 202
     assert repair.json()["status"] == "PENDING"
-    with client.app.state.session_factory() as session:
-        repair_claim = claim_next_task(
-            session, worker_id="legacy-repair-worker", lease_seconds=60
+    repair_components = set()
+    for index in range(4):
+        with client.app.state.session_factory() as session:
+            repair_claim = claim_next_task(
+                session, worker_id=f"legacy-repair-worker-{index}", lease_seconds=60
+            )
+        assert repair_claim is not None
+        assert repair_claim.kind == "analysis.narrative_synthesis"
+        assert "人物角色覆盖" in repair_claim.payload_json
+        repair_components.add(json.loads(repair_claim.payload_json)["narrative_component"])
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            repair_claim,
+            registry,
         )
-    assert repair_claim is not None
-    assert repair_claim.kind == "analysis.narrative_synthesis"
-    assert "人物角色覆盖" in repair_claim.payload_json
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        repair_claim,
-        registry,
-    )
+    assert repair_components == {"overview", "characters", "plot", "relations"}
 
     repaired = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert repaired.status_code == 200

@@ -711,7 +711,7 @@ function FormalWorkbench({
                 </section>
               ))}
               {!viewData.characters.length && <p className="result-empty">当前没有整理出人物档案。</p>}
-              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={name}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化：{relation.changes.join("；")}</small>}{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_name}与${relation.target_name}的关系`)}</article>)}</section>}
+              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={name}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化摘要：{relation.changes.join("；")}</small>}{relation.change_history.length > 0 && <div className="relation-change-history">{relation.change_history.map((change, changeIndex) => <div key={`${change.chapter_ordinal}-${changeIndex}`}><b>第 {change.chapter_ordinal} 章</b><span>{change.before ? `${change.before} → ` : ""}{change.after}</span>{change.trigger_event_id && (() => { const event = viewData.events.find((item) => item.id === change.trigger_event_id); return event ? <button type="button" onClick={() => openWorkbenchItem("events", event.id)}>触发事件：{event.title}</button> : null; })()}{evidenceButtons(change.evidence_ids, "查看变化依据")}</div>)}</div>}{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_name}与${relation.target_name}的关系`)}</article>)}</section>}
             </div>
           )}
 
@@ -1002,11 +1002,11 @@ export default function ProductWorkbench() {
       return;
     }
     setAnalysisDiagnostics(await api.analysisDiagnostics(run.id));
-    if (!["REVIEW", "CONFIRMED", "FAILED"].includes(run.status)) return;
+    if (!run.has_usable_result && !["REVIEW", "CONFIRMED", "FAILED"].includes(run.status)) return;
     try {
       setWorkbench(await api.analysisWorkbench(run.id));
     } catch (reason) {
-      if (run.status !== "FAILED") throw reason;
+      if (!run.has_usable_result && run.status !== "FAILED") throw reason;
     }
   }, []);
 
@@ -1686,11 +1686,11 @@ export default function ProductWorkbench() {
                           </section>
                         )}
 
-                        {analysisRun?.status === "FAILED" && (
+                        {(analysisRun?.status === "FAILED" || analysisRun?.latest_update_failed) && (
                           <div className="analysis-failed" role="alert">
                             <div>
-                              <strong>{workbench ? "最近一次分析没有完成，当前仍可查看上一版结果" : "这次分析没有完成"}</strong>
-                              <span>{analysisRun.failure_message || "系统已停止当前批次，原文和已确认章节不会受到影响。"}{workbench ? " 已保存的拆解结果没有被覆盖。" : ""}</span>
+                              <strong>{analysisRun.has_usable_result ? "已有拆解结果可正常查看，但最近一次更新没有完成" : "这次分析没有完成"}</strong>
+                              <span>{analysisRun.failure_message || "系统已停止当前批次，原文和已确认章节不会受到影响。"}{analysisRun.has_usable_result ? " 页面显示的是最近一版成功结果，失败更新没有覆盖它。" : ""}</span>
                             </div>
                             <div className="analysis-start-actions">
                               <a className="button-link secondary-button" href="/settings">检查在线 AI 设置</a>
@@ -1698,14 +1698,16 @@ export default function ProductWorkbench() {
                                 type="button"
                                 disabled={Boolean(busy)}
                                 onClick={() => void (
-                                  workbench?.narrative_status === "INCOMPLETE"
+                                  analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY"
+                                    ? setWorkbenchView("issues")
+                                    : workbench?.narrative_status === "INCOMPLETE"
                                     ? handleRepairNarrative()
                                     : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY"
                                       ? handleStartDeepAnalysis()
                                       : handleStartAnalysis()
                                 )}
                               >
-                                {busy ? "正在准备" : workbench?.narrative_status === "INCOMPLETE" ? "重新整理人物和剧情" : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY" ? "继续生成深层拆解" : "重新开始分析"}
+                                {busy ? "正在准备" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" ? "去问题中心决定是否重做" : workbench?.narrative_status === "INCOMPLETE" ? "重新整理人物和剧情" : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY" ? "继续生成深层拆解" : "重新开始分析"}
                               </button>
                             </div>
                           </div>
