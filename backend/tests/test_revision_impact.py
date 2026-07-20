@@ -12,9 +12,9 @@ from app.services.tasks import _deep_consistency_message
 
 def test_each_deep_workbench_target_has_a_bounded_revision_scope() -> None:
     expected = {
-        "FACT": ["fact_versions", "state_changes", "actor_knowledge", "claims"],
-        "STATE": ["fact_versions", "state_changes", "actor_knowledge", "claims"],
-        "KNOWLEDGE": ["actor_knowledge", "claims"],
+        "FACT": ["fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"],
+        "STATE": ["fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"],
+        "KNOWLEDGE": ["actor_knowledge", "knowledge_transfers", "claims"],
         "WORLD": ["fact_versions", "world_rules", "claims", "entity_resolutions"],
         "FORESHADOWING": ["foreshadowing", "claims"],
         "CONFLICT": ["conflicts", "claims"],
@@ -101,6 +101,18 @@ def test_revision_impact_follows_a_multi_hop_state_and_claim_chain() -> None:
                 "evidence_ids": ["evidence-2"],
             }
         ],
+        "knowledge_transfers": [
+            {
+                "id": "transfer-1",
+                "source_actor": "直接观察",
+                "target_actor": "林舟",
+                "proposition": "纸灰来自一封重要书信",
+                "transfer_type": "WITNESSED",
+                "resulting_state": "KNOWS",
+                "chapter_ordinal": 3,
+                "evidence_ids": ["evidence-2"],
+            }
+        ],
         "claims": [
             {
                 "id": "claim-1",
@@ -120,6 +132,7 @@ def test_revision_impact_follows_a_multi_hop_state_and_claim_chain() -> None:
     assert next(item for item in impact["sections"] if item["key"] == "fact_versions")["item_ids"] == ["fact-1"]
     assert next(item for item in impact["sections"] if item["key"] == "state_changes")["item_ids"] == ["state-1"]
     assert next(item for item in impact["sections"] if item["key"] == "actor_knowledge")["item_ids"] == ["knowledge-1"]
+    assert next(item for item in impact["sections"] if item["key"] == "knowledge_transfers")["item_ids"] == ["transfer-1"]
     assert next(item for item in impact["sections"] if item["key"] == "claims")["item_ids"] == ["claim-1"]
 
 
@@ -160,11 +173,30 @@ def test_temporal_guard_rejects_future_evidence_and_same_chapter_conflicts() -> 
             {"evidence-1": 1},
         )
 
+    with pytest.raises(ValueError, match="KNOWLEDGE_TRANSFER_RESULT_MISSING"):
+        _validate_deep_temporal_consistency(
+            {
+                "knowledge_transfers": [
+                    {
+                        "source_actor": "直接观察",
+                        "target_actor": "林舟",
+                        "proposition": "密信存在",
+                        "transfer_type": "WITNESSED",
+                        "resulting_state": "KNOWS",
+                        "chapter_ordinal": 2,
+                        "evidence_ids": ["evidence-1"],
+                    }
+                ]
+            },
+            {"evidence-1": 1},
+        )
+
 
 def test_deep_consistency_errors_are_explained_in_plain_chinese() -> None:
     assert "后文章节" in _deep_consistency_message("DEEP_ANALYSIS_FUTURE_EVIDENCE_LEAK")
     assert "互相矛盾的状态" in _deep_consistency_message("DEEP_ANALYSIS_STATE_REPLAY_CONFLICT")
     assert "互相矛盾的认知" in _deep_consistency_message("DEEP_ANALYSIS_KNOWLEDGE_REPLAY_CONFLICT")
+    assert "传播过程" in _deep_consistency_message("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_RESULT_MISSING")
 
 
 def test_narrative_revision_preserves_unaffected_roles_and_phases() -> None:

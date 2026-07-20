@@ -783,6 +783,15 @@ def build_workbench_projection(
                 _normalize(knowledge.get("actor", "")),
                 knowledge.get("actor", ""),
             )
+        for transfer in deep_payload.get("knowledge_transfers", []):
+            transfer["source_actor"] = person_resolution_by_name.get(
+                _normalize(transfer.get("source_actor", "")),
+                transfer.get("source_actor", ""),
+            )
+            transfer["target_actor"] = person_resolution_by_name.get(
+                _normalize(transfer.get("target_actor", "")),
+                transfer.get("target_actor", ""),
+            )
         for conflict in deep_payload.get("conflicts", []):
             conflict["participants"] = _unique([
                 person_resolution_by_name.get(_normalize(name), name)
@@ -940,6 +949,20 @@ def build_state_at_chapter_projection(
         ):
             knowledge_by_key[key] = item
 
+    knowledge_transfers = [
+        item
+        for item in deep.get("knowledge_transfers", [])
+        if int(item.get("chapter_ordinal") or 0) <= chapter_ordinal
+    ]
+    knowledge_transfers.sort(
+        key=lambda item: (
+            int(item.get("chapter_ordinal") or 0),
+            item.get("target_actor", ""),
+            item.get("proposition", ""),
+            item.get("id", ""),
+        )
+    )
+
     rules = [
         item
         for item in deep.get("world_rules", [])
@@ -960,5 +983,6 @@ def build_state_at_chapter_projection(
             knowledge_by_key.values(),
             key=lambda item: (item.get("actor", ""), item.get("proposition", "")),
         ),
+        "knowledge_transfers": knowledge_transfers,
         "world_rules": rules,
     }

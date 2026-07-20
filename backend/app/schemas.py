@@ -492,6 +492,18 @@ class WorkbenchActorKnowledgeRead(BaseModel):
     evidence_ids: list[str]
 
 
+class WorkbenchKnowledgeTransferRead(BaseModel):
+    id: str
+    source_actor: str
+    target_actor: str
+    proposition: str
+    transfer_type: str
+    resulting_state: str
+    chapter_ordinal: int
+    event_id: str | None
+    evidence_ids: list[str]
+
+
 class WorkbenchWorldRuleRead(BaseModel):
     id: str
     title: str
@@ -556,6 +568,7 @@ class WorkbenchDeepAnalysisRead(BaseModel):
     fact_versions: list[WorkbenchFactVersionRead] = Field(default_factory=list)
     state_changes: list[WorkbenchStateChangeRead] = Field(default_factory=list)
     actor_knowledge: list[WorkbenchActorKnowledgeRead] = Field(default_factory=list)
+    knowledge_transfers: list[WorkbenchKnowledgeTransferRead] = Field(default_factory=list)
     world_rules: list[WorkbenchWorldRuleRead] = Field(default_factory=list)
     foreshadowing: list[WorkbenchForeshadowingRead] = Field(default_factory=list)
     conflicts: list[WorkbenchConflictRead] = Field(default_factory=list)
@@ -594,6 +607,7 @@ class WorkbenchStateAtChapterRead(BaseModel):
     facts: list[WorkbenchFactVersionRead] = Field(default_factory=list)
     states: list[WorkbenchStateChangeRead] = Field(default_factory=list)
     knowledge: list[WorkbenchActorKnowledgeRead] = Field(default_factory=list)
+    knowledge_transfers: list[WorkbenchKnowledgeTransferRead] = Field(default_factory=list)
     world_rules: list[WorkbenchWorldRuleRead] = Field(default_factory=list)
 
 

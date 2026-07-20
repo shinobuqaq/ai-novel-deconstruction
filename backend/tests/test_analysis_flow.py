@@ -173,9 +173,21 @@ class StaticAnalysisProvider:
                 "actor_knowledge": [
                     {
                         "actor": character["name"],
-                        "proposition": "知道桌上有一封写着自己名字的密信",
+                        "proposition": "桌上有一封写着自己名字的密信",
                         "state": "KNOWS",
                         "chapter_ordinal": 1,
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "knowledge_transfers": [
+                    {
+                        "source_actor": "直接观察",
+                        "target_actor": character["name"],
+                        "proposition": "桌上有一封写着自己名字的密信",
+                        "transfer_type": "WITNESSED",
+                        "resulting_state": "KNOWS",
+                        "chapter_ordinal": 1,
+                        "event_id": event["id"],
                         "evidence_ids": [evidence_id],
                     }
                 ],
@@ -502,6 +514,8 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert state_payload["chapter_title"].startswith("第二章")
     assert state_payload["states"][0]["chapter_ordinal"] == 2
     assert state_payload["knowledge"][0]["actor"] == "林舟"
+    assert state_payload["knowledge_transfers"][0]["source_actor"] == "直接观察"
+    assert state_payload["knowledge_transfers"][0]["target_actor"] == "林舟"
 
     completed_task = client.get(f"/api/tasks/{claim.id}").json()
     artifact = client.get(
@@ -544,6 +558,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["phases"][0]["title"] == "雨夜归来与密信出现"
     assert projection["deep_status"] == "READY"
     assert projection["deep_analysis"]["fact_versions"][0]["status"] == "CONFIRMED"
+    assert projection["deep_analysis"]["knowledge_transfers"][0]["transfer_type"] == "WITNESSED"
     unaffected_fact = next(
         item
         for item in projection["deep_analysis"]["fact_versions"]
@@ -589,6 +604,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         "fact_versions",
         "state_changes",
         "actor_knowledge",
+        "knowledge_transfers",
         "claims",
     ]
     assert revision_payload["revision_impact"]["mode"] == "TARGETED"

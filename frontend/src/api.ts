@@ -388,6 +388,18 @@ export type WorkbenchActorKnowledge = {
   evidence_ids: string[];
 };
 
+export type WorkbenchKnowledgeTransfer = {
+  id: string;
+  source_actor: string;
+  target_actor: string;
+  proposition: string;
+  transfer_type: "WITNESSED" | "TOLD" | "OVERHEARD" | "RUMOR" | "MISREPRESENTED" | "RETRACTED";
+  resulting_state: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
 export type WorkbenchWorldRule = {
   id: string;
   title: string;
@@ -452,6 +464,7 @@ export type WorkbenchDeepAnalysis = {
   fact_versions: WorkbenchFactVersion[];
   state_changes: WorkbenchStateChange[];
   actor_knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
   world_rules: WorkbenchWorldRule[];
   foreshadowing: WorkbenchForeshadowing[];
   conflicts: WorkbenchConflict[];
@@ -533,6 +546,7 @@ export type WorkbenchStateAtChapter = {
   facts: WorkbenchFactVersion[];
   states: WorkbenchStateChange[];
   knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
   world_rules: WorkbenchWorldRule[];
 };
 

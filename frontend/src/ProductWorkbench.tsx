@@ -127,6 +127,15 @@ const KNOWLEDGE_LABELS: Record<string, string> = {
   UNKNOWN: "尚不知道",
 };
 
+const KNOWLEDGE_TRANSFER_LABELS: Record<string, string> = {
+  WITNESSED: "亲眼见证",
+  TOLD: "明确告知",
+  OVERHEARD: "无意听见",
+  RUMOR: "传闻传播",
+  MISREPRESENTED: "信息被歪曲",
+  RETRACTED: "信息被撤回",
+};
+
 const FORESHADOWING_LABELS: Record<string, string> = {
   PLANTED: "已经提出",
   REINFORCED: "再次强化",
@@ -159,6 +168,7 @@ const REVISION_COLLECTIONS = [
   ["fact_versions", "事实"],
   ["state_changes", "状态变化"],
   ["actor_knowledge", "人物认知"],
+  ["knowledge_transfers", "认知传播"],
   ["world_rules", "世界设定"],
   ["foreshadowing", "伏笔"],
   ["conflicts", "冲突"],
@@ -324,6 +334,7 @@ function FormalWorkbench({
       ...viewData.events.map((item) => ({ key: item.id, view: "events" as WorkbenchView, section: "事件", title: item.title, text: `${item.summary} ${item.people.join(" ")} ${item.related_entities.join(" ")} ${item.location} ${item.trigger} ${item.process} ${item.outcome} ${item.impact}`, evidenceIds: item.evidence_ids })),
       ...viewData.phases.map((item) => ({ key: item.id, view: "plot" as WorkbenchView, section: "剧情阶段", title: item.title, text: `${item.situation} ${item.goal} ${item.obstacle} ${item.outcome} ${item.change}`, evidenceIds: item.evidence_ids })),
       ...(viewData.deep_analysis?.fact_versions.map((item) => ({ key: item.id, view: "facts" as WorkbenchView, section: "事实", title: item.subject, text: `${item.predicate} ${item.value} ${item.timeline_note}`, evidenceIds: item.evidence_ids })) ?? []),
+      ...(viewData.deep_analysis?.knowledge_transfers.map((item) => ({ key: item.id, view: "facts" as WorkbenchView, section: "认知传播", title: `${item.source_actor} → ${item.target_actor}`, text: `${item.proposition} ${KNOWLEDGE_TRANSFER_LABELS[item.transfer_type] ?? "信息传播"}`, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.world_rules.map((item) => ({ key: item.id, view: "world" as WorkbenchView, section: "世界设定", title: item.title, text: `${item.description} ${item.limitations.join(" ")} ${item.costs.join(" ")}`, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.foreshadowing.map((item) => ({ key: item.id, view: "foreshadowing" as WorkbenchView, section: "伏笔", title: item.title, text: item.setup, evidenceIds: item.evidence_ids })) ?? []),
       ...(viewData.deep_analysis?.conflicts.map((item) => ({ key: item.id, view: "conflicts" as WorkbenchView, section: "冲突", title: item.title, text: `${item.goals} ${item.obstacles} ${item.stakes} ${item.resolution}`, evidenceIds: item.evidence_ids })) ?? []),
@@ -356,7 +367,7 @@ function FormalWorkbench({
     });
     return () => { active = false; };
   }, [viewData.run_id, viewData.deep_revision, viewData.deep_analysis, stateChapter]);
-  const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], world_rules: [] };
+  const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], knowledge_transfers: [], world_rules: [] };
   const revisionChanges = useMemo(() => {
     if (!revisionDiff) return [];
     return REVISION_COLLECTIONS.map(([key, label]) => ({
@@ -802,6 +813,25 @@ function FormalWorkbench({
                         <article key={knowledge.id}><span>{KNOWLEDGE_LABELS[knowledge.state] ?? "认知状态"}</span><h4>{knowledge.actor}</h4><p>{knowledge.proposition}</p><small>截至第 {knowledge.chapter_ordinal} 章</small>{evidenceButtons(knowledge.evidence_ids)}{markProblemButton("KNOWLEDGE", knowledge.id, `${knowledge.actor}：${knowledge.proposition}`)}</article>
                       ))}
                       {!pointInTime.knowledge.length && <p className="result-empty">截至这一章，没有足够证据区分人物认知。</p>}
+                    </div>
+                  </section>
+
+                  <section className="insight-group">
+                    <header><div><span>见证、告知、误传与撤回</span><h3>信息如何传到人物手中</h3></div><b>{pointInTime.knowledge_transfers.length}</b></header>
+                    <div className="timeline-list knowledge-transfer-list">
+                      {pointInTime.knowledge_transfers.map((transfer) => (
+                        <article key={transfer.id}>
+                          <span>第 {transfer.chapter_ordinal} 章</span>
+                          <div>
+                            <h4>{transfer.source_actor} → {transfer.target_actor}</h4>
+                            <p>{transfer.proposition}</p>
+                            <small>{KNOWLEDGE_TRANSFER_LABELS[transfer.transfer_type] ?? "信息传播"}；结果：{KNOWLEDGE_LABELS[transfer.resulting_state] ?? "认知状态待核对"}</small>
+                            {evidenceButtons(transfer.evidence_ids)}
+                            {markProblemButton("KNOWLEDGE", transfer.id, `${transfer.source_actor}传给${transfer.target_actor}的信息`)}
+                          </div>
+                        </article>
+                      ))}
+                      {!pointInTime.knowledge_transfers.length && <p className="result-empty">截至这一章，没有足够证据还原人物之间的信息传播过程。</p>}
                     </div>
                   </section>
 

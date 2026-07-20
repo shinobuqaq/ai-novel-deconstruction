@@ -52,7 +52,7 @@ ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
 NARRATIVE_PROMPT_VERSION = "1.6.0"
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.6.0"
+DEEP_PROMPT_VERSION = "1.7.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -76,6 +76,7 @@ DEEP_ANALYSIS_COLLECTIONS = (
     "fact_versions",
     "state_changes",
     "actor_knowledge",
+    "knowledge_transfers",
     "world_rules",
     "foreshadowing",
     "conflicts",
@@ -85,9 +86,9 @@ DEEP_ANALYSIS_COLLECTIONS = (
 )
 NARRATIVE_REVISION_TARGETS = {"CHARACTER", "STORY", "PLOT", "EVENT", "RELATION"}
 DEEP_TARGET_COLLECTIONS = {
-    "FACT": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
-    "STATE": {"fact_versions", "state_changes", "actor_knowledge", "claims"},
-    "KNOWLEDGE": {"actor_knowledge", "claims"},
+    "FACT": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"},
+    "STATE": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "claims"},
+    "KNOWLEDGE": {"actor_knowledge", "knowledge_transfers", "claims"},
     "WORLD": {"fact_versions", "world_rules", "claims", "entity_resolutions"},
     "FORESHADOWING": {"foreshadowing", "claims"},
     "CONFLICT": {"conflicts", "claims"},
@@ -112,6 +113,7 @@ DEEP_COLLECTION_LABELS = {
     "fact_versions": "事实",
     "state_changes": "状态变化",
     "actor_knowledge": "人物认知",
+    "knowledge_transfers": "认知传播",
     "world_rules": "世界设定",
     "foreshadowing": "伏笔",
     "conflicts": "冲突",
@@ -142,6 +144,12 @@ def _revision_item_label(collection: str, item: dict) -> str:
         return f"{item.get('subject', '未知对象')}：{item.get('aspect', '状态变化')}"
     if collection == "actor_knowledge":
         return f"{item.get('actor', '未知人物')}：{item.get('proposition', '认知变化')}"
+    if collection == "knowledge_transfers":
+        return (
+            f"{item.get('source_actor', '未知来源')} → "
+            f"{item.get('target_actor', '未知人物')}："
+            f"{item.get('proposition', '信息传播')}"
+        )
     if collection == "scene_analysis":
         return f"第 {item.get('chapter_ordinal', '?')} 章：{item.get('summary', '场景与节奏')}"
     if collection == "claims":
@@ -174,6 +182,7 @@ def _revision_chapter(collection: str, item: dict) -> int | None:
         "fact_versions": "valid_from_chapter",
         "state_changes": "chapter_ordinal",
         "actor_knowledge": "chapter_ordinal",
+        "knowledge_transfers": "chapter_ordinal",
         "world_rules": "discovered_chapter",
         "foreshadowing": "setup_chapter",
         "scene_analysis": "chapter_ordinal",
@@ -190,6 +199,7 @@ def _revision_family_key(collection: str, item: dict) -> tuple[str, ...] | None:
         "fact_versions": ("subject", "predicate"),
         "state_changes": ("subject", "aspect"),
         "actor_knowledge": ("actor", "proposition"),
+        "knowledge_transfers": ("source_actor", "target_actor", "proposition"),
         "world_rules": ("title",),
         "foreshadowing": ("title",),
         "conflicts": ("title",),
@@ -209,6 +219,7 @@ def _revision_terms(collection: str, item: dict) -> set[str]:
         "fact_versions": ("subject", "predicate", "value"),
         "state_changes": ("subject", "aspect", "before", "after"),
         "actor_knowledge": ("actor", "proposition"),
+        "knowledge_transfers": ("source_actor", "target_actor", "proposition"),
         "world_rules": ("title", "description"),
         "foreshadowing": ("title", "setup"),
         "conflicts": ("title", "goals", "obstacles", "stakes", "resolution"),
@@ -254,14 +265,15 @@ def _revision_item_depends_on(
         return source_chapter is None or target_chapter is None or target_chapter >= source_chapter
 
     allowed_downstream = {
-        "fact_versions": {"state_changes", "actor_knowledge", "world_rules", "claims"},
-        "state_changes": {"actor_knowledge", "claims"},
-        "actor_knowledge": {"claims"},
-        "world_rules": {"fact_versions", "state_changes", "actor_knowledge", "conflicts", "claims"},
+        "fact_versions": {"state_changes", "actor_knowledge", "knowledge_transfers", "world_rules", "claims"},
+        "state_changes": {"actor_knowledge", "knowledge_transfers", "claims"},
+        "actor_knowledge": {"knowledge_transfers", "claims"},
+        "knowledge_transfers": {"actor_knowledge", "claims"},
+        "world_rules": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "conflicts", "claims"},
         "foreshadowing": {"claims"},
         "conflicts": {"claims"},
-        "scene_analysis": {"actor_knowledge", "claims"},
-        "entity_resolutions": {"fact_versions", "state_changes", "actor_knowledge", "world_rules", "claims"},
+        "scene_analysis": {"actor_knowledge", "knowledge_transfers", "claims"},
+        "entity_resolutions": {"fact_versions", "state_changes", "actor_knowledge", "knowledge_transfers", "world_rules", "claims"},
     }
     if target_collection not in allowed_downstream.get(source_collection, set()):
         return False
@@ -346,7 +358,7 @@ def build_deep_revision_impact(
             item_evidence = _revision_evidence_ids(item)
             item_text = " ".join(
                 str(item.get(key) or "")
-                for key in ("title", "subject", "predicate", "actor", "proposition", "claim_text", "scope")
+                for key in ("title", "subject", "predicate", "actor", "source_actor", "target_actor", "proposition", "claim_text", "scope")
             )
             if item.get("id") in target_ids:
                 selected_by_collection[collection].append(item)
@@ -493,6 +505,11 @@ def _revision_stable_key(collection: str, item: dict) -> str:
         return f"{item.get('subject')}:{item.get('aspect')}:{item.get('chapter_ordinal')}"
     if collection == "actor_knowledge":
         return f"{item.get('actor')}:{item.get('proposition')}:{item.get('chapter_ordinal')}"
+    if collection == "knowledge_transfers":
+        return (
+            f"{item.get('source_actor')}:{item.get('target_actor')}:"
+            f"{item.get('proposition')}:{item.get('chapter_ordinal')}"
+        )
     if collection == "scene_analysis":
         return str(item.get("chapter_ordinal"))
     if collection == "claims":
@@ -527,7 +544,7 @@ def _revision_item_matches(
         return False
     item_text = " ".join(
         str(item.get(key) or "")
-        for key in ("title", "subject", "predicate", "actor", "proposition", "claim_text", "scope")
+        for key in ("title", "subject", "predicate", "actor", "source_actor", "target_actor", "proposition", "claim_text", "scope")
     )
     if direct_collection:
         item_evidence = {
@@ -798,6 +815,26 @@ class ActorKnowledgeProposal(BaseModel):
     evidence_ids: list[str] = Field(min_length=1, max_length=12)
 
 
+class KnowledgeTransferProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_actor: str = Field(min_length=1, max_length=120)
+    target_actor: str = Field(min_length=1, max_length=120)
+    proposition: str = Field(min_length=1, max_length=800)
+    transfer_type: Literal[
+        "WITNESSED",
+        "TOLD",
+        "OVERHEARD",
+        "RUMOR",
+        "MISREPRESENTED",
+        "RETRACTED",
+    ]
+    resulting_state: Literal["KNOWS", "BELIEVES", "SUSPECTS", "MISTAKEN", "HIDDEN", "UNKNOWN"]
+    chapter_ordinal: int = Field(ge=1)
+    event_id: str | None = Field(default=None, max_length=80)
+    evidence_ids: list[str] = Field(min_length=1, max_length=12)
+
+
 class WorldRuleProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -876,6 +913,7 @@ class DeepAnalysisOutput(BaseModel):
     fact_versions: list[FactVersionProposal] = Field(max_length=300)
     state_changes: list[StateChangeProposal] = Field(max_length=300)
     actor_knowledge: list[ActorKnowledgeProposal] = Field(max_length=300)
+    knowledge_transfers: list[KnowledgeTransferProposal] = Field(default_factory=list, max_length=300)
     world_rules: list[WorldRuleProposal] = Field(max_length=120)
     foreshadowing: list[ForeshadowingProposal] = Field(max_length=160)
     conflicts: list[ConflictProposal] = Field(max_length=160)
@@ -3163,6 +3201,7 @@ def _validate_deep_temporal_consistency(
         "fact_versions": "valid_from_chapter",
         "state_changes": "chapter_ordinal",
         "actor_knowledge": "chapter_ordinal",
+        "knowledge_transfers": "chapter_ordinal",
         "foreshadowing": "setup_chapter",
         "scene_analysis": "chapter_ordinal",
     }
@@ -3204,6 +3243,20 @@ def _validate_deep_temporal_consistency(
         if previous is not None and previous != state:
             raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_REPLAY_CONFLICT")
         knowledge_at_chapter[key] = state
+
+    for item in payload.get("knowledge_transfers", []):
+        source = _normalized_name(str(item.get("source_actor") or ""))
+        target = _normalized_name(str(item.get("target_actor") or ""))
+        transfer_type = str(item.get("transfer_type") or "")
+        if source == target and transfer_type != "WITNESSED":
+            raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_SELF_REFERENCE")
+        target_key = (
+            target,
+            re.sub(r"\s+", "", str(item.get("proposition") or "")).casefold(),
+            int(item.get("chapter_ordinal") or 0),
+        )
+        if knowledge_at_chapter.get(target_key) != str(item.get("resulting_state") or ""):
+            raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_RESULT_MISSING")
 
 
 def persist_deep_analysis(
@@ -3264,6 +3317,7 @@ def persist_deep_analysis(
         *output.fact_versions,
         *output.state_changes,
         *output.actor_knowledge,
+        *output.knowledge_transfers,
         *output.world_rules,
         *output.foreshadowing,
         *output.conflicts,
@@ -3281,6 +3335,7 @@ def persist_deep_analysis(
         *[item.valid_to_chapter for item in output.fact_versions if item.valid_to_chapter is not None],
         *[item.chapter_ordinal for item in output.state_changes],
         *[item.chapter_ordinal for item in output.actor_knowledge],
+        *[item.chapter_ordinal for item in output.knowledge_transfers],
         *[item.setup_chapter for item in output.foreshadowing],
         *[item.payoff_chapter for item in output.foreshadowing if item.payoff_chapter is not None],
         *[item.chapter_ordinal for item in output.scene_analysis],
@@ -3298,12 +3353,25 @@ def persist_deep_analysis(
         for item in output.actor_knowledge
     ):
         raise ValueError("DEEP_ANALYSIS_ACTOR_REFERENCE_INVALID")
+    knowledge_source_labels = {
+        _normalized_name(value)
+        for value in ("原文叙述", "叙述者", "直接观察", "环境线索", "未知来源")
+    }
+    if any(
+        _normalized_name(item.target_actor) not in valid_character_names
+        or (
+            _normalized_name(item.source_actor) not in valid_character_names
+            and _normalized_name(item.source_actor) not in knowledge_source_labels
+        )
+        for item in output.knowledge_transfers
+    ):
+        raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_ACTOR_INVALID")
     referenced_event_ids = {
         event_id
         for item in [*output.foreshadowing, *output.conflicts]
         for event_id in item.event_ids
     }.union(
-        item.event_id for item in output.state_changes if item.event_id is not None
+        item.event_id for item in [*output.state_changes, *output.knowledge_transfers] if item.event_id is not None
     )
     if not referenced_event_ids.issubset(valid_event_ids):
         raise ValueError("DEEP_ANALYSIS_EVENT_REFERENCE_INVALID")
@@ -3363,6 +3431,7 @@ def persist_deep_analysis(
         ("fact_versions", "fct", lambda item: f"{item['subject']}:{item['predicate']}:{item['value']}:{item['valid_from_chapter']}"),
         ("state_changes", "stc", lambda item: f"{item['subject']}:{item['aspect']}:{item['chapter_ordinal']}:{item['after']}"),
         ("actor_knowledge", "akn", lambda item: f"{item['actor']}:{item['proposition']}:{item['chapter_ordinal']}"),
+        ("knowledge_transfers", "ktr", lambda item: f"{item['source_actor']}:{item['target_actor']}:{item['proposition']}:{item['chapter_ordinal']}"),
         ("world_rules", "wrl", lambda item: item["title"]),
         ("foreshadowing", "fsh", lambda item: f"{item['title']}:{item['setup_chapter']}"),
         ("conflicts", "cnf", lambda item: item["title"]),
