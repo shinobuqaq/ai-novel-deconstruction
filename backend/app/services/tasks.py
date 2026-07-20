@@ -120,6 +120,18 @@ def _validation_message(stage_label: str, errors: list[dict]) -> str:
     return f"在线 AI 返回的{stage_label}不完整。{detail}{suffix}。系统会自动重试。"
 
 
+def _deep_consistency_message(reason_code: str) -> str:
+    messages = {
+        "DEEP_ANALYSIS_FUTURE_EVIDENCE_LEAK": "在线 AI 把后文章节才出现的依据提前写进了前文章节状态。系统已拒绝保存，并会自动重试。",
+        "DEEP_ANALYSIS_STATE_REPLAY_CONFLICT": "在线 AI 对同一对象在同一章给出了互相矛盾的状态。系统已拒绝保存，并会自动重试。",
+        "DEEP_ANALYSIS_KNOWLEDGE_REPLAY_CONFLICT": "在线 AI 对同一人物在同一章给出了互相矛盾的认知状态。系统已拒绝保存，并会自动重试。",
+    }
+    return messages.get(
+        reason_code,
+        "在线 AI 返回的深层拆解引用了不存在的章节、人物、事件或原文依据。系统会自动重试。",
+    )
+
+
 def _attempt_diagnostics(
     provider_payload: dict,
     response: ProviderResponse,
@@ -398,15 +410,16 @@ async def execute_task(
                     output=deep_output,
                 )
             except ValueError as exc:
+                reason_code = str(exc)
                 raise ProviderError(
                     code="PROVIDER_INVALID_OUTPUT",
-                    message="在线 AI 返回的深层拆解引用了不存在的章节、人物、事件或原文证据。",
+                    message=_deep_consistency_message(reason_code),
                     retryable=True,
                     diagnostics=_attempt_diagnostics(
                         provider_payload,
                         response,
                         phase="reference_validation",
-                        reason_code=str(exc),
+                        reason_code=reason_code,
                     ),
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
