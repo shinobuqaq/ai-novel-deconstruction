@@ -976,9 +976,12 @@ export default function ProductWorkbench() {
       return;
     }
     setAnalysisDiagnostics(await api.analysisDiagnostics(run.id));
-    if (!["REVIEW", "CONFIRMED"].includes(run.status)) return;
-    const workbenchResult = await api.analysisWorkbench(run.id);
-    setWorkbench(workbenchResult);
+    if (!["REVIEW", "CONFIRMED", "FAILED"].includes(run.status)) return;
+    try {
+      setWorkbench(await api.analysisWorkbench(run.id));
+    } catch (reason) {
+      if (run.status !== "FAILED") throw reason;
+    }
   }, []);
 
   const loadProject = useCallback(async (projectId: string) => {
@@ -1590,22 +1593,32 @@ export default function ProductWorkbench() {
                         {analysisRun?.status === "FAILED" && (
                           <div className="analysis-failed" role="alert">
                             <div>
-                              <strong>这次分析没有完成</strong>
-                              <span>{analysisRun.failure_message || "系统已停止当前批次，原文和已确认章节不会受到影响。"}</span>
+                              <strong>{workbench ? "最近一次分析没有完成，当前仍可查看上一版结果" : "这次分析没有完成"}</strong>
+                              <span>{analysisRun.failure_message || "系统已停止当前批次，原文和已确认章节不会受到影响。"}{workbench ? " 已保存的拆解结果没有被覆盖。" : ""}</span>
                             </div>
                             <div className="analysis-start-actions">
                               <a className="button-link secondary-button" href="/settings">检查在线 AI 设置</a>
-                              <button type="button" disabled={busy === "start-analysis"} onClick={() => void handleStartAnalysis()}>
-                                {busy === "start-analysis" ? "正在准备" : "重新开始分析"}
+                              <button
+                                type="button"
+                                disabled={Boolean(busy)}
+                                onClick={() => void (
+                                  workbench?.narrative_status === "INCOMPLETE"
+                                    ? handleRepairNarrative()
+                                    : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY"
+                                      ? handleStartDeepAnalysis()
+                                      : handleStartAnalysis()
+                                )}
+                              >
+                                {busy ? "正在准备" : workbench?.narrative_status === "INCOMPLETE" ? "重新整理人物和剧情" : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY" ? "继续生成深层拆解" : "重新开始分析"}
                               </button>
                             </div>
                           </div>
                         )}
 
-                        {analysisRun && ["REVIEW", "CONFIRMED"].includes(analysisRun.status) && workbench && (
+                        {analysisRun && workbench && (
                           <FormalWorkbench
                             data={workbench}
-                            analysisStatus={analysisRun.status}
+                            analysisStatus={analysisRun.status === "FAILED" ? "REVIEW" : analysisRun.status}
                             view={workbenchView}
                             onViewChange={setWorkbenchView}
                             evidenceContext={evidenceContext}
