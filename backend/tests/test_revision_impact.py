@@ -4,6 +4,8 @@ from app.services.analysis import (
     _validate_deep_temporal_consistency,
     build_deep_revision_impact,
     deep_revision_scope,
+    merge_targeted_narrative_payload,
+    narrative_phase_id,
 )
 from app.services.tasks import _deep_consistency_message
 
@@ -163,3 +165,52 @@ def test_deep_consistency_errors_are_explained_in_plain_chinese() -> None:
     assert "后文章节" in _deep_consistency_message("DEEP_ANALYSIS_FUTURE_EVIDENCE_LEAK")
     assert "互相矛盾的状态" in _deep_consistency_message("DEEP_ANALYSIS_STATE_REPLAY_CONFLICT")
     assert "互相矛盾的认知" in _deep_consistency_message("DEEP_ANALYSIS_KNOWLEDGE_REPLAY_CONFLICT")
+
+
+def test_narrative_revision_preserves_unaffected_roles_and_phases() -> None:
+    previous = {
+        "story_overview": {"protagonist": "林舟", "current_result": "旧总览"},
+        "character_roles": [
+            {"name": "林舟", "role": "PROTAGONIST", "evidence_ids": ["e1"]},
+            {"name": "沈默", "role": "IMPORTANT_SUPPORTING", "evidence_ids": ["e2"]},
+        ],
+        "character_relations": [],
+        "narrative_phases": [
+            {"title": "密信出现", "event_ids": ["event-1"], "evidence_ids": ["e1"]},
+            {"title": "旧宅离开", "event_ids": ["event-2"], "evidence_ids": ["e2"]},
+        ],
+        "event_relations": [],
+    }
+    proposed = {
+        "story_overview": {"protagonist": "林舟", "current_result": "模型改写了总览"},
+        "character_roles": [
+            {"name": "林舟", "role": "CORE_SUPPORTING", "evidence_ids": ["e1"]},
+            {"name": "沈默", "role": "MINOR", "evidence_ids": ["e2"]},
+        ],
+        "character_relations": [],
+        "narrative_phases": [
+            {"title": "密信出现（修订）", "event_ids": ["event-1"], "evidence_ids": ["e1"]},
+            {"title": "旧宅离开（模型越界修改）", "event_ids": ["event-2"], "evidence_ids": ["e2"]},
+        ],
+        "event_relations": [],
+    }
+    merged = merge_targeted_narrative_payload(
+        previous,
+        proposed,
+        [{"target_kind": "CHARACTER", "target_id": "char-1", "target_label": "林舟"}],
+        {
+            "characters": [{"id": "char-1", "name": "林舟", "aliases": [], "evidence_ids": ["e1"], "event_ids": ["event-1"]}],
+            "events": [{"id": "event-1", "people": ["林舟"], "evidence_ids": ["e1"]}],
+        },
+        "run-1",
+    )
+
+    assert merged["story_overview"] == proposed["story_overview"]
+    assert merged["character_roles"] == [proposed["character_roles"][0], previous["character_roles"][1]]
+    assert merged["narrative_phases"] == [proposed["narrative_phases"][0], previous["narrative_phases"][1]]
+
+
+def test_narrative_phase_identity_survives_text_revision() -> None:
+    first = {"title": "密信出现", "event_ids": ["event-1"], "evidence_ids": ["e1"]}
+    revised = {"title": "密信出现并改变目标", "event_ids": ["event-1"], "evidence_ids": ["e1"]}
+    assert narrative_phase_id("run-1", first) == narrative_phase_id("run-1", revised)

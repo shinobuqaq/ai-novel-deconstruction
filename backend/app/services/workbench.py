@@ -20,6 +20,7 @@ from ..models import (
     Task,
     TaskStatus,
 )
+from .analysis import narrative_phase_id
 
 
 def _hash(value: str) -> str:
@@ -668,8 +669,7 @@ def build_workbench_projection(
                 )
                 chapter_ordinals = [item.ordinal for item in phase_chapters]
                 chapter_titles = [item.title for item in phase_chapters]
-            phases.append({
-                "id": f"phs_{_hash(f'{run_id}:{index}:{','.join(phase_event_ids)}')[:32]}",
+            phase_projection = {
                 "title": phase["title"],
                 "summary": phase["situation"],
                 "situation": phase["situation"],
@@ -684,6 +684,10 @@ def build_workbench_projection(
                 "chapter_ordinals": chapter_ordinals,
                 "chapter_titles": chapter_titles,
                 "people": _unique([person for event in phase_events for person in event["people"]]),
+            }
+            phases.append({
+                "id": narrative_phase_id(run_id, phase_projection),
+                **phase_projection,
             })
         valid_event_relations: list[dict] = []
         for relation in event_relations:

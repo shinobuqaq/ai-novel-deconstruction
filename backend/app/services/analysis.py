@@ -50,7 +50,7 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.2.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "1.5.0"
+NARRATIVE_PROMPT_VERSION = "1.6.0"
 DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.6.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
@@ -2758,6 +2758,196 @@ def enqueue_narrative_synthesis(
     return task
 
 
+def _narrative_phase_key(item: dict) -> tuple[str, ...]:
+    event_ids = tuple(sorted(str(value) for value in item.get("event_ids", []) if value))
+    evidence_ids = tuple(sorted(str(value) for value in item.get("evidence_ids", []) if value))
+    if event_ids:
+        return ("events", *event_ids)
+    if evidence_ids:
+        return ("evidence", *evidence_ids)
+    return ("title", _normalized_name(str(item.get("title") or "")))
+
+
+def narrative_phase_id(run_id: str, item: dict) -> str:
+    identity = ":".join(_narrative_phase_key(item))
+    return f"phs_{_hash(f'{run_id}:{identity}')[:32]}"
+
+
+def _narrative_relation_key(item: dict, *, event: bool = False) -> tuple[str, ...]:
+    if event:
+        return (
+            str(item.get("source_event_id") or ""),
+            str(item.get("target_event_id") or ""),
+            str(item.get("relation") or ""),
+        )
+    return (
+        _normalized_name(str(item.get("source_name") or "")),
+        _normalized_name(str(item.get("target_name") or "")),
+        _normalized_name(str(item.get("relation") or "")),
+    )
+
+
+def _legacy_narrative_phase_id(run_id: str, index: int, item: dict) -> str:
+    event_ids = [str(value) for value in item.get("event_ids", []) if value]
+    return f"phs_{_hash(f'{run_id}:{index}:{','.join(event_ids)}')[:32]}"
+
+
+def merge_targeted_narrative_payload(
+    previous_payload: dict,
+    proposed_payload: dict,
+    revision_requests: list[dict],
+    foundation: dict,
+    run_id: str,
+) -> dict:
+    """Keep unrelated narrative assets when a user revises one target."""
+    if not revision_requests:
+        return proposed_payload
+    if any(str(item.get("target_kind") or "").upper() in {"STORY", "PLOT"} and not item.get("target_id") for item in revision_requests):
+        return proposed_payload
+
+    characters = list(foundation.get("characters", []))
+    events = list(foundation.get("events", []))
+    character_names: set[str] = set()
+    event_ids: set[str] = set()
+    evidence_ids: set[str] = set()
+    target_phase_ids: set[str] = set()
+    target_phase_keys: set[tuple[str, ...]] = set()
+    target_relation_keys: set[tuple[str, ...]] = set()
+    target_kinds = {str(item.get("target_kind") or "").upper() for item in revision_requests}
+
+    for request in revision_requests:
+        kind = str(request.get("target_kind") or "").upper()
+        target_id = str(request.get("target_id") or "")
+        label = str(request.get("target_label") or "")
+        if kind == "CHARACTER":
+            for character in characters:
+                if character.get("id") == target_id or _normalized_name(character.get("name", "")) == _normalized_name(label):
+                    character_names.update(
+                        _normalized_name(name)
+                        for name in [character.get("name", ""), *character.get("aliases", [])]
+                        if name
+                    )
+                    evidence_ids.update(character.get("evidence_ids", []))
+                    event_ids.update(character.get("event_ids", []))
+        elif kind == "EVENT":
+            for event in events:
+                if event.get("id") == target_id or _normalized_name(event.get("title", "")) == _normalized_name(label):
+                    event_ids.add(str(event.get("id")))
+                    evidence_ids.update(event.get("evidence_ids", []))
+                    character_names.update(_normalized_name(name) for name in event.get("people", []) if name)
+        elif kind == "PLOT":
+            target_phase_ids.add(target_id)
+            if label:
+                target_phase_ids.add(f"label:{_normalized_name(label)}")
+            for index, phase in enumerate(previous_payload.get("narrative_phases", []), start=1):
+                if (
+                    _legacy_narrative_phase_id(run_id, index, phase) == target_id
+                    or narrative_phase_id(run_id, phase) == target_id
+                    or _normalized_name(str(phase.get("title") or "")) == _normalized_name(label)
+                ):
+                    target_phase_keys.add(_narrative_phase_key(phase))
+        elif kind == "RELATION":
+            clean_label = re.sub(r"(?:的因果关系|的关系)$", "", label)
+            parts = re.split(r"与|和", clean_label)
+            names = [_normalized_name(part) for part in parts if _normalized_name(part)]
+            if len(names) >= 2:
+                target_relation_keys.add((names[0], names[1]))
+        elif kind == "STORY":
+            return proposed_payload
+
+    event_people = {
+        str(event.get("id")): {
+            _normalized_name(name) for name in event.get("people", []) if name
+        }
+        for event in events
+    }
+    affected_event_ids = set(event_ids)
+    affected_names = set(character_names)
+    for event_id in affected_event_ids:
+        affected_names.update(event_people.get(event_id, set()))
+
+    def affected_role(item: dict) -> bool:
+        name = _normalized_name(str(item.get("name") or ""))
+        return name in affected_names if affected_names else bool(set(item.get("evidence_ids", [])) & evidence_ids)
+
+    def affected_relation(item: dict) -> bool:
+        endpoints = {
+            _normalized_name(str(item.get("source_name") or "")),
+            _normalized_name(str(item.get("target_name") or "")),
+        }
+        if affected_names:
+            return bool(endpoints & affected_names)
+        if bool(set(item.get("evidence_ids", [])) & evidence_ids):
+            return True
+        return any(
+            {left, right}.issubset(endpoints) or {right, left}.issubset(endpoints)
+            for left, right in target_relation_keys
+        )
+
+    def affected_event_relation(item: dict) -> bool:
+        if affected_event_ids:
+            return (
+                str(item.get("source_event_id") or "") in affected_event_ids
+                or str(item.get("target_event_id") or "") in affected_event_ids
+            )
+        return bool(set(item.get("evidence_ids", [])) & evidence_ids)
+
+    def affected_phase(item: dict) -> bool:
+        if _narrative_phase_key(item) in target_phase_keys:
+            return True
+        if f"label:{_normalized_name(str(item.get('title') or ''))}" in target_phase_ids:
+            return True
+        phase_events = set(item.get("event_ids", []))
+        if affected_event_ids:
+            return bool(phase_events & affected_event_ids)
+        return bool(set(item.get("evidence_ids", [])) & evidence_ids)
+
+    def merge_collection(
+        previous_items: list[dict],
+        proposed_items: list[dict],
+        affected,
+        key,
+    ) -> list[dict]:
+        proposed_by_key = {key(item): item for item in proposed_items}
+        result: list[dict] = []
+        seen: set[tuple[str, ...]] = set()
+        for previous_item in previous_items:
+            item_key = key(previous_item)
+            if affected(previous_item) and item_key in proposed_by_key:
+                result.append(proposed_by_key[item_key])
+            else:
+                result.append(previous_item)
+            seen.add(item_key)
+        for proposed_item in proposed_items:
+            item_key = key(proposed_item)
+            if item_key not in seen and affected(proposed_item):
+                result.append(proposed_item)
+                seen.add(item_key)
+        return result
+
+    merged = dict(proposed_payload)
+    if "CHARACTER" in target_kinds or "EVENT" in target_kinds:
+        merged["character_roles"] = merge_collection(previous_payload.get("character_roles", []), proposed_payload.get("character_roles", []), affected_role, lambda item: (_normalized_name(str(item.get("name") or "")),))
+        merged["character_relations"] = merge_collection(previous_payload.get("character_relations", []), proposed_payload.get("character_relations", []), affected_relation, lambda item: _narrative_relation_key(item))
+        merged["narrative_phases"] = merge_collection(previous_payload.get("narrative_phases", []), proposed_payload.get("narrative_phases", []), affected_phase, _narrative_phase_key)
+        merged["event_relations"] = merge_collection(previous_payload.get("event_relations", []), proposed_payload.get("event_relations", []), affected_event_relation, lambda item: _narrative_relation_key(item, event=True))
+        if previous_payload.get("story_overview") and not evidence_ids:
+            merged["story_overview"] = previous_payload["story_overview"]
+    elif "PLOT" in target_kinds:
+        merged["narrative_phases"] = merge_collection(previous_payload.get("narrative_phases", []), proposed_payload.get("narrative_phases", []), affected_phase, _narrative_phase_key)
+        merged["character_roles"] = previous_payload.get("character_roles", [])
+        merged["character_relations"] = previous_payload.get("character_relations", [])
+        merged["event_relations"] = previous_payload.get("event_relations", [])
+        merged["story_overview"] = previous_payload.get("story_overview", proposed_payload.get("story_overview"))
+    elif "RELATION" in target_kinds:
+        merged["character_relations"] = merge_collection(previous_payload.get("character_relations", []), proposed_payload.get("character_relations", []), affected_relation, lambda item: _narrative_relation_key(item))
+        merged["event_relations"] = merge_collection(previous_payload.get("event_relations", []), proposed_payload.get("event_relations", []), affected_event_relation, lambda item: _narrative_relation_key(item, event=True))
+        for key in ("story_overview", "character_roles", "narrative_phases"):
+            merged[key] = previous_payload.get(key, proposed_payload.get(key))
+
+    return merged
+
+
 def persist_narrative_synthesis(
     session: Session,
     *,
@@ -2838,10 +3028,23 @@ def persist_narrative_synthesis(
     ):
         raise ValueError("NARRATIVE_PHASE_REFERENCE_INVALID")
 
-    existing = session.scalar(
+    payload = output.model_dump(mode="json")
+    previous_synthesis = session.scalar(
         select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run.id)
     )
-    payload_json = json.dumps(output.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    if previous_synthesis is not None and task_payload.get("revision_requests"):
+        payload = merge_targeted_narrative_payload(
+            json.loads(previous_synthesis.payload_json),
+            payload,
+            task_payload["revision_requests"],
+            foundation,
+            run.id,
+        )
+
+    existing = previous_synthesis or session.scalar(
+        select(NarrativeSynthesis).where(NarrativeSynthesis.run_id == run.id)
+    )
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     if existing is None:
         existing = NarrativeSynthesis(
             run_id=run.id,
