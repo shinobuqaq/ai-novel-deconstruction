@@ -154,6 +154,17 @@ const CONFLICT_TYPE_LABELS: Record<string, string> = {
   OTHER: "其他冲突",
 };
 
+const REVISION_COLLECTIONS = [
+  ["fact_versions", "事实"],
+  ["state_changes", "状态变化"],
+  ["actor_knowledge", "人物认知"],
+  ["world_rules", "世界设定"],
+  ["foreshadowing", "伏笔"],
+  ["conflicts", "冲突"],
+  ["scene_analysis", "场景与节奏"],
+  ["claims", "分析结论"],
+] as const;
+
 const ACTION_DIALOGUE_LABELS: Record<string, string> = {
   ACTION_HEAVY: "以行动为主",
   DIALOGUE_HEAVY: "以对话为主",
@@ -331,6 +342,21 @@ function FormalWorkbench({
     return () => { active = false; };
   }, [viewData.run_id, viewData.deep_revision, viewData.deep_analysis, stateChapter]);
   const pointInTime = stateProjection ?? { facts: [], states: [], knowledge: [], world_rules: [] };
+  const revisionChanges = useMemo(() => {
+    if (!revisionDiff) return [];
+    return REVISION_COLLECTIONS.map(([key, label]) => ({
+      key,
+      label,
+      added: revisionDiff.added[key] ?? [],
+      changed: revisionDiff.changed?.[key] ?? [],
+      removed: revisionDiff.removed[key] ?? [],
+    })).filter((item) => item.added.length || item.changed.length || item.removed.length);
+  }, [revisionDiff]);
+  const revisionTotals = useMemo(() => ({
+    added: revisionChanges.reduce((sum, item) => sum + item.added.length, 0),
+    changed: revisionChanges.reduce((sum, item) => sum + item.changed.length, 0),
+    removed: revisionChanges.reduce((sum, item) => sum + item.removed.length, 0),
+  }), [revisionChanges]);
   const openWorkbenchItem = (targetView: WorkbenchView, id: string) => {
     setSearchQuery("");
     setFocusTarget({ view: targetView, id });
@@ -465,6 +491,26 @@ function FormalWorkbench({
           </select>
           {revisionBusy && <span>正在读取版本</span>}
         </div>
+      )}
+      {revisionDiff && revisions.length > 1 && (
+        <details className="revision-audit">
+          <summary>
+            <span>查看上一版到当前版的具体变化</span>
+            <small>新增 {revisionTotals.added} 项，修改 {revisionTotals.changed} 项，删除 {revisionTotals.removed} 项</small>
+          </summary>
+          {revisionChanges.length > 0 ? (
+            <div className="revision-audit-groups">
+              {revisionChanges.map((group) => (
+                <section key={group.key}>
+                  <h3>{group.label}</h3>
+                  {group.added.map((item) => <p className="added" key={`added-${group.key}-${item}`}><strong>新增</strong><span>{item}</span></p>)}
+                  {group.changed.map((item) => <p className="changed" key={`changed-${group.key}-${item}`}><strong>修改</strong><span>{item}</span></p>)}
+                  {group.removed.map((item) => <p className="removed" key={`removed-${group.key}-${item}`}><strong>删除</strong><span>{item}</span></p>)}
+                </section>
+              ))}
+            </div>
+          ) : <p className="revision-audit-empty">这两个版本没有可见内容变化。</p>}
+        </details>
       )}
       {revisionError && <div className="analysis-issue-error" role="alert">{revisionError}</div>}
       {viewData.narrative_status === "INCOMPLETE" && !isHistoricalRevision && (

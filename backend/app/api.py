@@ -1410,7 +1410,17 @@ def deep_analysis_diff(
     if before is None or after is None or before.revision_no == after.revision_no:
         raise HTTPException(status_code=422, detail={"code": "DEEP_REVISION_INVALID", "message": "要比较的拆解版本不存在。"})
 
-    collections = ("fact_versions", "state_changes", "actor_knowledge", "world_rules", "foreshadowing", "conflicts", "scene_analysis", "claims")
+    collections = (
+        "fact_versions",
+        "state_changes",
+        "actor_knowledge",
+        "world_rules",
+        "foreshadowing",
+        "conflicts",
+        "scene_analysis",
+        "claims",
+    )
+
     def key_for(collection: str, item: dict) -> str:
         if collection == "fact_versions":
             return f"{item.get('subject')}:{item.get('predicate')}:{item.get('valid_from_chapter')}"
@@ -1423,22 +1433,39 @@ def deep_analysis_diff(
         if collection == "claims":
             return f"{item.get('claim_kind')}:{item.get('scope')}:{item.get('claim_text')}"
         return str(item.get("title"))
+
+    def label_for(collection: str, item: dict, fallback: str) -> str:
+        if collection == "fact_versions":
+            return f"{item.get('subject', '未知对象')}：{item.get('predicate', '事实')}"
+        if collection == "state_changes":
+            return f"{item.get('subject', '未知对象')}：{item.get('aspect', '状态变化')}"
+        if collection == "actor_knowledge":
+            return f"{item.get('actor', '未知人物')}：{item.get('proposition', '认知变化')}"
+        if collection == "scene_analysis":
+            return f"第 {item.get('chapter_ordinal', '?')} 章：{item.get('summary', '场景与节奏')}"
+        if collection == "claims":
+            return str(item.get("claim_text") or fallback)
+        return str(item.get("title") or fallback)
     before_payload = json.loads(before.payload_json)
     after_payload = json.loads(after.payload_json)
     added: dict[str, list[str]] = {}
     removed: dict[str, list[str]] = {}
+    changed: dict[str, list[str]] = {}
     changed_counts: dict[str, int] = {}
     for collection in collections:
         old = {key_for(collection, item): item for item in before_payload.get(collection, [])}
         new = {key_for(collection, item): item for item in after_payload.get(collection, [])}
-        added[collection] = [new[key].get("title") or new[key].get("claim_text") or key for key in sorted(new.keys() - old.keys())]
-        removed[collection] = [old[key].get("title") or old[key].get("claim_text") or key for key in sorted(old.keys() - new.keys())]
-        changed_counts[collection] = sum(1 for key in new.keys() & old.keys() if new[key] != old[key])
+        added[collection] = [label_for(collection, new[key], key) for key in sorted(new.keys() - old.keys())]
+        removed[collection] = [label_for(collection, old[key], key) for key in sorted(old.keys() - new.keys())]
+        changed_keys = [key for key in sorted(new.keys() & old.keys()) if new[key] != old[key]]
+        changed[collection] = [label_for(collection, new[key], key) for key in changed_keys]
+        changed_counts[collection] = len(changed_keys)
     return DeepAnalysisDiffRead(
         from_revision=before.revision_no,
         to_revision=after.revision_no,
         added=added,
         removed=removed,
+        changed=changed,
         changed_counts=changed_counts,
     )
 

@@ -629,4 +629,5 @@ class DeepAnalysisDiffRead(BaseModel):
     to_revision: int
     added: dict[str, list[str]]
     removed: dict[str, list[str]]
+    changed: dict[str, list[str]]
     changed_counts: dict[str, int]

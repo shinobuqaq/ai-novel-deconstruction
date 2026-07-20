@@ -488,6 +488,7 @@ export type DeepAnalysisDiff = {
   to_revision: number;
   added: Record<string, string[]>;
   removed: Record<string, string[]>;
+  changed: Record<string, string[]>;
   changed_counts: Record<string, number>;
 };
 

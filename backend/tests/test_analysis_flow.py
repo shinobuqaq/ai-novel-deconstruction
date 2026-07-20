@@ -581,6 +581,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert diff["from_revision"] == 1
     assert diff["to_revision"] == 2
     assert diff["changed_counts"]["fact_versions"] == 1
+    assert diff["changed"]["fact_versions"] == ["林舟：当前目标"]
     first_revision = client.get(
         f"/api/analysis-runs/{run['id']}/workbench?deep_revision=1"
     )

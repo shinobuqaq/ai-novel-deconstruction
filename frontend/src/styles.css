@@ -415,6 +415,21 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: 11px; }
 .revision-toolbar span { color: #71808e; font-size: 11px; line-height: 1.45; }
 .revision-toolbar label { color: #60717d; font-size: 11px; font-weight: 800; }
 .revision-toolbar select { min-height: 32px; padding: 5px 8px; }
+.revision-audit { border-bottom: 1px solid #d8dee5; background: #fff; }
+.revision-audit > summary { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 11px 16px; color: #345563; cursor: pointer; }
+.revision-audit > summary span { font-size: 12px; font-weight: 800; }
+.revision-audit > summary small { color: #71808e; font-size: 11px; }
+.revision-audit[open] > summary { border-bottom: 1px solid #e2e7ea; }
+.revision-audit-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; padding: 14px 16px 17px; }
+.revision-audit-groups section { display: grid; align-content: start; gap: 7px; min-width: 0; }
+.revision-audit-groups h3 { margin: 0; color: #34424e; font-size: 12px; }
+.revision-audit-groups p { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 8px; margin: 0; color: #53636e; font-size: 11px; line-height: 1.5; }
+.revision-audit-groups p strong { font-size: 10px; }
+.revision-audit-groups p.added strong { color: #23714f; }
+.revision-audit-groups p.changed strong { color: #8b6500; }
+.revision-audit-groups p.removed strong { color: #9a4444; }
+.revision-audit-groups p span { min-width: 0; overflow-wrap: anywhere; }
+.revision-audit-empty { margin: 0; padding: 18px 16px; color: #71808e; font-size: 11px; }
 .historical-readonly { color: #8a6b2b; font-size: 11px; }
 .source-workbench-view { display: grid; gap: 12px; }
 .source-chapter-list { display: grid; gap: 6px; }
