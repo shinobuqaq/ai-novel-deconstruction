@@ -1672,10 +1672,10 @@ export default function ProductWorkbench() {
                                     <span>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</span>
                                     {stage.selected_material_count > 0 && (
                                       <small>
-                                        本阶段使用 {formatNumber(stage.selected_material_count)} 条相关材料
+                                        {stage.attempt_count} 次请求累计放入 {formatNumber(stage.selected_material_count)} 份输入片段
                                         {stage.omitted_material_count > 0
-                                          ? `，因本次模型输入预算省略 ${formatNumber(stage.omitted_material_count)} 条低优先级材料`
-                                          : "，没有省略已选材料"}
+                                          ? `；另有 ${formatNumber(stage.omitted_material_count)} 份因对应请求长度有限而未放入`
+                                          : "；候选输入片段均已放入对应请求"}
                                       </small>
                                     )}
                                     {stage.latest_error && <small>{stage.latest_error}</small>}
@@ -1683,6 +1683,12 @@ export default function ProductWorkbench() {
                                 </article>
                               ))}
                             </div>
+                            {analysisDiagnostics.stages.some((stage) => stage.selected_material_count > 0) && (
+                              <p className="material-budget-explanation">
+                                <strong>这里的“输入片段”不是删除原文：</strong>
+                                它包括章节导航、人物、事件、设定和原文证据等模型输入。数字按每次请求累计，同一片段可能在不同请求或重试中重复计算；未放入某次请求，只表示该次请求装不下全部候选片段，不代表整章没有分析或原文被丢弃。
+                              </p>
+                            )}
                           </section>
                         )}
 
