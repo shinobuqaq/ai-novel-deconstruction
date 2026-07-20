@@ -78,7 +78,17 @@ const NARRATIVE_MODE_LABELS: Record<string, string> = {
   MISUNDERSTANDING: "误解",
   HYPOTHESIS: "推测",
   REPEATED_MENTION: "重复提及",
-  UNCERTAIN: "性质待确认",
+  UNCERTAIN: "叙事性质尚未核对",
+};
+
+const EVENT_RELATION_LABELS: Record<string, string> = {
+  CAUSES: "直接导致",
+  ENABLES: "为后续创造条件",
+  REVEALS: "揭示信息",
+  ESCALATES: "使局势升级",
+  RESOLVES: "推动解决",
+  PRECEDES: "发生在前",
+  SUBEVENT: "属于其中一部分",
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -134,6 +144,22 @@ const CLAIM_STATUS_LABELS: Record<string, string> = {
   CONTRADICTED: "存在明确反证",
   INSUFFICIENT: "证据不足",
   INSUFFICIENT_EVIDENCE: "证据不足",
+};
+
+const CONFLICT_TYPE_LABELS: Record<string, string> = {
+  PERSON_V_PERSON: "人物之间",
+  PERSON_V_SELF: "人物内心",
+  PERSON_V_WORLD: "人物与环境或规则",
+  GROUP_V_GROUP: "群体之间",
+  OTHER: "其他冲突",
+};
+
+const ACTION_DIALOGUE_LABELS: Record<string, string> = {
+  ACTION_HEAVY: "以行动为主",
+  DIALOGUE_HEAVY: "以对话为主",
+  BALANCED: "行动与对话较均衡",
+  REFLECTIVE: "以内心活动或思考为主",
+  UNCERTAIN: "暂时无法判断",
 };
 
 const ANALYSIS_STAGE_STATUS_LABELS: Record<string, string> = {
@@ -617,7 +643,7 @@ function FormalWorkbench({
                 {viewData.events.map((event, index) => <article key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <small>参与人物：{event.people.join("、")}</small>}{evidenceButtons(event.evidence_ids)}</div></article>)}
                 {!viewData.events.length && <p className="result-empty">当前没有整理出事件时间线。</p>}
               </div>
-              {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><strong>{relation.source_title} → {relation.target_title}</strong><span>{relation.relation}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
+              {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><strong>{relation.source_title} → {relation.target_title}</strong><span>{EVENT_RELATION_LABELS[relation.relation] ?? "关联方式待核对"}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}</article>)}</section>}
             </div>
           )}
 
@@ -728,13 +754,13 @@ function FormalWorkbench({
 
           {!searchQuery.trim() && view === "conflicts" && (
             <div className="deep-analysis-view">
-              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>冲突分析仍在整理</strong><span>系统会整理参与者目标、障碍、赌注、升级过程和当前结果。</span></div> : <section className="insight-group"><header><div><span>目标、障碍与赌注</span><h3>冲突</h3></div><b>{viewData.deep_analysis.conflicts.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.conflicts.map((conflict) => <article className="formal-card" key={conflict.id}><header><div><span>{conflict.status === "RESOLVED" ? "已经解决" : conflict.status === "ESCALATING" ? "正在升级" : conflict.status === "SHIFTED" ? "冲突转向" : conflict.status === "UNCERTAIN" ? "尚不确定" : "仍未解决"}</span><h3>{conflict.title}</h3></div></header>{conflict.participants.length > 0 && <small>参与者：{conflict.participants.join("、")}</small>}{conflict.goals && <p><strong>目标：</strong>{conflict.goals}</p>}{conflict.obstacles && <p><strong>障碍：</strong>{conflict.obstacles}</p>}{conflict.stakes && <p><strong>赌注：</strong>{conflict.stakes}</p>}{conflict.escalation.length > 0 && <small>升级过程：{conflict.escalation.join("；")}</small>}{conflict.resolution && <p><strong>当前结果：</strong>{conflict.resolution}</p>}{evidenceButtons(conflict.evidence_ids)}{markProblemButton("CONFLICT", conflict.id, conflict.title)}</article>)}{!viewData.deep_analysis.conflicts.length && <p className="result-empty">当前没有整理出证据充分的冲突。</p>}</div></section>}
+              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>冲突分析仍在整理</strong><span>系统会整理参与者目标、障碍、赌注、升级过程和当前结果。</span></div> : <section className="insight-group"><header><div><span>目标、障碍与赌注</span><h3>冲突</h3></div><b>{viewData.deep_analysis.conflicts.length}</b></header><div className="formal-card-list compact-list">{viewData.deep_analysis.conflicts.map((conflict) => <article className="formal-card" key={conflict.id}><header><div><span>{CONFLICT_TYPE_LABELS[conflict.conflict_type] ?? "冲突类型待核对"} · {conflict.status === "RESOLVED" ? "已经解决" : conflict.status === "ESCALATING" ? "正在升级" : conflict.status === "SHIFTED" ? "冲突转向" : conflict.status === "UNCERTAIN" ? "尚不确定" : "仍未解决"}</span><h3>{conflict.title}</h3></div></header>{conflict.participants.length > 0 && <small>参与者：{conflict.participants.join("、")}</small>}{conflict.goals && <p><strong>目标：</strong>{conflict.goals}</p>}{conflict.obstacles && <p><strong>障碍：</strong>{conflict.obstacles}</p>}{conflict.stakes && <p><strong>赌注：</strong>{conflict.stakes}</p>}{conflict.escalation.length > 0 && <small>升级过程：{conflict.escalation.join("；")}</small>}{conflict.resolution && <p><strong>当前结果：</strong>{conflict.resolution}</p>}{evidenceButtons(conflict.evidence_ids)}{markProblemButton("CONFLICT", conflict.id, conflict.title)}</article>)}{!viewData.deep_analysis.conflicts.length && <p className="result-empty">当前没有整理出证据充分的冲突。</p>}</div></section>}
             </div>
           )}
 
           {!searchQuery.trim() && view === "pacing" && (
             <div className="deep-analysis-view">
-              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>节奏分析仍在整理</strong><span>系统会按章节说明场景作用、信息释放和节奏变化。</span></div> : <section className="insight-group"><header><div><span>章节如何发挥作用</span><h3>场景与节奏</h3></div><b>{viewData.deep_analysis.scene_analysis.length}</b></header><div className="scene-analysis-list">{viewData.deep_analysis.scene_analysis.map((scene) => <article key={scene.id}><div><span>第 {scene.chapter_ordinal} 章</span><b>{scene.function === "SETUP" ? "铺垫" : scene.function === "TRANSITION" ? "过渡" : scene.function === "REVELATION" ? "揭示" : scene.function === "CONFLICT" ? "冲突" : scene.function === "DECISION" ? "决定" : scene.function === "AFTERMATH" ? "余波" : "其他功能"}</b></div><h4>{scene.summary}</h4><p>节奏：{scene.pace === "SLOW" ? "较慢" : scene.pace === "STEADY" ? "平稳" : scene.pace === "FAST" ? "较快" : scene.pace === "ACCELERATING" ? "正在加速" : scene.pace === "BRAKING" ? "明显放缓" : "尚不确定"}</p>{scene.information_released.length > 0 && <small>释放信息：{scene.information_released.join("；")}</small>}{scene.action_dialogue_balance && <small>动作与对话：{scene.action_dialogue_balance}</small>}{evidenceButtons(scene.evidence_ids)}</article>)}{!viewData.deep_analysis.scene_analysis.length && <p className="result-empty">当前没有完成场景与节奏分析。</p>}</div></section>}
+              {!viewData.deep_analysis ? <div className="workbench-callout"><strong>节奏分析仍在整理</strong><span>系统会按章节说明场景作用、信息释放和节奏变化。</span></div> : <section className="insight-group"><header><div><span>章节如何发挥作用</span><h3>场景与节奏</h3></div><b>{viewData.deep_analysis.scene_analysis.length}</b></header><div className="scene-analysis-list">{viewData.deep_analysis.scene_analysis.map((scene) => <article key={scene.id}><div><span>第 {scene.chapter_ordinal} 章</span><b>{scene.function === "SETUP" ? "铺垫" : scene.function === "TRANSITION" ? "过渡" : scene.function === "REVELATION" ? "揭示" : scene.function === "CONFLICT" ? "冲突" : scene.function === "DECISION" ? "决定" : scene.function === "AFTERMATH" ? "余波" : "其他功能"}</b></div><h4>{scene.summary}</h4><p>节奏：{scene.pace === "SLOW" ? "较慢" : scene.pace === "STEADY" ? "平稳" : scene.pace === "FAST" ? "较快" : scene.pace === "ACCELERATING" ? "正在加速" : scene.pace === "BRAKING" ? "明显放缓" : "尚不确定"}</p>{scene.information_released.length > 0 && <small>释放信息：{scene.information_released.join("；")}</small>}{scene.action_dialogue_balance && <small>动作与对话：{ACTION_DIALOGUE_LABELS[scene.action_dialogue_balance] ?? "暂时无法判断"}</small>}{evidenceButtons(scene.evidence_ids)}</article>)}{!viewData.deep_analysis.scene_analysis.length && <p className="result-empty">当前没有完成场景与节奏分析。</p>}</div></section>}
             </div>
           )}
 

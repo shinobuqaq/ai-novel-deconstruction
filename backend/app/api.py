@@ -389,7 +389,9 @@ def _analysis_run_diagnostics(
             attempt for attempt in stage_attempts if attempt.error_message
         ]
         latest_error = (
-            failed_attempts[-1].error_message if failed_attempts else None
+            failed_attempts[-1].error_message
+            if failed_attempts and stage_status != "SUCCEEDED"
+            else None
         )
         stage_rows.append(AnalysisStageDiagnosticRead(
             key=kind,
