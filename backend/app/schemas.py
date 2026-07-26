@@ -308,6 +308,7 @@ class AnalysisCallDiagnosticRead(BaseModel):
     status: str
     started_at: datetime
     finished_at: datetime | None = None
+    duration_seconds: float = 0
     provider_name: str | None = None
     model: str | None = None
     prompt_tokens: int = 0
@@ -341,6 +342,7 @@ class AnalysisStageDiagnosticRead(BaseModel):
     task_count: int
     attempt_count: int
     retry_count: int
+    duration_seconds: float = 0
     prompt_tokens: int
     completion_tokens: int
     input_chars: int
@@ -362,6 +364,7 @@ class AnalysisRunDiagnosticsRead(BaseModel):
     current_step: str
     attempt_count: int
     retry_count: int
+    duration_seconds: float = 0
     prompt_tokens: int
     completion_tokens: int
     input_chars: int

@@ -775,6 +775,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     ).json()
     assert diagnostics["attempt_count"] == 6
     assert diagnostics["retry_count"] == 0
+    assert diagnostics["duration_seconds"] >= 0
     assert diagnostics["prompt_tokens"] == 720
     assert diagnostics["completion_tokens"] == 480
     assert diagnostics["actual_cost"] == pytest.approx(0.0168)
@@ -791,11 +792,13 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         if item["key"] == "analysis.narrative_synthesis"
     )
     assert len(narrative_stage["calls"]) == 4
+    assert narrative_stage["duration_seconds"] >= 0
     overview_call = next(
         item for item in narrative_stage["calls"]
         if item["component"] == "overview"
     )
     assert overview_call["component_label"] == "故事总览"
+    assert overview_call["duration_seconds"] >= 0
     call_content = client.get(
         f"/api/analysis-runs/{run['id']}/attempts/{overview_call['attempt_id']}/content"
     )
@@ -1075,6 +1078,29 @@ def test_deep_start_creates_recovery_task_after_initial_failure(client) -> None:
         TaskStatus.FAILED.value,
         TaskStatus.PENDING.value,
     ]
+
+    with client.app.state.session_factory() as session:
+        recovery_claim = claim_next_task(
+            session,
+            worker_id="deep-recovery-second-attempt",
+            lease_seconds=60,
+        )
+    assert recovery_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        recovery_claim,
+        registry,
+    )
+    diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    ).json()
+    deep_stage = next(
+        item for item in diagnostics["stages"]
+        if item["key"] == "analysis.deep_insights"
+    )
+    assert deep_stage["status"] == "SUCCEEDED"
+    assert diagnostics["current_step"] == "全部分析已经完成"
 
 
 def test_invalid_model_structure_records_safe_field_diagnostics(client) -> None:

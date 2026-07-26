@@ -43,6 +43,17 @@ function formatCost(value: number, currency: string) {
   }).format(value);
 }
 
+function formatDuration(value: number) {
+  const seconds = Math.max(0, Math.round(value));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return remainingSeconds ? `${minutes} 分 ${remainingSeconds} 秒` : `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours} 小时 ${remainingMinutes} 分` : `${hours} 小时`;
+}
+
 function formatFileSize(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
@@ -1692,6 +1703,7 @@ export default function ProductWorkbench() {
                                 <span>本次已经调用在线 AI {analysisDiagnostics.attempt_count} 次{analysisDiagnostics.retry_count ? `，自动重试 ${analysisDiagnostics.retry_count} 次` : "，暂未发生重试"}</span>
                               </div>
                               <div className="analysis-usage">
+                                <span>累计模型等待 {formatDuration(analysisDiagnostics.duration_seconds)}</span>
                                 <span>输入令牌约 {formatNumber(analysisDiagnostics.prompt_tokens)}</span>
                                 <span>输出令牌约 {formatNumber(analysisDiagnostics.completion_tokens)}</span>
                                 {analysisDiagnostics.cost_complete && analysisDiagnostics.actual_cost !== null && analysisDiagnostics.cost_currency ? (
@@ -1708,7 +1720,7 @@ export default function ProductWorkbench() {
                                     <b>{index + 1}</b>
                                     <span>
                                       <strong>{stage.label}</strong>
-                                      <small>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用` : ""}</small>
+                                      <small>{ANALYSIS_STAGE_STATUS_LABELS[stage.status] ?? stage.status}{stage.attempt_count ? ` · ${stage.attempt_count} 次调用 · ${formatDuration(stage.duration_seconds)}` : ""}</small>
                                     </span>
                                   </summary>
                                   <div className="analysis-stage-body">
@@ -1723,7 +1735,7 @@ export default function ProductWorkbench() {
                                           <summary>
                                             <span>
                                               <strong>第 {callIndex + 1} 次 · {callLabel}</strong>
-                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}</small>
+                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}{call.finished_at ? ` · ${formatDuration(call.duration_seconds)}` : ""}</small>
                                             </span>
                                             <span className="analysis-call-totals">
                                               <small>{call.prompt_tokens || call.input_chars ? `输入约 ${formatNumber(call.prompt_tokens)} 令牌 / ${formatNumber(call.input_chars)} 字符` : "输入规模未记录"}</small>

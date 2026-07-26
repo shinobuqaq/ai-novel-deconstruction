@@ -429,9 +429,7 @@ def _analysis_run_diagnostics(
             for task in stage_tasks
             for attempt in attempts_by_task.get(task.id, [])
         ]
-        if any(task.status == TaskStatus.FAILED.value for task in stage_tasks):
-            stage_status = "FAILED"
-        elif any(
+        if any(
             task.status in {
                 TaskStatus.PENDING.value,
                 TaskStatus.RUNNING.value,
@@ -441,6 +439,15 @@ def _analysis_run_diagnostics(
             for task in stage_tasks
         ):
             stage_status = "RUNNING"
+        elif (
+            kind == "analysis.deep_insights"
+            and any(task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks)
+        ):
+            # A later successful deep-analysis revision supersedes older failed
+            # recovery tasks. The earlier attempts remain visible in the audit log.
+            stage_status = "SUCCEEDED"
+        elif any(task.status == TaskStatus.FAILED.value for task in stage_tasks):
+            stage_status = "FAILED"
         elif stage_tasks and all(
             task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks
         ):
@@ -489,6 +496,13 @@ def _analysis_run_diagnostics(
                 )
                 input_path = attempt_diagnostics.get("request_input_path")
                 output_path = attempt_diagnostics.get("raw_output_path")
+                finished_at = _as_utc(attempt.finished_at)
+                started_at = _as_utc(attempt.started_at)
+                duration_seconds = (
+                    max(0.0, (finished_at - started_at).total_seconds())
+                    if finished_at is not None
+                    else 0.0
+                )
                 call_rows.append(AnalysisCallDiagnosticRead(
                     attempt_id=attempt.id,
                     task_id=task.id,
@@ -497,8 +511,9 @@ def _analysis_run_diagnostics(
                     component_label=_NARRATIVE_COMPONENT_LABELS.get(component or ""),
                     attempt_no=attempt.attempt_no,
                     status=attempt.status,
-                    started_at=_as_utc(attempt.started_at),
-                    finished_at=_as_utc(attempt.finished_at),
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=round(duration_seconds, 3),
                     provider_name=attempt.provider_name,
                     model=str(attempt_diagnostics.get("model") or "") or None,
                     prompt_tokens=int(attempt_usage.get("prompt_tokens") or 0),
@@ -526,6 +541,7 @@ def _analysis_run_diagnostics(
             task_count=len(stage_tasks),
             attempt_count=len(stage_attempts),
             retry_count=sum(max(0, task.attempts - 1) for task in stage_tasks),
+            duration_seconds=round(sum(row.duration_seconds for row in call_rows), 3),
             prompt_tokens=sum(int(item.get("prompt_tokens") or 0) for item in usage),
             completion_tokens=sum(int(item.get("completion_tokens") or 0) for item in usage),
             input_chars=sum(int(item.get("input_chars") or 0) for item in diagnostics),
@@ -554,6 +570,7 @@ def _analysis_run_diagnostics(
         current_step=current,
         attempt_count=sum(row.attempt_count for row in stage_rows),
         retry_count=sum(row.retry_count for row in stage_rows),
+        duration_seconds=round(sum(row.duration_seconds for row in stage_rows), 3),
         prompt_tokens=sum(row.prompt_tokens for row in stage_rows),
         completion_tokens=sum(row.completion_tokens for row in stage_rows),
         input_chars=sum(row.input_chars for row in stage_rows),

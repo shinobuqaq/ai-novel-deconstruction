@@ -189,6 +189,7 @@ export type AnalysisStageDiagnostic = {
   task_count: number;
   attempt_count: number;
   retry_count: number;
+  duration_seconds: number;
   prompt_tokens: number;
   completion_tokens: number;
   input_chars: number;
@@ -215,6 +216,7 @@ export type AnalysisCallDiagnostic = {
   status: string;
   started_at: string;
   finished_at: string | null;
+  duration_seconds: number;
   provider_name: string | null;
   model: string | null;
   prompt_tokens: number;
@@ -246,6 +248,7 @@ export type AnalysisRunDiagnostics = {
   current_step: string;
   attempt_count: number;
   retry_count: number;
+  duration_seconds: number;
   prompt_tokens: number;
   completion_tokens: number;
   input_chars: number;
