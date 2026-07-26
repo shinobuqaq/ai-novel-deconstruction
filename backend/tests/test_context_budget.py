@@ -240,6 +240,77 @@ def _character(index: int, total: int) -> dict[str, object]:
     }
 
 
+def test_deep_context_reserves_exact_evidence_and_removes_dangling_ids() -> None:
+    chapters = _chapters(60)
+    events = [_event(index, (index % 60) + 1) for index in range(1, 181)]
+    evidence_by_id = {}
+    chapter_title_by_id = {}
+    for index in range(1, 181):
+        chapter = (index % 60) + 1
+        source_unit_id = f"chapter-unit-{chapter}"
+        chapter_title_by_id[source_unit_id] = f"第{chapter}章 标题{chapter}"
+        evidence_by_id[f"evidence-{index}"] = SimpleNamespace(
+            source_unit_id=source_unit_id,
+            start_char=index * 1_000,
+            end_char=index * 1_000 + 360,
+            text_snapshot="原文证据" * 90,
+        )
+        evidence_by_id[f"evidence-extra-{index}"] = SimpleNamespace(
+            source_unit_id=source_unit_id,
+            start_char=index * 1_000 + 400,
+            end_char=index * 1_000 + 760,
+            text_snapshot="补充证据" * 90,
+        )
+
+    selected, manifest = _build_synthesis_context(
+        foundation={
+            "characters": [_character(index, 100) for index in range(1, 101)],
+            "related_entities": [],
+            "events": events,
+        },
+        chapters=chapters,
+        evidence_by_id=evidence_by_id,
+        chapter_title_by_id=chapter_title_by_id,
+        source_chars=900_000,
+        profile=SimpleNamespace(
+            max_output_tokens=30_000,
+            context_window_tokens=None,
+        ),
+        extra_values={
+            "hierarchical_digests": [
+                _stage_digest(index, summary_chars=180)
+                for index in range(1, 8)
+            ],
+        },
+        purpose="deep",
+    )
+
+    visible_evidence_ids = {item["id"] for item in selected["evidence"]}
+    referenced_evidence_ids = {
+        evidence_id
+        for collection in (
+            selected["characters"],
+            selected["events"],
+            selected["chapter_digests"],
+            selected["hierarchical_digests"],
+        )
+        for item in collection
+        for evidence_id in item.get("evidence_ids", [])
+    }
+    referenced_evidence_ids.update(
+        evidence_id
+        for digest in selected["chapter_digests"]
+        for event in digest["main_events"]
+        for evidence_id in event.get("evidence_ids", [])
+    )
+
+    assert visible_evidence_ids
+    assert referenced_evidence_ids.issubset(visible_evidence_ids)
+    assert manifest["selected_by_kind"]["evidence"] == len(visible_evidence_ids)
+    assert selected["context"]["evidence_count"] == len(visible_evidence_ids)
+    assert manifest["selected_chars"] <= manifest["budget_chars"]
+
+
 def test_roster_guard_raises_when_small_budget_cuts_required_roster() -> None:
     foundation = {
         "characters": [_character(index, 60) for index in range(1, 61)],

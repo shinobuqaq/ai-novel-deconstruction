@@ -58,7 +58,7 @@ NARRATIVE_PROMPT_VERSION = "2.1.0"
 # 完整送进模型输入，否则覆盖校验对模型是不可满足的。
 REQUIRED_CHARACTER_ROSTER_SIZE = 100
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.7.0"
+DEEP_PROMPT_VERSION = "1.8.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -1575,6 +1575,46 @@ def _compact_roster_character(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_deep_event(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep deep-analysis navigation useful without crowding out source text."""
+    return {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "event_type": item.get("event_type"),
+        "summary": _short_text(item.get("summary"), 360),
+        "people": list(item.get("people", []))[:12],
+        "related_entities": list(item.get("related_entities", []))[:8],
+        "evidence_ids": list(item.get("evidence_ids", []))[:8],
+        "chapter_ordinals": list(item.get("chapter_ordinals", [])),
+        "confidence": item.get("confidence"),
+        "narrative_mode": item.get("narrative_mode"),
+        "location": _short_text(item.get("location"), 160),
+        "outcome": _short_text(item.get("outcome"), 240),
+        "impact": _short_text(item.get("impact"), 240),
+    }
+
+
+def _retain_visible_evidence_references(
+    value: object,
+    visible_evidence_ids: set[str],
+) -> None:
+    """Remove evidence IDs whose exact source spans were not selected."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"evidence_ids", "counter_evidence_ids"} and isinstance(item, list):
+                value[key] = [
+                    evidence_id
+                    for evidence_id in item
+                    if isinstance(evidence_id, str)
+                    and evidence_id in visible_evidence_ids
+                ]
+            else:
+                _retain_visible_evidence_references(item, visible_evidence_ids)
+    elif isinstance(value, list):
+        for item in value:
+            _retain_visible_evidence_references(item, visible_evidence_ids)
+
+
 def _raise_for_character_roles_coverage(
     foundation: dict[str, Any],
     roles: list["CharacterRoleProposal"],
@@ -1631,6 +1671,7 @@ def _build_synthesis_context(
     source_chars: int,
     profile: Any,
     extra_values: dict[str, object] | None = None,
+    purpose: Literal["narrative", "deep"] = "narrative",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a bounded, source-addressable input for narrative/deep stages."""
     materials: list[ContextMaterial] = []
@@ -1667,6 +1708,12 @@ def _build_synthesis_context(
         "previous_analysis": 1_000,
         "revision_scope": 12_000,
     }
+    if purpose == "deep":
+        extra_priorities.update({
+            "hierarchical_digests": 8_800,
+            "story_overview": 9_200,
+            "narrative_phases": 9_150,
+        })
     for key, value in (extra_values or {}).items():
         if value is None:
             continue
@@ -1695,17 +1742,25 @@ def _build_synthesis_context(
             reason="任务必需的上游结果" if key in {"revision_requests", "story_overview"} else "上一阶段结果",
         ))
 
-    # 只注入必答名册（与覆盖校验同一份、同排序），且必须排在摘要层之前：
-    # 名册缺席时覆盖校验对模型不可满足；名册之外的人物不进入合成上下文，
-    # 因为 characters 组件的输出上限恰等于名册大小，多余人物会诱导超限输出。
+    # 两个阶段共用同一份、同排序的人物名册。故事结构的人物组件把它放在
+    # 摘要层之前以满足覆盖校验；深层拆解则在证据、事件和结构材料之后按
+    # 活跃度选择，避免人物简介再次挤掉可引用的原文。
     for item in _required_character_entries(foundation):
         key = str(item.get("id") or item.get("name"))
+        deep_character_priority = 9_000 + min(
+            99,
+            int(item.get("appearance_count") or 0),
+        )
         materials.append(ContextMaterial(
             key=key,
             kind="character",
             text=_material_json("character", key, _compact_roster_character(item)),
-            priority=11_800,
-            reason="覆盖校验的必答人物名册",
+            priority=11_800 if purpose == "narrative" else deep_character_priority,
+            reason=(
+                "覆盖校验的必答人物名册"
+                if purpose == "narrative"
+                else "深层拆解的人物导航"
+            ),
         ))
 
     related_entities = list(foundation.get("related_entities", []))
@@ -1727,7 +1782,12 @@ def _build_synthesis_context(
         if first_chapter is not None:
             seen_chapters.add(first_chapter)
         confidence = int(item.get("confidence") or 0)
-        payload = _material_json("event", str(item.get("id") or item.get("title")), item)
+        event_value = _compact_deep_event(item) if purpose == "deep" else item
+        payload = _material_json(
+            "event",
+            str(item.get("id") or item.get("title")),
+            event_value,
+        )
         materials.append(ContextMaterial(
             key=str(item.get("id") or item.get("title")),
             kind="event",
@@ -1737,6 +1797,13 @@ def _build_synthesis_context(
             chapter_ordinal=first_chapter,
         ))
 
+    navigation_evidence_ids = {
+        evidence_id
+        for digest in chapter_digests
+        for event in digest.get("main_events", [])
+        for evidence_id in event.get("evidence_ids", [])
+    }
+    seen_evidence_chapters: set[int] = set()
     for evidence_id, item in evidence_by_id.items():
         chapter_ordinal = next(
             (
@@ -1746,6 +1813,12 @@ def _build_synthesis_context(
             ),
             None,
         )
+        first_evidence_in_chapter = (
+            chapter_ordinal is not None
+            and chapter_ordinal not in seen_evidence_chapters
+        )
+        if chapter_ordinal is not None:
+            seen_evidence_chapters.add(chapter_ordinal)
         payload = _material_json(
             "evidence",
             evidence_id,
@@ -1761,7 +1834,15 @@ def _build_synthesis_context(
             key=evidence_id,
             kind="evidence",
             text=payload,
-            priority=1_000,
+            priority=(
+                9_600
+                if purpose == "deep"
+                and (
+                    evidence_id in navigation_evidence_ids
+                    or first_evidence_in_chapter
+                )
+                else 3_000 if purpose == "deep" else 1_000
+            ),
             reason="正式原文证据",
             chapter_ordinal=chapter_ordinal,
         ))
@@ -1800,6 +1881,16 @@ def _build_synthesis_context(
             selected_values["related_entities"].append(value)
         elif item.kind == "evidence":
             selected_values["evidence"].append(value)
+    if purpose == "deep":
+        visible_evidence_ids = {
+            str(item.get("id"))
+            for item in selected_values["evidence"]
+            if item.get("id")
+        }
+        _retain_visible_evidence_references(
+            selected_values,
+            visible_evidence_ids,
+        )
     stage_digest_total = len((extra_values or {}).get("hierarchical_digests") or [])
     if stage_digest_total:
         # 即使一条都没入选，payload 形状也要稳定（空列表而不是键缺失）。
@@ -1831,6 +1922,7 @@ def _build_synthesis_context(
         "stage_digest_count": stage_digest_total,
         "stage_digest_complete": len(selected_values.get("hierarchical_digests", []))
         == stage_digest_total,
+        "evidence_count": len(selected_values["evidence"]),
     }
     return selected_values, selection.manifest()
 
@@ -2519,6 +2611,7 @@ def provider_payload_for_deep_analysis(
             "revision_impact": public_deep_revision_impact(task_payload.get("revision_impact")),
             "revision_scope": task_payload.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
         },
+        purpose="deep",
     )
     input_payload = {
         **selected,
@@ -2531,6 +2624,8 @@ def provider_payload_for_deep_analysis(
         "revision_impact": selected.get("revision_impact"),
         "revision_scope": selected.get("revision_scope", list(DEEP_ANALYSIS_COLLECTIONS)),
     }
+    if not input_payload["evidence"]:
+        raise ValueError("DEEP_ANALYSIS_EVIDENCE_CONTEXT_EMPTY")
     return {
         "instructions": _deep_prompt(),
         "input": json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
@@ -3556,6 +3651,11 @@ def enqueue_deep_analysis(
     force: bool = False,
     revision_requests: list[dict] | None = None,
 ) -> Task | None:
+    previous_analysis = session.scalar(
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run.id)
+        .order_by(DeepAnalysis.revision_no.desc())
+    )
     existing = session.scalar(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
@@ -3563,9 +3663,18 @@ def enqueue_deep_analysis(
             AnalysisRunTask.run_id == run.id,
             Task.kind == DEEP_ANALYSIS_TASK_KIND,
         )
+        .order_by(AnalysisRunTask.batch_index.desc())
     )
     if existing is not None and not force:
-        return existing
+        terminal_without_result = (
+            existing.status in {
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }
+            and previous_analysis is None
+        )
+        if not terminal_without_result:
+            return existing
     narrative_task = session.scalar(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
@@ -3587,11 +3696,6 @@ def enqueue_deep_analysis(
         _service, model_profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
     except ModelSettingsError:
         return None
-    previous_analysis = session.scalar(
-        select(DeepAnalysis)
-        .where(DeepAnalysis.run_id == run.id)
-        .order_by(DeepAnalysis.revision_no.desc())
-    )
     previous_payload = (
         json.loads(previous_analysis.payload_json)
         if previous_analysis is not None

@@ -15,7 +15,7 @@ from app.models import AnalysisRun, AnalysisRunTask, EntityCandidate, EventCandi
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
-from app.repositories import claim_next_task
+from app.repositories import claim_next_task, fail_task_attempt
 from app.services.analysis import parse_provider_output, persist_analysis_output
 from app.services.provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
@@ -984,6 +984,87 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         )
         assert narrative_task is not None
         assert "CHARACTER" in narrative_task.payload_json
+
+
+def test_deep_start_creates_recovery_task_after_initial_failure(client) -> None:
+    imported = _import_confirmed_novel(client)
+    client.put("/api/settings/openai", json={"api_key": "sk-test"})
+    version_id = imported["version"]["id"]
+    run = client.post(
+        f"/api/source-versions/{version_id}/analysis/entities-events/start"
+    ).json()
+    registry = ProviderRegistry([StaticAnalysisProvider()])
+
+    with client.app.state.session_factory() as session:
+        foundation_claim = claim_next_task(
+            session,
+            worker_id="deep-recovery-foundation",
+            lease_seconds=60,
+        )
+    assert foundation_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        foundation_claim,
+        registry,
+    )
+
+    for index in range(4):
+        with client.app.state.session_factory() as session:
+            narrative_claim = claim_next_task(
+                session,
+                worker_id=f"deep-recovery-narrative-{index}",
+                lease_seconds=60,
+            )
+        assert narrative_claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            narrative_claim,
+            registry,
+        )
+
+    first_start = client.post(f"/api/analysis-runs/{run['id']}/deep/start")
+    assert first_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        failed_claim = claim_next_task(
+            session,
+            worker_id="deep-recovery-first-attempt",
+            lease_seconds=60,
+        )
+    assert failed_claim is not None
+    assert failed_claim.kind == "analysis.deep_insights"
+    with client.app.state.session_factory() as session:
+        assert fail_task_attempt(
+            session,
+            task_id=failed_claim.id,
+            attempt_id=failed_claim.current_attempt_id,
+            lease_token=failed_claim.lease_token,
+            lease_generation=failed_claim.lease_generation,
+            error_code="PROVIDER_UNAVAILABLE",
+            error_message="模拟首次深层任务耗尽。",
+            retryable=False,
+            retry_after_seconds=None,
+        )
+
+    restarted = client.post(f"/api/analysis-runs/{run['id']}/deep/start")
+    assert restarted.status_code == 202
+    assert restarted.json()["status"] == "PENDING"
+    assert restarted.json()["total_batches"] == 7
+    with client.app.state.session_factory() as session:
+        deep_tasks = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.kind == "analysis.deep_insights",
+            )
+            .order_by(AnalysisRunTask.batch_index)
+        ))
+    assert [task.status for task in deep_tasks] == [
+        TaskStatus.FAILED.value,
+        TaskStatus.PENDING.value,
+    ]
 
 
 def test_invalid_model_structure_records_safe_field_diagnostics(client) -> None:
