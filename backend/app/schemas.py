@@ -429,6 +429,7 @@ class WorkbenchCharacterRead(BaseModel):
     activity_level: str
     status: str
     confidence: int
+    role_required: bool = True
     role: str = "UNCLASSIFIED"
     role_reason: str = ""
     goals: list[str] = Field(default_factory=list)

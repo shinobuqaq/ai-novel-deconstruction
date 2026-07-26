@@ -313,6 +313,7 @@ export type WorkbenchCharacter = {
   activity_level: string;
   status: "VALID" | "UNCERTAIN";
   confidence: number;
+  role_required: boolean;
   role: "PROTAGONIST" | "CORE_SUPPORTING" | "IMPORTANT_SUPPORTING" | "MINOR" | "UNCLASSIFIED";
   role_reason: string;
   identities: string[];

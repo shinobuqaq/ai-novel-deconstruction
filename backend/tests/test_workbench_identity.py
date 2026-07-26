@@ -9,6 +9,7 @@ from app.services.workbench import (
     _canonical_person,
     _event_candidate_groups,
     _person_groups,
+    _required_role_character_ids,
     _safe_person_group_names,
 )
 
@@ -110,6 +111,24 @@ def test_reciprocal_specific_aliases_remain_safe_for_automatic_merge() -> None:
 
     assert len(groups) == 1
     assert sorted(item.name for item in groups[0]) == ["诺诺", "陈墨瞳"]
+
+
+def test_required_role_roster_uses_same_rank_and_limit_as_model_context() -> None:
+    characters = [
+        {
+            "id": f"character-{index}",
+            "name": f"人物{index:03d}",
+            "appearance_count": index,
+            "confidence": 100,
+        }
+        for index in range(1, 102)
+    ]
+
+    required = _required_role_character_ids(characters)
+
+    assert len(required) == 100
+    assert "character-101" in required
+    assert "character-1" not in required
 
 
 def test_evidence_backed_person_resolution_is_projection_only_and_reversible() -> None:

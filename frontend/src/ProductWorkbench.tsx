@@ -285,7 +285,7 @@ function FormalWorkbench({
   const [issueError, setIssueError] = useState("");
   const [focusTarget, setFocusTarget] = useState<{ view: WorkbenchView; id: string } | null>(null);
   const viewData = revisionData ?? data;
-  const unclassifiedCharacters = viewData.characters.filter((item) => item.role === "UNCLASSIFIED");
+  const unclassifiedCharacters = viewData.characters.filter((item) => item.role_required && item.role === "UNCLASSIFIED");
   const isHistoricalRevision = revisionData !== null && revisionData.deep_revision !== data.deep_revision;
   const sourceChapterNumbers = useMemo(() => {
     const numbers = new Map<string, number>();
@@ -687,7 +687,7 @@ function FormalWorkbench({
                       <article className={`formal-card${focusClass(character.id)}`} data-workbench-id={character.id} key={character.id}>
                         <header>
                           <div><span>{ROLE_LABELS[character.role] ?? "人物"}</span><h3>{character.name}</h3></div>
-                          <i className={character.status === "UNCERTAIN" || character.role === "UNCLASSIFIED" ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? "角色作用待确认" : "角色定位已生成"}</i>
+                          <i className={character.status === "UNCERTAIN" || (character.role_required && character.role === "UNCLASSIFIED") ? "needs-review" : ""}>{character.status === "UNCERTAIN" ? "身份待抽查" : character.role === "UNCLASSIFIED" ? character.role_required ? "角色作用待确认" : "背景层暂未深挖" : "角色定位已生成"}</i>
                         </header>
                         <p>{character.description || "原文中已识别到该人物。"}</p>
                         <small>{character.role_reason}</small>

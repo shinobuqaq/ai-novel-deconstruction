@@ -1353,7 +1353,8 @@ def narrative_synthesis_repair(
     missing = [
         item["name"]
         for item in projection.get("characters", [])
-        if item.get("role") == "UNCLASSIFIED"
+        if item.get("role_required")
+        and item.get("role") == "UNCLASSIFIED"
     ]
     if not missing:
         raise HTTPException(

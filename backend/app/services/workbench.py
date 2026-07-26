@@ -20,7 +20,7 @@ from ..models import (
     Task,
     TaskStatus,
 )
-from .analysis import narrative_phase_id
+from .analysis import REQUIRED_CHARACTER_ROSTER_SIZE, narrative_phase_id
 
 
 def _hash(value: str) -> str:
@@ -180,6 +180,23 @@ def _safe_person_group_names(
             )
         )
     ])
+
+
+def _required_role_character_ids(characters: list[dict]) -> set[str]:
+    """Mirror the model roster ranking so readiness and validation agree."""
+    ranked = sorted(
+        characters,
+        key=lambda item: (
+            -int(item.get("appearance_count") or 0),
+            -int(item.get("confidence") or 0),
+            str(item.get("name") or ""),
+        ),
+    )
+    return {
+        str(item.get("id") or "")
+        for item in ranked[:REQUIRED_CHARACTER_ROSTER_SIZE]
+        if item.get("id")
+    }
 
 
 def _canonical_person(group: list[EntityCandidate]) -> EntityCandidate:
@@ -937,6 +954,7 @@ def build_workbench_projection(
         })
     related_projection.sort(key=lambda item: (item["entity_type"], item["name"]))
 
+    required_role_character_ids = _required_role_character_ids(characters)
     for character in characters:
         role = next(
             (
@@ -947,6 +965,7 @@ def build_workbench_projection(
             None,
         )
         character.update({
+            "role_required": character["id"] in required_role_character_ids,
             "role": role.get("role", "UNCLASSIFIED") if role else "UNCLASSIFIED",
             "role_reason": role.get("role_reason", "尚未完成角色定位") if role else "尚未完成角色定位",
             "identities": role.get("identities", []) if role else [],
@@ -959,7 +978,9 @@ def build_workbench_projection(
             "arc_summary": role.get("arc_summary", "") if role else "",
         })
     if synthesis is not None and any(
-        character["role"] == "UNCLASSIFIED" for character in characters
+        character["role_required"]
+        and character["role"] == "UNCLASSIFIED"
+        for character in characters
     ):
         narrative_status = "INCOMPLETE"
 
