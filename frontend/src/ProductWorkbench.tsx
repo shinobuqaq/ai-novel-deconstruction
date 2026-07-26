@@ -2069,7 +2069,7 @@ export default function ProductWorkbench() {
                                           <summary>
                                             <span>
                                               <strong>第 {callIndex + 1} 次 · {callLabel}</strong>
-                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}{call.finished_at ? ` · ${formatDuration(call.duration_seconds)}` : ""}</small>
+                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}{call.finished_at ? ` · ${formatDuration(call.duration_seconds)}` : ""}{call.transport_mode === "STREAMING" ? " · 远程流式" : call.transport_mode === "LOCAL_FULL_RESPONSE" ? " · 本机整包" : ""}</small>
                                             </span>
                                             <span className="analysis-call-totals">
                                               <small>{call.prompt_tokens || call.input_chars ? `输入约 ${formatNumber(call.prompt_tokens)} 令牌 / ${formatNumber(call.input_chars)} 字符` : "输入规模未记录"}</small>

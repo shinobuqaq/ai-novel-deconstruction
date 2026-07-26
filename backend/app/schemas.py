@@ -327,6 +327,7 @@ class AnalysisCallDiagnosticRead(BaseModel):
     duration_seconds: float = 0
     provider_name: str | None = None
     model: str | None = None
+    transport_mode: str | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     input_chars: int = 0

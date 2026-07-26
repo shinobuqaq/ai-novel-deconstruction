@@ -1553,6 +1553,7 @@ def _provider_settings(tmp_path: Path) -> Settings:
     settings = Settings(
         database_url=f"sqlite:///{(tmp_path / 'provider.db').as_posix()}",
         workspace_dir=tmp_path / "workspace",
+        openai_base_url="http://127.0.0.1:18081/v1",
         openai_api_key="sk-test",
         openai_timeout_seconds=1,
     )
@@ -1773,7 +1774,7 @@ def test_compatible_provider_removes_schema_document_metadata_before_request(tmp
         service_id="openai-default",
         name="兼容接口",
         service_type="OPENAI_COMPATIBLE",
-        base_url="https://provider.example/v1",
+        base_url="http://127.0.0.1:18082/v1",
         api_key="sk-test",
     )
     save_analysis_profile(
@@ -1835,7 +1836,7 @@ def test_compatible_provider_uses_locally_validated_json_for_complex_analysis(tm
         service_id=None,
         name="复杂结构兼容接口",
         service_type="OPENAI_COMPATIBLE",
-        base_url="https://provider.example/v1",
+        base_url="http://127.0.0.1:18082/v1",
         api_key="sk-test",
     )
     save_analysis_profile(

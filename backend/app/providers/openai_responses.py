@@ -12,7 +12,8 @@ from ..services.provider_config import (
     STRUCTURED_STRICT,
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
-    provider_http_headers,
+    model_service_uses_streaming,
+    post_model_request,
     resolve_analysis_route,
     schema_for_provider,
 )
@@ -148,10 +149,11 @@ class OpenAIResponsesProvider:
                 timeout=profile.timeout_seconds,
                 transport=self.transport,
             ) as client:
-                response = await client.post(
+                response = await post_model_request(
+                    client,
+                    service,
                     endpoint,
-                    headers=provider_http_headers(service.api_key, json_content=True),
-                    json=request_body,
+                    request_body,
                 )
         except httpx.TimeoutException as exc:
             raise ProviderError(
@@ -180,10 +182,28 @@ class OpenAIResponsesProvider:
                 message="API Key 无效或没有使用该模型的权限。",
                 retryable=False,
             )
+        if response.status_code == 422:
+            try:
+                error = response.json().get("error", {})
+            except ValueError:
+                error = {}
+            if (
+                isinstance(error, dict)
+                and error.get("code") == "REMOTE_STREAMING_REQUIRED"
+            ):
+                raise ProviderError(
+                    code="PROVIDER_STREAMING_UNSUPPORTED",
+                    message=str(error.get("message") or "远程模型服务必须支持流式传输。"),
+                    retryable=False,
+                )
         if response.status_code >= 500:
+            detail = _response_error_detail(response)
+            message = "在线 AI 服务暂时不可用，系统会自动重试。"
+            if detail:
+                message += f" 服务返回：{detail}"
             raise ProviderError(
                 code="PROVIDER_UNAVAILABLE",
-                message="在线 AI 服务暂时不可用，系统会自动重试。",
+                message=message,
                 retryable=True,
             )
         if response.status_code >= 400:
@@ -266,6 +286,11 @@ class OpenAIResponsesProvider:
                 "timeout_seconds": profile.timeout_seconds,
                 "max_retries": profile.max_retries,
                 "context_window_tokens": profile.context_window_tokens,
+                "transport_mode": (
+                    "STREAMING"
+                    if model_service_uses_streaming(service)
+                    else "LOCAL_FULL_RESPONSE"
+                ),
                 "json_repairs": list(parsed_json.repairs),
             },
         )

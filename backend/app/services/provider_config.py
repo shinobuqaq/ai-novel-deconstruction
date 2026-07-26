@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -99,6 +101,226 @@ class ModelService:
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.api_key.strip())
+
+
+def model_service_uses_streaming(service: ModelService) -> bool:
+    """Use streaming for every remote service and full responses only on loopback."""
+    hostname = urlparse(service.base_url).hostname
+    if not hostname:
+        return True
+    if hostname.casefold() == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return True
+
+
+def _stream_content_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_stream_content_text(item) for item in value)
+    if isinstance(value, dict):
+        return _stream_content_text(
+            value.get("text")
+            or value.get("content")
+            or value.get("value")
+            or ""
+        )
+    return ""
+
+
+def _stream_usage(value: object) -> tuple[int, int]:
+    if not isinstance(value, dict):
+        return 0, 0
+    return (
+        int(value.get("prompt_tokens") or value.get("input_tokens") or 0),
+        int(value.get("completion_tokens") or value.get("output_tokens") or 0),
+    )
+
+
+def _responses_output_text(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return "".join(
+        _stream_content_text(content.get("text"))
+        for item in value.get("output", [])
+        if isinstance(item, dict) and item.get("type") == "message"
+        for content in item.get("content", [])
+        if isinstance(content, dict) and content.get("type") == "output_text"
+    )
+
+
+def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any]:
+    fragments: list[str] = []
+    completed_text = ""
+    prompt_tokens = 0
+    completion_tokens = 0
+    valid_events = 0
+
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(":") or line.startswith("event:"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        valid_events += 1
+        error = event.get("error")
+        if error:
+            if isinstance(error, dict):
+                detail = error.get("message") or error.get("detail") or error.get("code")
+            else:
+                detail = error
+            raise ValueError(str(detail or "远程模型在流式响应中返回了错误。"))
+
+        current_prompt, current_completion = _stream_usage(event.get("usage"))
+        prompt_tokens = current_prompt or prompt_tokens
+        completion_tokens = current_completion or completion_tokens
+
+        response = event.get("response")
+        if isinstance(response, dict):
+            current_prompt, current_completion = _stream_usage(response.get("usage"))
+            prompt_tokens = current_prompt or prompt_tokens
+            completion_tokens = current_completion or completion_tokens
+            completed_text = _responses_output_text(response) or completed_text
+
+        if service_type == "OPENAI":
+            if event.get("type") == "response.output_text.delta":
+                fragments.append(_stream_content_text(event.get("delta")))
+            elif event.get("type") == "response.output_text.done" and not fragments:
+                completed_text = _stream_content_text(event.get("text")) or completed_text
+            continue
+
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                fragment = _stream_content_text(delta.get("content"))
+            else:
+                fragment = _stream_content_text(delta)
+            fragment = fragment or _stream_content_text(choice.get("text"))
+            if fragment:
+                fragments.append(fragment)
+            elif not fragments:
+                message = choice.get("message")
+                if isinstance(message, dict):
+                    completed_text = _stream_content_text(message.get("content")) or completed_text
+
+    if valid_events == 0:
+        raise ValueError("远程模型返回了无法识别的流式数据。")
+    output_text = "".join(fragments) or completed_text
+    if service_type == "OPENAI":
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": output_text}],
+                }
+            ],
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+            },
+        }
+    return {
+        "choices": [{"message": {"content": output_text}}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        },
+    }
+
+
+def _stream_options_rejected(response: httpx.Response) -> bool:
+    if response.status_code not in {400, 422}:
+        return False
+    detail = response.text.casefold()
+    return "stream_options" in detail or "include_usage" in detail
+
+
+async def post_model_request(
+    client: httpx.AsyncClient,
+    service: ModelService,
+    endpoint: str,
+    request_body: dict[str, Any],
+) -> httpx.Response:
+    """Send remote model calls as SSE streams while preserving local full responses."""
+    if not model_service_uses_streaming(service):
+        return await client.post(
+            endpoint,
+            headers=provider_http_headers(service.api_key, json_content=True),
+            json=request_body,
+        )
+
+    streaming_body = {**request_body, "stream": True}
+    if service.service_type == "OPENAI_COMPATIBLE":
+        streaming_body["stream_options"] = {"include_usage": True}
+
+    async def send(body: dict[str, Any]) -> httpx.Response:
+        headers = provider_http_headers(service.api_key, json_content=True)
+        headers["Accept"] = "text/event-stream"
+        async with client.stream(
+            "POST",
+            endpoint,
+            headers=headers,
+            json=body,
+        ) as response:
+            await response.aread()
+        return response
+
+    response = await send(streaming_body)
+    if "stream_options" in streaming_body and _stream_options_rejected(response):
+        streaming_body = dict(streaming_body)
+        streaming_body.pop("stream_options", None)
+        response = await send(streaming_body)
+    if response.status_code >= 400:
+        return response
+
+    content_type = response.headers.get("content-type", "").casefold()
+    if "text/event-stream" not in content_type and not any(
+        line.lstrip().startswith("data:") for line in response.text.splitlines()
+    ):
+        return httpx.Response(
+            422,
+            request=response.request,
+            json={
+                "error": {
+                    "code": "REMOTE_STREAMING_REQUIRED",
+                    "message": (
+                        "远程模型服务没有返回流式数据。远程或中转服务必须支持流式传输；"
+                        "只有 localhost、127.0.0.1 或 ::1 本机地址可以使用整包返回。"
+                    ),
+                }
+            },
+        )
+    try:
+        envelope = _stream_response_envelope(response.text, service.service_type)
+    except ValueError as exc:
+        return httpx.Response(
+            502,
+            request=response.request,
+            json={"error": {"message": str(exc)}},
+        )
+    return httpx.Response(
+        200,
+        request=response.request,
+        headers={"content-type": "application/json", "x-workbench-transport": "streaming"},
+        json=envelope,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -710,10 +932,11 @@ async def _request_probe(
     )
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
-            return await client.post(
+            return await post_model_request(
+                client,
+                service,
                 endpoint,
-                headers=provider_http_headers(service.api_key, json_content=True),
-                json=body,
+                body,
             )
     except httpx.TimeoutException as exc:
         raise ModelSettingsError("PROVIDER_TIMEOUT", "所选模型测试超时，请检查网络或稍后再试。") from exc
@@ -722,6 +945,16 @@ async def _request_probe(
 
 
 def _probe_error(response: httpx.Response) -> ModelSettingsError:
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("code") == "REMOTE_STREAMING_REQUIRED":
+        return ModelSettingsError(
+            "PROVIDER_STREAMING_UNSUPPORTED",
+            str(error.get("message") or "远程模型服务必须支持流式传输。"),
+        )
     if response.status_code in {401, 403}:
         return ModelSettingsError("PROVIDER_AUTH_FAILED", "API Key 无效，或者当前账号没有访问所选模型的权限。")
     if response.status_code == 404:

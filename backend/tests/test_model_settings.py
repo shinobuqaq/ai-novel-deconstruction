@@ -11,9 +11,11 @@ from app.providers.openai_responses import OpenAIResponsesProvider
 from app.services.provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
     PROVIDER_HTTP_USER_AGENT,
+    ModelService,
     ModelSettingsError,
     ModelProbeResult,
     discover_models,
+    model_service_uses_streaming,
     read_model_settings,
     save_analysis_profile,
     save_model_service,
@@ -177,7 +179,7 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
         service_id="openai-default",
         name="兼容服务",
         service_type="OPENAI_COMPATIBLE",
-        base_url="https://provider.example/v1",
+        base_url="http://127.0.0.1:18081/v1",
         api_key="sk-test",
     )
     save_analysis_profile(
@@ -236,6 +238,315 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
     assert [request.url.path for request in seen] == ["/v1/models", "/v1/chat/completions"]
 
 
+@pytest.mark.parametrize(
+    ("base_url", "uses_streaming"),
+    [
+        ("http://127.0.0.1:7861/v1", False),
+        ("http://localhost:7861/v1", False),
+        ("http://[::1]:7861/v1", False),
+        ("https://relay.example/v1", True),
+        ("http://192.168.1.8:7861/v1", True),
+    ],
+)
+def test_only_loopback_model_services_keep_full_response_mode(
+    base_url: str,
+    uses_streaming: bool,
+) -> None:
+    service = ModelService(
+        id="transport-test",
+        name="传输模式测试",
+        service_type="OPENAI_COMPATIBLE",
+        base_url=base_url,
+        api_key="sk-test",
+    )
+    assert model_service_uses_streaming(service) is uses_streaming
+
+
+def test_remote_compatible_service_streams_and_preserves_usage(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="远程中转",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://relay.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="远程流式分析",
+        service_id=service.id,
+        model="stream-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+        assert request.headers["accept"] == "text/event-stream"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"entities\\":[],"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"\\"events\\":[]}"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":52,"completion_tokens":8}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    response = asyncio.run(
+        provider.complete(
+            task_kind="analysis.entities_events",
+            payload={
+                "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                "instructions": "只返回 JSON",
+                "input": "测试文本",
+                "output_schema": {"type": "object"},
+            },
+        )
+    )
+
+    assert response.parsed == {"entities": [], "events": []}
+    assert response.prompt_tokens == 52
+    assert response.completion_tokens == 8
+    assert response.parameters["transport_mode"] == "STREAMING"
+
+
+def test_remote_stream_falls_back_when_include_usage_is_rejected(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="旧式远程中转",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://legacy-relay.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="远程流式兼容",
+        service_id=service.id,
+        model="legacy-stream-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "stream_options" in body:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Unsupported parameter: stream_options"}},
+            )
+        assert body["stream"] is True
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"entities\\":[],\\"events\\":[]}"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    response = asyncio.run(
+        provider.complete(
+            task_kind="analysis.entities_events",
+            payload={
+                "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                "instructions": "只返回 JSON",
+                "input": "测试文本",
+                "output_schema": {"type": "object"},
+            },
+        )
+    )
+
+    assert len(calls) == 2
+    assert "stream_options" in calls[0]
+    assert "stream_options" not in calls[1]
+    assert response.parsed == {"entities": [], "events": []}
+    assert response.parameters["transport_mode"] == "STREAMING"
+
+
+def test_remote_service_rejects_non_streaming_response(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="伪流式远程中转",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="https://non-streaming-relay.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="远程流式校验",
+        service_id=service.id,
+        model="non-streaming-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"entities":[],"events":[]}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+            },
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(
+            provider.complete(
+                task_kind="analysis.entities_events",
+                payload={
+                    "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                    "instructions": "只返回 JSON",
+                    "input": "测试文本",
+                    "output_schema": {"type": "object"},
+                },
+            )
+        )
+
+    assert caught.value.code == "PROVIDER_STREAMING_UNSUPPORTED"
+    assert "必须支持流式传输" in str(caught.value)
+
+
+def test_loopback_compatible_service_keeps_full_response_mode(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="本机 Gemini 桥接",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="http://127.0.0.1:7861/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="本机整包分析",
+        service_id=service.id,
+        model="gemini-local",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "stream" not in body
+        assert "stream_options" not in body
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"entities":[],"events":[]}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+            },
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    response = asyncio.run(
+        provider.complete(
+            task_kind="analysis.entities_events",
+            payload={
+                "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                "instructions": "只返回 JSON",
+                "input": "测试文本",
+                "output_schema": {"type": "object"},
+            },
+        )
+    )
+
+    assert response.prompt_tokens == 12
+    assert response.completion_tokens == 4
+    assert response.parameters["transport_mode"] == "LOCAL_FULL_RESPONSE"
+
+
+def test_remote_openai_responses_service_streams(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="远程 OpenAI",
+        service_type="OPENAI",
+        base_url="https://api.openai.example/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="远程 Responses 流式分析",
+        service_id=service.id,
+        model="responses-model",
+        temperature=None,
+        max_output_tokens=4096,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert "stream_options" not in body
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"{\\"entities\\":[],"}\n\n'
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"\\"events\\":[]}"}\n\n'
+                'event: response.completed\n'
+                'data: {"type":"response.completed","response":{"usage":{"input_tokens":31,"output_tokens":9}}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    response = asyncio.run(
+        provider.complete(
+            task_kind="analysis.entities_events",
+            payload={
+                "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                "instructions": "只返回 JSON",
+                "input": "测试文本",
+                "output_schema": {"type": "object"},
+            },
+        )
+    )
+
+    assert response.parsed == {"entities": [], "events": []}
+    assert response.prompt_tokens == 31
+    assert response.completion_tokens == 9
+    assert response.parameters["transport_mode"] == "STREAMING"
+
+
 def test_invalid_output_preserves_token_usage(client) -> None:
     settings = client.app.state.settings
     service = save_model_service(
@@ -243,7 +554,7 @@ def test_invalid_output_preserves_token_usage(client) -> None:
         service_id="openai-default",
         name="令牌记录失败测试",
         service_type="OPENAI_COMPATIBLE",
-        base_url="https://provider.example/v1",
+        base_url="http://127.0.0.1:18081/v1",
         api_key="sk-test",
     )
     save_analysis_profile(
@@ -472,6 +783,8 @@ def test_selected_model_probe_records_strict_capabilities(client) -> None:
         assert request.headers["user-agent"] == PROVIDER_HTTP_USER_AGENT
         body = json.loads(request.content)
         assert body["model"] == "strict-model"
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
         assert "temperature" not in body
         assert "reasoning_effort" not in body
         assert body["response_format"]["type"] == "json_schema"
@@ -481,10 +794,12 @@ def test_selected_model_probe_records_strict_capabilities(client) -> None:
         assert wire_schema["title"] == "Model capability probe"
         return httpx.Response(
             200,
-            json={
-                "choices": [{"message": {"content": '{"ok": true}'}}],
-                "usage": {"prompt_tokens": 8, "completion_tokens": 3},
-            },
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"ok\\": true}"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":3}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
         )
 
     result = asyncio.run(probe_selected_model(settings, ENTITIES_EVENTS_PROFILE_ID, transport=httpx.MockTransport(handler)))
@@ -581,7 +896,11 @@ def test_selected_model_probe_falls_back_and_provider_filters_rejected_parameter
             return httpx.Response(400, json={"error": {"message": "unsupported parameter"}})
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"ok\\": true}"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
         )
 
     result = asyncio.run(probe_selected_model(settings, ENTITIES_EVENTS_PROFILE_ID, transport=httpx.MockTransport(probe_handler)))
@@ -598,10 +917,12 @@ def test_selected_model_probe_falls_back_and_provider_filters_rejected_parameter
         assert "output_schema" not in body["messages"][0]["content"]
         return httpx.Response(
             200,
-            json={
-                "choices": [{"message": {"content": '{"entities": [], "events": []}'}}],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
-            },
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"entities\\": [], \\"events\\": []}"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
         )
 
     provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(analysis_handler))

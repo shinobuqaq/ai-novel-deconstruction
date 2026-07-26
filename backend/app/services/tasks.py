@@ -177,6 +177,9 @@ def _attempt_diagnostics(
         "input_chars": len(model_input),
         "output_chars": len(response.raw_text),
     }
+    transport_mode = response.parameters.get("transport_mode")
+    if isinstance(transport_mode, str) and transport_mode:
+        diagnostics["transport_mode"] = transport_mode
     request_input_path = provider_payload.get("request_input_path")
     if isinstance(request_input_path, str) and request_input_path:
         diagnostics["request_input_path"] = request_input_path

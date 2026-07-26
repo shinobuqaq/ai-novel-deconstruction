@@ -220,6 +220,7 @@ export type AnalysisCallDiagnostic = {
   duration_seconds: number;
   provider_name: string | null;
   model: string | null;
+  transport_mode: "STREAMING" | "LOCAL_FULL_RESPONSE" | null;
   prompt_tokens: number;
   completion_tokens: number;
   input_chars: number;

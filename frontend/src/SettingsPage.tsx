@@ -54,6 +54,15 @@ function testTimeLabel(service: ModelService) {
   }).format(parsed)}`;
 }
 
+function isLoopbackServiceUrl(value: string) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return hostname === "localhost" || hostname === "::1" || /^127\./.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>("services");
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -376,8 +385,17 @@ export default function SettingsPage() {
                   {selectedService && (
                     <div className="connection-summary">
                       <div><span>测试状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <div>
+                        <span>传输方式</span>
+                        <strong>{isLoopbackServiceUrl(draft.base_url) ? "本机整包返回" : "远程流式传输"}</strong>
+                      </div>
                       <small>{testTimeLabel(selectedService)}</small>
-                      <p>{selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}</p>
+                      <p>
+                        {selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}
+                        {isLoopbackServiceUrl(draft.base_url)
+                          ? " 本机地址保持当前整包返回方式。"
+                          : " 远程地址会自动使用流式传输并在本机拼合完整结果。"}
+                      </p>
                     </div>
                   )}
                   <footer className="settings-actions">

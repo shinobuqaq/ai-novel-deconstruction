@@ -496,6 +496,9 @@ def _analysis_run_diagnostics(
                     duration_seconds=round(duration_seconds, 3),
                     provider_name=attempt.provider_name,
                     model=str(attempt_diagnostics.get("model") or "") or None,
+                    transport_mode=(
+                        str(attempt_diagnostics.get("transport_mode") or "") or None
+                    ),
                     prompt_tokens=int(attempt_usage.get("prompt_tokens") or 0),
                     completion_tokens=int(attempt_usage.get("completion_tokens") or 0),
                     input_chars=int(attempt_diagnostics.get("input_chars") or 0),
