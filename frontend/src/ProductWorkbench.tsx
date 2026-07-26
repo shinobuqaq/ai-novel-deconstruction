@@ -241,6 +241,7 @@ const ANALYSIS_STAGE_STATUS_LABELS: Record<string, string> = {
 };
 
 type WorkbenchView =
+  | "learn"
   | "overview"
   | "source"
   | "characters"
@@ -630,34 +631,46 @@ function FormalWorkbench({
     </article>
   );
 
-  const workbenchTabs: Array<{ key: WorkbenchView; label: string; count?: number }> = [
-    { key: "overview", label: "总览" },
+  const overviewProtagonist = viewData.story_overview?.protagonist.trim();
+  const protagonist = viewData.characters.find(
+    (item) => overviewProtagonist && (item.name === overviewProtagonist || item.aliases.includes(overviewProtagonist)),
+  ) ?? viewData.characters.find((item) => item.role === "PROTAGONIST");
+  const openingCastCounts = [3, 10, 30].map((chapter) => ({
+    chapter,
+    count: viewData.characters.filter(
+      (item) => item.first_chapter_ordinal !== null && item.first_chapter_ordinal <= chapter,
+    ).length,
+  }));
+  const phaseHooks = viewData.phases.filter((item) => item.next_hook.trim());
+  const patternCandidates = viewData.deep_analysis?.claims.filter((item) => item.claim_kind === "PATTERN") ?? [];
+  const evidenceTabs: Array<{ key: WorkbenchView; label: string; count?: number | string }> = [
+    { key: "overview", label: "故事档案" },
     { key: "source", label: "原文", count: sourceChapterNumbers.size },
     { key: "characters", label: "人物", count: viewData.characters.length },
     { key: "plot", label: "剧情", count: viewData.phases.length },
     { key: "events", label: "事件", count: viewData.events.length },
     { key: "timeline", label: "时间线", count: viewData.events.length },
-    { key: "facts", label: "事实与状态", count: viewData.deep_analysis?.fact_versions.length ?? 0 },
-    { key: "world", label: "世界设定", count: viewData.deep_analysis?.world_rules.length ?? 0 },
-    { key: "foreshadowing", label: "伏笔", count: viewData.deep_analysis?.foreshadowing.length ?? 0 },
-    { key: "conflicts", label: "冲突", count: viewData.deep_analysis?.conflicts.length ?? 0 },
-    { key: "pacing", label: "节奏", count: viewData.deep_analysis?.scene_analysis.length ?? 0 },
+    { key: "facts", label: "事实与状态", count: viewData.deep_analysis ? viewData.deep_analysis.fact_versions.length : "未生成" },
+    { key: "world", label: "世界设定", count: viewData.deep_analysis ? viewData.deep_analysis.world_rules.length : "未生成" },
+    { key: "foreshadowing", label: "伏笔", count: viewData.deep_analysis ? viewData.deep_analysis.foreshadowing.length : "未生成" },
+    { key: "conflicts", label: "冲突", count: viewData.deep_analysis ? viewData.deep_analysis.conflicts.length : "未生成" },
+    { key: "pacing", label: "节奏", count: viewData.deep_analysis ? viewData.deep_analysis.scene_analysis.length : "未生成" },
     { key: "issues", label: "问题", count: issues.filter((item) => item.status === "OPEN").length },
   ];
 
   return (
-    <section className="formal-workbench" aria-label="人物剧情事件工作台">
+    <section className="formal-workbench" aria-label="创作方法学习工作台">
       <div className="formal-workbench-heading">
         <div>
-          <p>{viewData.narrative_status === "READY" ? "故事结构已整理" : viewData.narrative_status === "INCOMPLETE" ? "故事结构需要补全" : "基础人物与事件已整理"}</p>
-          <h2>小说拆解工作台</h2>
-          <span>{viewData.narrative_status === "READY" ? "从总览理解故事，再按人物、剧情、事实、伏笔和节奏深入查看；每项重要内容都能回到原文。" : viewData.narrative_status === "INCOMPLETE" ? `已经发现 ${unclassifiedCharacters.length} 个人物尚未纳入完整角色定位，需要重新整理人物、关系和剧情阶段。` : "基础抽取已完成，完整故事总览和人物角色定位尚未生成。"}</span>
+          <p>{viewData.narrative_status === "READY" ? "已有故事证据，可以开始学习" : viewData.narrative_status === "INCOMPLETE" ? "故事证据需要补全" : "基础人物与事件已整理"}</p>
+          <h2>创作方法学习工作台</h2>
+          <span>{viewData.narrative_status === "READY" ? "先从创作问题理解这本书能教你什么；需要核对时，再进入证据资料库查看人物、事件和原文。" : viewData.narrative_status === "INCOMPLETE" ? `已经发现 ${unclassifiedCharacters.length} 个人物尚未纳入完整角色定位，需要重新整理人物、关系和剧情阶段。` : "基础抽取已完成，完整故事总览和人物角色定位尚未生成。"}</span>
         </div>
         <div className="formal-workbench-counts">
-          <div><strong>{viewData.characters.length}</strong><span>人物</span></div>
-          <div><strong>{viewData.events.length}</strong><span>事件</span></div>
+          <div><strong>{viewData.characters.length}</strong><span>人物证据</span></div>
+          <div><strong>{viewData.events.length}</strong><span>事件证据</span></div>
           <div><strong>{viewData.phases.length}</strong><span>剧情阶段</span></div>
-          <div><strong>{viewData.deep_analysis?.fact_versions.length ?? 0}</strong><span>事实</span></div>
+          <div><strong>{viewData.deep_analysis ? viewData.deep_analysis.fact_versions.length : "未生成"}</strong><span>深层事实</span></div>
         </div>
       </div>
 
@@ -707,20 +720,39 @@ function FormalWorkbench({
         </div>
       )}
 
-      <div className="workbench-search">
-        <label htmlFor="workbench-search-input">搜索整个拆解结果</label>
-        <input id="workbench-search-input" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索人物、事件、设定、伏笔或分析结论" />
-        {searchQuery.trim() && <span>找到 {searchResults.length} 项</span>}
+      <div className="workbench-navigation">
+        <section className="learning-navigation" aria-label="创作学习入口">
+          <div>
+            <strong>默认入口</strong>
+            <span>按创作者真正要解决的问题阅读</span>
+          </div>
+          <button type="button" className={view === "learn" ? "active" : ""} onClick={() => { setSearchQuery(""); onViewChange("learn"); }}>
+            创作学习报告
+          </button>
+        </section>
+        <section className="evidence-navigation" aria-label="证据资料库">
+          <header>
+            <strong>证据资料库</strong>
+            <span>核对答案、回看原文、修正问题</span>
+          </header>
+          <nav className="formal-workbench-tabs" aria-label="证据资料版块">
+            {evidenceTabs.map(({ key, label, count }) => (
+              <button type="button" key={key} className={view === key ? "active" : ""} onClick={() => { setSearchQuery(""); onViewChange(key); }}>
+                {label}
+                {count !== undefined && <span>{count}</span>}
+              </button>
+            ))}
+          </nav>
+        </section>
       </div>
 
-      <nav className="formal-workbench-tabs" aria-label="工作台版块">
-        {workbenchTabs.map(({ key, label, count }) => (
-          <button type="button" key={key} className={view === key ? "active" : ""} onClick={() => { setSearchQuery(""); onViewChange(key); }}>
-            {label}
-            {count !== undefined && <span>{count}</span>}
-          </button>
-        ))}
-      </nav>
+      {view !== "learn" && (
+        <div className="workbench-search">
+          <label htmlFor="workbench-search-input">搜索证据资料库</label>
+          <input id="workbench-search-input" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索人物、事件、设定、伏笔或分析结论" />
+          {searchQuery.trim() && <span>找到 {searchResults.length} 项</span>}
+        </div>
+      )}
 
       <div className={`formal-workbench-body${view === "source" || evidenceContext ? " has-evidence" : " reading-wide"}`}>
         <div className="formal-workbench-content">
@@ -738,6 +770,142 @@ function FormalWorkbench({
               ))}
               {!searchResults.length && <p className="result-empty">没有找到相关内容，可以换一个人物名、地点或情节关键词。</p>}
             </section>
+          )}
+
+          {!searchQuery.trim() && view === "learn" && (
+            <div className="learning-report">
+              <section className="learning-report-hero">
+                <span>创作者阅读顺序 · 第一阶段</span>
+                <h3>先看这本书能教我什么</h3>
+                <p>这里按写书时真正会遇到的问题组织答案。现有证据只能回答到哪一步，就明确写到哪一步；没有做过专项分析的内容不会用故事摘要冒充答案。</p>
+                <div>
+                  <strong>{viewData.story_overview ? "故事发动机已有候选答案" : "故事发动机尚未生成"}</strong>
+                  <strong>{viewData.deep_analysis ? "深层证据已经生成" : "伏笔、节奏等深层证据未生成"}</strong>
+                  <strong>两个最终结算出口尚未完整生成</strong>
+                </div>
+              </section>
+
+              <section className="learning-report-section">
+                <header>
+                  <div><span>推荐阅读顺序</span><h3>先回答最影响开书的五个问题</h3></div>
+                  <p>编号对应当前北极星问题，方便后续分析和验收沿同一条路线继续。</p>
+                </header>
+                <div className="learning-question-list">
+                  <article className="learning-question-card">
+                    <header><span>1.4 · 卖点与首次兑现</span><i>{viewData.story_overview ? "部分回答" : "未生成"}</i></header>
+                    <h4>{viewData.story_overview?.premise || "还没有生成可以核验的一句话卖点候选。"}</h4>
+                    {viewData.story_overview?.central_conflict && <p><strong>当前可确认的故事发动机：</strong>{viewData.story_overview.central_conflict}</p>}
+                    <small>仍缺：卖点第一次兑现的精确章节、兑现方式和读者反馈数据。当前内容只能作为结构候选，不能冒充商业因果结论。</small>
+                    <div className="learning-card-actions">
+                      <button type="button" className="text-action" onClick={() => onViewChange("overview")}>打开故事档案</button>
+                      {viewData.story_overview && evidenceButtons(viewData.story_overview.evidence_ids.slice(0, 3), "查看关键原文")}
+                    </div>
+                  </article>
+
+                  <article className="learning-question-card">
+                    <header><span>2.1 · 开篇人物负载</span><i>{viewData.characters.length ? "可统计登场" : "未生成"}</i></header>
+                    <div className="learning-metric-row">
+                      {openingCastCounts.map((item) => <div key={item.chapter}><strong>{viewData.characters.length ? item.count : "—"}</strong><span>前 {item.chapter} 章</span></div>)}
+                    </div>
+                    <small>这是按人物首次登场章节得到的可核验统计；“登场后是否真正起作用”还没有专项判定，因此不能把人数直接当成人物编制答案。</small>
+                    <button type="button" className="text-action" onClick={() => onViewChange("characters")}>查看人物证据与角色定位</button>
+                  </article>
+
+                  <article className="learning-question-card">
+                    <header><span>2.2 · 主角最小完整集</span><i>{protagonist ? "已有候选" : "未生成"}</i></header>
+                    <h4>{protagonist?.name || viewData.story_overview?.protagonist || "主角尚未可靠定位"}</h4>
+                    {protagonist ? (
+                      <dl className="learning-answer-list">
+                        <div><dt>显性目标候选</dt><dd>{protagonist.goals.slice(0, 3).join("；") || "证据不足"}</dd></div>
+                        <div><dt>动机候选</dt><dd>{protagonist.motivations.slice(0, 3).join("；") || "证据不足"}</dd></div>
+                        <div><dt>能力与约束线索</dt><dd>{protagonist.abilities.slice(0, 3).join("；") || "证据不足"}</dd></div>
+                      </dl>
+                    ) : <p>现有人物结果还不足以组成主角设计候选。</p>}
+                    <small>仍缺：双层欲望、底线、核心缺陷及其分别在第几章立住的专项判断。这里展示的是原料组合，不是完整主角设计结论。</small>
+                    <div className="learning-card-actions">
+                      <button type="button" className="text-action" onClick={() => protagonist ? openWorkbenchItem("characters", protagonist.id) : onViewChange("characters")}>打开主角与人物证据</button>
+                      {protagonist && evidenceButtons(protagonist.evidence_ids.slice(0, 3), "查看关键原文")}
+                    </div>
+                  </article>
+
+                  <article className="learning-question-card">
+                    <header><span>4.9 · 钩子与悬念节律</span><i>{phaseHooks.length ? "只有阶段级候选" : "未生成"}</i></header>
+                    {phaseHooks.length ? (
+                      <div className="learning-evidence-list">
+                        {phaseHooks.slice(0, 5).map((phase) => (
+                          <div key={phase.id}>
+                            <strong>{phase.title}</strong>
+                            <p>{phase.next_hook}</p>
+                            {evidenceButtons(phase.evidence_ids.slice(0, 2), "查看关键原文")}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <p>现有剧情阶段没有提供可读的下一阶段悬念。</p>}
+                    <small>阶段悬念不等于章末钩统计。钩子类型配比、强弱节律和兑现距离尚未生成，不能从这几条摘要外推。</small>
+                    <button type="button" className="text-action" onClick={() => onViewChange("plot")}>查看完整剧情阶段</button>
+                  </article>
+
+                  <article className="learning-question-card">
+                    <header><span>5.3 · 长线伏笔管理</span><i>{!viewData.deep_analysis ? "未生成" : viewData.deep_analysis.foreshadowing.length ? "已有证据候选" : "暂无足够证据"}</i></header>
+                    {!viewData.deep_analysis ? (
+                      <p>深层拆解尚未生成，因此这里不能判断伏笔数量、保温过程或回收方式。</p>
+                    ) : viewData.deep_analysis.foreshadowing.length ? (
+                      <div className="learning-evidence-list">
+                        {viewData.deep_analysis.foreshadowing.slice(0, 3).map((item) => (
+                          <div key={item.id}>
+                            <strong>{item.title}</strong>
+                            <p>{item.setup}</p>
+                            <small>埋设：第 {item.setup_chapter} 章；{item.payoff_chapter ? `回收：第 ${item.payoff_chapter} 章` : "尚未确认回收"}</small>
+                            {evidenceButtons(item.evidence_ids.slice(0, 2), "查看关键原文")}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <p>深层分析已经运行，但当前没有足够证据确认伏笔；这与“未运行分析”是两种不同状态。</p>}
+                    <small>仍缺：伏笔保温动作、引爆方式和不同长度区间的存量账本。</small>
+                    <button type="button" className="text-action" onClick={() => onViewChange("foreshadowing")}>打开伏笔证据</button>
+                  </article>
+                </div>
+              </section>
+
+              <section className="learning-report-section learning-settlement">
+                <header>
+                  <div><span>单书最终结算</span><h3>拆完这本书，最后必须带走什么</h3></div>
+                  <p>这两个出口尚未由当前分析管线完整生成。现在只展示已有材料与真实缺口，不把半成品包装成完成。</p>
+                </header>
+                <div className="learning-settlement-grid">
+                  <article>
+                    <header><span>6.4</span><i>尚未生成</i></header>
+                    <h4>倒推的最小开书包</h4>
+                    <p>目标是还原作者开书第一天桌上真正需要的最小材料，而不是再写一份剧情简介。</p>
+                    <ul>
+                      <li>{viewData.story_overview ? "已有：故事前提与核心冲突候选" : "缺少：故事前提与核心冲突候选"}</li>
+                      <li>{protagonist ? "已有：主角目标、动机和能力原料" : "缺少：主角最小完整集原料"}</li>
+                      <li>缺少：品类预期、金手指五要素、开篇最小世界圈和首个连载单元</li>
+                    </ul>
+                  </article>
+                  <article>
+                    <header><span>6.5 / 8.1</span><i>{patternCandidates.length ? "N=1 候选" : "尚未生成"}</i></header>
+                    <h4>可复制套路库</h4>
+                    <p>单书里发现的写法只能进入待验证候选；跨书验证后才能升级为品类规律。</p>
+                    {patternCandidates.length ? (
+                      <div className="learning-pattern-list">
+                        {patternCandidates.slice(0, 3).map((claim) => (
+                          <div key={claim.id}>
+                            <strong>{claim.claim_text}</strong>
+                            <small>{claim.scope} · {CLAIM_STATUS_LABELS[claim.verification_status] ?? "待核验"}</small>
+                            {evidenceButtons(claim.evidence_ids.slice(0, 2), "查看支持证据")}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <small>当前结果没有可展示的叙事模式候选；这不代表作品没有套路，只代表系统尚未形成有证据的答案。</small>}
+                  </article>
+                </div>
+                <div className="learning-agent-gap">
+                  <strong>7.1 / 7.2 · 写作 Agent 交付契约尚未生成</strong>
+                  <span>后续每类方法论产出必须说明由哪个 Agent、在写作管线哪一步、以什么结构消费，并同时提供结构定义与填充实例。</span>
+                </div>
+              </section>
+            </div>
           )}
 
           {!searchQuery.trim() && view === "overview" && (
@@ -1185,7 +1353,7 @@ export default function ProductWorkbench() {
   const [loadingCallContent, setLoadingCallContent] = useState("");
   const [analysisEstimate, setAnalysisEstimate] = useState<AnalysisUsageEstimate | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
-  const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
+  const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("learn");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -1209,6 +1377,7 @@ export default function ProductWorkbench() {
   }, []);
 
   const loadProject = useCallback(async (projectId: string) => {
+    setWorkbenchView("learn");
     setVersions([]);
     setActiveVersion(null);
     setChapters([]);
