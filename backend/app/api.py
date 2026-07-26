@@ -79,8 +79,12 @@ from .schemas import (
     SourceDocumentRead,
     SourceImportRead,
     SourceIssueRead,
+    SourceStructureRead,
     SourceUnitContentRead,
+    SourceUnitMerge,
     SourceUnitRead,
+    SourceUnitSplit,
+    SourceUnitUpdate,
     SourceVersionRead,
     TaskCreate,
     TaskRead,
@@ -89,9 +93,12 @@ from .services.source_import import (
     SourceImportError,
     confirm_source_version,
     import_source,
+    merge_source_unit,
     resolve_source_issue,
+    split_source_unit,
     source_unit_display_content,
     source_text,
+    update_source_unit,
 )
 from .services.analysis import (
     ANALYSIS_STAGE,
@@ -582,6 +589,15 @@ def _analysis_run_diagnostics(
     )
 
 
+def _source_structure_read(result) -> SourceStructureRead:
+    return SourceStructureRead(
+        version=SourceVersionRead.model_validate(result.version),
+        units=[SourceUnitRead.model_validate(unit) for unit in result.units],
+        issues=[_source_issue_read(issue) for issue in result.issues],
+        selected_unit_id=result.selected_unit_id,
+    )
+
+
 def _analysis_issue_read(issue: AnalysisIssue) -> AnalysisIssueRead:
     return AnalysisIssueRead(
         id=issue.id,
@@ -966,6 +982,84 @@ def source_chapters_list(
         .where(SourceUnit.source_version_id == version_id)
         .order_by(SourceUnit.ordinal)
     ))
+
+
+@router.patch(
+    "/api/chapters/{unit_id}",
+    response_model=SourceStructureRead,
+)
+def source_unit_update(
+    unit_id: str,
+    payload: SourceUnitUpdate,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> SourceStructureRead:
+    unit = session.get(SourceUnit, unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="SOURCE_UNIT_NOT_FOUND")
+    try:
+        result = update_source_unit(
+            session,
+            request.app.state.settings,
+            unit,
+            title=payload.title,
+            unit_type=payload.unit_type,
+        )
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return _source_structure_read(result)
+
+
+@router.post(
+    "/api/chapters/{unit_id}/split",
+    response_model=SourceStructureRead,
+)
+def source_unit_split(
+    unit_id: str,
+    payload: SourceUnitSplit,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> SourceStructureRead:
+    unit = session.get(SourceUnit, unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="SOURCE_UNIT_NOT_FOUND")
+    try:
+        result = split_source_unit(
+            session,
+            request.app.state.settings,
+            unit,
+            split_char=payload.split_char,
+            title=payload.title,
+            unit_type=payload.unit_type,
+        )
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return _source_structure_read(result)
+
+
+@router.post(
+    "/api/chapters/{unit_id}/merge",
+    response_model=SourceStructureRead,
+)
+def source_unit_merge(
+    unit_id: str,
+    payload: SourceUnitMerge,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> SourceStructureRead:
+    unit = session.get(SourceUnit, unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="SOURCE_UNIT_NOT_FOUND")
+    try:
+        result = merge_source_unit(
+            session,
+            request.app.state.settings,
+            unit,
+            direction=payload.direction,
+        )
+    except SourceImportError as error:
+        raise _source_error(error) from error
+    return _source_structure_read(result)
 
 
 @router.get(

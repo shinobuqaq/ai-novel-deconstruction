@@ -27,6 +27,7 @@ from ..models import (
     SourceUnit,
     SourceVersion,
     SourceVersionStatus,
+    new_id,
 )
 
 
@@ -92,6 +93,14 @@ class SourceImportResult:
     units: tuple[SourceUnit, ...]
     issues: tuple[SourceIssue, ...]
     reused_existing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SourceStructureEditResult:
+    version: SourceVersion
+    units: tuple[SourceUnit, ...]
+    issues: tuple[SourceIssue, ...]
+    selected_unit_id: str
 
 
 def _sha256_text(value: str) -> str:
@@ -929,6 +938,305 @@ def source_text(settings: Settings, version: SourceVersion) -> str:
             status_code=409,
         )
     return path.read_text(encoding="utf-8")
+
+
+def _ensure_structure_is_editable(version: SourceVersion) -> None:
+    if version.status != SourceVersionStatus.REVIEW.value:
+        raise SourceImportError(
+            "SOURCE_STRUCTURE_ALREADY_CONFIRMED",
+            "章节结构已经确认，不能原地修改；请重新导入为新版本后再校正。",
+            status_code=409,
+        )
+
+
+def _source_structure_result(
+    session: Session,
+    version: SourceVersion,
+    selected_unit_id: str,
+) -> SourceStructureEditResult:
+    units = tuple(session.scalars(
+        select(SourceUnit)
+        .where(SourceUnit.source_version_id == version.id)
+        .order_by(SourceUnit.ordinal)
+    ))
+    issues = tuple(session.scalars(
+        select(SourceIssue)
+        .where(SourceIssue.source_version_id == version.id)
+        .order_by(SourceIssue.created_at, SourceIssue.id)
+    ))
+    return SourceStructureEditResult(version, units, issues, selected_unit_id)
+
+
+def _resolve_unit_issues(
+    session: Session,
+    unit_id: str,
+    *,
+    boundary_only: bool,
+) -> None:
+    stmt = select(SourceIssue).where(
+        SourceIssue.source_unit_id == unit_id,
+        SourceIssue.status == SourceIssueStatus.OPEN.value,
+    )
+    if boundary_only:
+        stmt = stmt.where(SourceIssue.code.in_({
+            "CHAPTER_BOUNDARY_REVIEW",
+            "FRONT_MATTER_REVIEW",
+        }))
+    for issue in session.scalars(stmt):
+        issue.status = SourceIssueStatus.RESOLVED.value
+        issue.resolved_at = datetime.now(timezone.utc)
+
+
+def _refresh_source_structure(
+    session: Session,
+    version: SourceVersion,
+    units: list[SourceUnit],
+    text: str,
+) -> None:
+    units.sort(key=lambda item: (item.start_char, item.end_char, item.id))
+    if not units:
+        raise SourceImportError(
+            "SOURCE_STRUCTURE_EMPTY",
+            "至少需要保留一个正文单元。",
+            status_code=409,
+        )
+    if units[0].start_char != 0 or units[-1].end_char != len(text):
+        raise SourceImportError(
+            "SOURCE_STRUCTURE_RANGE_INVALID",
+            "章节边界没有完整覆盖原文，系统已拒绝保存。",
+            status_code=409,
+        )
+    for previous, current in zip(units, units[1:]):
+        if previous.end_char != current.start_char:
+            raise SourceImportError(
+                "SOURCE_STRUCTURE_RANGE_INVALID",
+                "章节之间出现空白或重叠范围，系统已拒绝保存。",
+                status_code=409,
+            )
+
+    for index, unit in enumerate(units, start=1):
+        unit.ordinal = -index
+    session.flush()
+    for ordinal, unit in enumerate(units, start=1):
+        unit.ordinal = ordinal
+        content = text[unit.start_char:unit.end_char]
+        unit.content_hash = _sha256_text(content)
+        unit.char_count = len(content)
+    version.chapter_count = sum(
+        unit.unit_type == "CHAPTER" for unit in units
+    )
+
+    for unit in units:
+        spans = list(session.scalars(
+            select(EvidenceSpan)
+            .where(EvidenceSpan.source_unit_id == unit.id)
+            .order_by(EvidenceSpan.start_char, EvidenceSpan.end_char)
+        ))
+        for paragraph_index, span in enumerate(spans):
+            if (
+                span.start_char < unit.start_char
+                or span.end_char > unit.end_char
+            ):
+                raise SourceImportError(
+                    "SOURCE_EVIDENCE_RANGE_INVALID",
+                    "校正后的章节边界截断了原文证据，请把光标移到完整行的开头再试。",
+                    status_code=409,
+                )
+            span.paragraph_index = paragraph_index
+
+
+def update_source_unit(
+    session: Session,
+    settings: Settings,
+    unit: SourceUnit,
+    *,
+    title: str,
+    unit_type: str,
+) -> SourceStructureEditResult:
+    version = unit.source_version
+    _ensure_structure_is_editable(version)
+    cleaned_title = title.strip()
+    if not cleaned_title or "\n" in cleaned_title or "\r" in cleaned_title:
+        raise SourceImportError(
+            "SOURCE_UNIT_TITLE_INVALID",
+            "标题不能为空，也不能包含换行。",
+        )
+    if unit_type not in {"TITLE", "PREFACE", "VOLUME", "CHAPTER", "DOCUMENT"}:
+        raise SourceImportError(
+            "SOURCE_UNIT_TYPE_INVALID",
+            "请选择有效的单元类型。",
+        )
+    text = source_text(settings, version)
+    unit.title = cleaned_title
+    unit.unit_type = unit_type
+    _resolve_unit_issues(session, unit.id, boundary_only=True)
+    units = list(session.scalars(
+        select(SourceUnit).where(SourceUnit.source_version_id == version.id)
+    ))
+    _refresh_source_structure(session, version, units, text)
+    session.commit()
+    session.refresh(version)
+    return _source_structure_result(session, version, unit.id)
+
+
+def split_source_unit(
+    session: Session,
+    settings: Settings,
+    unit: SourceUnit,
+    *,
+    split_char: int,
+    title: str,
+    unit_type: str,
+) -> SourceStructureEditResult:
+    version = unit.source_version
+    _ensure_structure_is_editable(version)
+    cleaned_title = title.strip()
+    if not cleaned_title or "\n" in cleaned_title or "\r" in cleaned_title:
+        raise SourceImportError(
+            "SOURCE_UNIT_TITLE_INVALID",
+            "新单元标题不能为空，也不能包含换行。",
+        )
+    if unit_type not in {"VOLUME", "CHAPTER"}:
+        raise SourceImportError(
+            "SOURCE_UNIT_TYPE_INVALID",
+            "新单元只能设为分卷或章节。",
+        )
+    text = source_text(settings, version)
+    if not unit.start_char < split_char < unit.end_char:
+        raise SourceImportError(
+            "SOURCE_UNIT_SPLIT_OUT_OF_RANGE",
+            "请把光标放在当前单元正文内部。",
+            status_code=409,
+        )
+    if text[split_char - 1] != "\n":
+        raise SourceImportError(
+            "SOURCE_UNIT_SPLIT_NOT_LINE_BOUNDARY",
+            "请把光标放在新标题所在行的开头。",
+            status_code=409,
+        )
+    if (
+        not text[unit.start_char:split_char].strip()
+        or not text[split_char:unit.end_char].strip()
+    ):
+        raise SourceImportError(
+            "SOURCE_UNIT_SPLIT_EMPTY",
+            "切分后两边都必须保留内容。",
+            status_code=409,
+        )
+
+    spans = list(session.scalars(
+        select(EvidenceSpan)
+        .where(EvidenceSpan.source_unit_id == unit.id)
+        .order_by(EvidenceSpan.start_char)
+    ))
+    if any(
+        span.start_char < split_char < span.end_char
+        for span in spans
+    ):
+        raise SourceImportError(
+            "SOURCE_UNIT_SPLIT_CUTS_EVIDENCE",
+            "这个位置截断了一行原文，请把光标移到下一行开头。",
+            status_code=409,
+        )
+
+    original_end = unit.end_char
+    unit.end_char = split_char
+    new_unit = SourceUnit(
+        id=new_id("unt"),
+        source_version_id=version.id,
+        ordinal=0,
+        unit_type=unit_type,
+        title=cleaned_title,
+        start_char=split_char,
+        end_char=original_end,
+        content_hash="pending",
+        char_count=original_end - split_char,
+    )
+    session.add(new_unit)
+    for span in spans:
+        if span.start_char >= split_char:
+            span.source_unit_id = new_unit.id
+
+    units = list(session.scalars(
+        select(SourceUnit).where(SourceUnit.source_version_id == version.id)
+    ))
+    if not any(item.id == new_unit.id for item in units):
+        units.append(new_unit)
+    _refresh_source_structure(session, version, units, text)
+    session.commit()
+    session.refresh(version)
+    return _source_structure_result(session, version, new_unit.id)
+
+
+def merge_source_unit(
+    session: Session,
+    settings: Settings,
+    unit: SourceUnit,
+    *,
+    direction: str,
+) -> SourceStructureEditResult:
+    version = unit.source_version
+    _ensure_structure_is_editable(version)
+    text = source_text(settings, version)
+    units = list(session.scalars(
+        select(SourceUnit)
+        .where(SourceUnit.source_version_id == version.id)
+        .order_by(SourceUnit.ordinal)
+    ))
+    index = next(
+        (position for position, item in enumerate(units) if item.id == unit.id),
+        -1,
+    )
+    if index < 0:
+        raise SourceImportError(
+            "SOURCE_UNIT_NOT_FOUND",
+            "没有找到要合并的章节。",
+            status_code=404,
+        )
+    if direction == "PREVIOUS":
+        if index == 0:
+            raise SourceImportError(
+                "SOURCE_UNIT_MERGE_NO_PREVIOUS",
+                "当前已经是第一个单元，无法向前合并。",
+                status_code=409,
+            )
+        survivor = units[index - 1]
+        removed = unit
+        survivor.end_char = removed.end_char
+    elif direction == "NEXT":
+        if index + 1 >= len(units):
+            raise SourceImportError(
+                "SOURCE_UNIT_MERGE_NO_NEXT",
+                "当前已经是最后一个单元，无法向后合并。",
+                status_code=409,
+            )
+        survivor = unit
+        removed = units[index + 1]
+        survivor.end_char = removed.end_char
+    else:
+        raise SourceImportError(
+            "SOURCE_UNIT_MERGE_DIRECTION_INVALID",
+            "请选择向前或向后合并。",
+        )
+
+    for span in session.scalars(
+        select(EvidenceSpan).where(EvidenceSpan.source_unit_id == removed.id)
+    ):
+        span.source_unit_id = survivor.id
+    for issue in session.scalars(
+        select(SourceIssue).where(SourceIssue.source_unit_id == removed.id)
+    ):
+        if issue.status == SourceIssueStatus.OPEN.value:
+            issue.status = SourceIssueStatus.RESOLVED.value
+            issue.resolved_at = datetime.now(timezone.utc)
+        issue.source_unit_id = survivor.id
+    session.flush()
+    session.delete(removed)
+    units = [item for item in units if item.id != removed.id]
+    _refresh_source_structure(session, version, units, text)
+    session.commit()
+    session.refresh(version)
+    return _source_structure_result(session, version, survivor.id)
 
 
 def confirm_source_version(session: Session, version: SourceVersion) -> SourceVersion:

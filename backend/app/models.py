@@ -138,7 +138,7 @@ class SourceVersion(Base):
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    parser_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    parser_version: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     original_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     text_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     total_chars: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -185,7 +185,16 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
 .chapter-reader { min-width: 0; }
 .chapter-reader header { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 22px; border-bottom: 1px solid #e1e6eb; }
 .chapter-reader header span { color: #71808e; font-size: var(--font-size-readable-min); }
+.chapter-edit-panel { display: grid; gap: 10px; padding: 14px 18px; border-bottom: 1px solid #dbe2e7; background: #f7fafb; }
+.chapter-edit-row { display: grid; grid-template-columns: minmax(180px, 1fr) 150px auto; align-items: end; gap: 10px; }
+.chapter-split-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) 120px auto; align-items: end; gap: 10px; }
+.chapter-edit-row label, .chapter-split-row label { display: grid; gap: 5px; color: #53636f; font-size: var(--font-size-readable-min); font-weight: 700; }
+.chapter-edit-row input, .chapter-edit-row select, .chapter-split-row input, .chapter-split-row select { width: 100%; min-width: 0; }
+.chapter-merge-actions { display: flex; align-items: center; gap: 8px; }
+.chapter-merge-actions span, .chapter-split-row small { color: #6f7c87; font-size: var(--font-size-readable-min); line-height: 1.45; }
+.chapter-split-row small { grid-column: 1 / -1; }
 .chapter-text { max-height: 620px; padding: 24px 28px 48px; overflow-y: auto; color: #26313b; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 15px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chapter-textarea { display: block; width: 100%; min-height: 390px; border: 0; border-radius: 0; resize: vertical; background: #fff; box-sizing: border-box; }
 .stage-actions { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 16px; padding: 18px 20px; border-top: 1px solid #cfd7df; background: #fff; }
 .stage-actions > div, .confirmed-message { display: grid; gap: 3px; }
 .stage-actions span { color: #6f7c87; font-size: var(--font-size-readable-min); }
@@ -684,6 +693,9 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
   .chapter-review { grid-template-columns: 1fr; }
   .chapter-list { border-right: 0; border-bottom: 1px solid #d8dee5; }
   .chapter-scroll { max-height: 260px; }
+  .chapter-edit-row, .chapter-split-row { grid-template-columns: 1fr; }
+  .chapter-merge-actions { align-items: stretch; flex-direction: column; }
+  .chapter-merge-actions button { width: 100%; }
   .chapter-text { max-height: 520px; padding: 20px 18px 36px; }
   .stage-actions { align-items: stretch; flex-direction: column; }
   .stage-actions button { width: 100%; }

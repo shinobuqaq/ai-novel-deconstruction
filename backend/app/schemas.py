@@ -118,6 +118,21 @@ class SourceUnitRead(BaseModel):
     char_count: int
 
 
+class SourceUnitUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    unit_type: str = Field(pattern=r"^(TITLE|PREFACE|VOLUME|CHAPTER|DOCUMENT)$")
+
+
+class SourceUnitSplit(BaseModel):
+    split_char: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=500)
+    unit_type: str = Field(default="CHAPTER", pattern=r"^(VOLUME|CHAPTER)$")
+
+
+class SourceUnitMerge(BaseModel):
+    direction: str = Field(pattern=r"^(PREVIOUS|NEXT)$")
+
+
 class SourceIssueRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -139,6 +154,13 @@ class SourceImportRead(BaseModel):
     units: list[SourceUnitRead]
     issues: list[SourceIssueRead]
     reused_existing: bool
+
+
+class SourceStructureRead(BaseModel):
+    version: SourceVersionRead
+    units: list[SourceUnitRead]
+    issues: list[SourceIssueRead]
+    selected_unit_id: str
 
 
 class SourceUnitContentRead(BaseModel):

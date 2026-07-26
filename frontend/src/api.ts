@@ -86,6 +86,13 @@ export type SourceImport = {
   reused_existing: boolean;
 };
 
+export type SourceStructure = {
+  version: SourceVersion;
+  units: SourceUnit[];
+  issues: SourceIssue[];
+  selected_unit_id: string;
+};
+
 export type SourceUnitContent = {
   id: string;
   source_version_id: string;
@@ -690,6 +697,27 @@ export const api = {
     request<SourceIssue[]>(`/api/source-versions/${versionId}/issues`),
   chapterContent: (unitId: string) =>
     request<SourceUnitContent>(`/api/chapters/${unitId}/content`),
+  updateSourceUnit: (
+    unitId: string,
+    payload: { title: string; unit_type: string },
+  ) =>
+    request<SourceStructure>(`/api/chapters/${unitId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  splitSourceUnit: (
+    unitId: string,
+    payload: { split_char: number; title: string; unit_type: "VOLUME" | "CHAPTER" },
+  ) =>
+    request<SourceStructure>(`/api/chapters/${unitId}/split`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  mergeSourceUnit: (unitId: string, direction: "PREVIOUS" | "NEXT") =>
+    request<SourceStructure>(`/api/chapters/${unitId}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ direction }),
+    }),
   resolveSourceIssue: (issueId: string) =>
     request<SourceIssue>(`/api/source-issues/${issueId}/resolve`, { method: "POST" }),
   confirmSourceVersion: (versionId: string) =>

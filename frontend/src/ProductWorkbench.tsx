@@ -14,6 +14,7 @@ import {
   ModelSettings,
   Project,
   SourceIssue,
+  SourceStructure,
   SourceUnit,
   SourceUnitContent,
   SourceVersion,
@@ -58,6 +59,28 @@ function formatFileSize(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function sourceLineStarts(content: string) {
+  const options: Array<{ offset: number; line: number; preview: string }> = [];
+  let line = 1;
+  let start = 0;
+  while (start < content.length) {
+    const newline = content.indexOf("\n", start);
+    const end = newline === -1 ? content.length : newline;
+    const preview = content.slice(start, end).replace(/\r$/, "").trim();
+    if (start > 0 && preview) {
+      options.push({
+        offset: start,
+        line,
+        preview: preview.length > 48 ? `${preview.slice(0, 48)}…` : preview,
+      });
+    }
+    if (newline === -1) break;
+    start = newline + 1;
+    line += 1;
+  }
+  return options;
 }
 
 function issueLabel(severity: SourceIssue["severity"]) {
@@ -999,6 +1022,11 @@ export default function ProductWorkbench() {
   const [issues, setIssues] = useState<SourceIssue[]>([]);
   const [selectedChapter, setSelectedChapter] = useState("");
   const [chapterContent, setChapterContent] = useState<SourceUnitContent | null>(null);
+  const [chapterTitleDraft, setChapterTitleDraft] = useState("");
+  const [chapterTypeDraft, setChapterTypeDraft] = useState("CHAPTER");
+  const [splitTitleDraft, setSplitTitleDraft] = useState("");
+  const [splitTypeDraft, setSplitTypeDraft] = useState<"VOLUME" | "CHAPTER">("CHAPTER");
+  const [splitOffset, setSplitOffset] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [analysisRun, setAnalysisRun] = useState<AnalysisRun | null>(null);
@@ -1122,6 +1150,15 @@ export default function ProductWorkbench() {
   }, [selectedChapter]);
 
   useEffect(() => {
+    const unit = chapters.find((item) => item.id === selectedChapter);
+    setChapterTitleDraft(unit?.title ?? "");
+    setChapterTypeDraft(unit?.unit_type ?? "CHAPTER");
+    setSplitTitleDraft("");
+    setSplitTypeDraft("CHAPTER");
+    setSplitOffset(0);
+  }, [chapters, selectedChapter]);
+
+  useEffect(() => {
     if (!activeVersion || !analysisRun || !["PENDING", "RUNNING"].includes(analysisRun.status)) {
       return;
     }
@@ -1148,6 +1185,7 @@ export default function ProductWorkbench() {
   const titleUnitCount = chapters.filter((chapter) => chapter.unit_type === "TITLE").length;
   const prefaceUnitCount = chapters.filter((chapter) => chapter.unit_type === "PREFACE").length;
   const volumeUnitCount = chapters.filter((chapter) => chapter.unit_type === "VOLUME").length;
+  const selectedChapterIndex = chapters.findIndex((chapter) => chapter.id === selectedChapter);
   let currentStage = 0;
   if (activeVersion?.status === "CONFIRMED") currentStage = 1;
   if (workbench?.narrative_status === "READY") currentStage = 3;
@@ -1173,6 +1211,18 @@ export default function ProductWorkbench() {
     }
     return numbers;
   }, [chapters]);
+  const splitLineOptions = useMemo(
+    () => sourceLineStarts(chapterContent?.content ?? ""),
+    [chapterContent],
+  );
+
+  function selectSplitLine(selectionStart: number) {
+    if (!chapterContent || selectionStart <= 0) {
+      setSplitOffset(0);
+      return;
+    }
+    setSplitOffset(chapterContent.content.lastIndexOf("\n", selectionStart - 1) + 1);
+  }
 
   async function handleCreateProject(event: FormEvent) {
     event.preventDefault();
@@ -1224,6 +1274,73 @@ export default function ProductWorkbench() {
       setError("");
       const resolved = await api.resolveSourceIssue(issue.id);
       setIssues((current) => current.map((item) => item.id === resolved.id ? resolved : item));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function applySourceStructure(result: SourceStructure) {
+    setActiveVersion(result.version);
+    setVersions((current) => current.map((item) => (
+      item.id === result.version.id ? result.version : item
+    )));
+    setChapters(result.units);
+    setIssues(result.issues);
+    setSelectedChapter(result.selected_unit_id);
+    setChapterContent(await api.chapterContent(result.selected_unit_id));
+  }
+
+  async function handleSaveSourceUnit() {
+    if (!selectedChapter || !chapterTitleDraft.trim()) return;
+    try {
+      setBusy("save-source-unit");
+      setError("");
+      await applySourceStructure(await api.updateSourceUnit(selectedChapter, {
+        title: chapterTitleDraft.trim(),
+        unit_type: chapterTypeDraft,
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleSplitSourceUnit() {
+    if (
+      !selectedChapter
+      || !chapterContent
+      || !splitTitleDraft.trim()
+      || splitOffset <= 0
+      || splitOffset >= chapterContent.content.length
+    ) return;
+    try {
+      setBusy("split-source-unit");
+      setError("");
+      await applySourceStructure(await api.splitSourceUnit(selectedChapter, {
+        split_char: chapterContent.start_char + splitOffset,
+        title: splitTitleDraft.trim(),
+        unit_type: splitTypeDraft,
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleMergeSourceUnit(direction: "PREVIOUS" | "NEXT") {
+    if (!selectedChapter) return;
+    const label = direction === "PREVIOUS" ? "上一单元" : "下一单元";
+    if (!window.confirm(`将当前单元并入${label}，原文不会删除。是否继续？`)) return;
+    try {
+      setBusy(`merge-source-unit-${direction}`);
+      setError("");
+      await applySourceStructure(
+        await api.mergeSourceUnit(selectedChapter, direction),
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1401,9 +1518,86 @@ export default function ProductWorkbench() {
           </div>
           {chapterContent && <span>{formatNumber(chapterContent.content.length)} 字符</span>}
         </header>
-        <div className="chapter-text">
-          {chapterContent?.content ?? "从左侧选择章节后查看原文。"}
-        </div>
+        {chapterContent && activeVersion?.status !== "CONFIRMED" && (
+          <section className="chapter-edit-panel" aria-label="卷章校正">
+            <div className="chapter-edit-row">
+              <label>
+                当前标题
+                <input value={chapterTitleDraft} maxLength={500} onChange={(event) => setChapterTitleDraft(event.target.value)} />
+              </label>
+              <label>
+                单元类型
+                <select value={chapterTypeDraft} onChange={(event) => setChapterTypeDraft(event.target.value)}>
+                  <option value="CHAPTER">章节</option>
+                  <option value="VOLUME">分卷</option>
+                  <option value="PREFACE">正文前内容</option>
+                  <option value="TITLE">作品信息</option>
+                  <option value="DOCUMENT">全文</option>
+                </select>
+              </label>
+              <button type="button" disabled={!chapterTitleDraft.trim() || Boolean(busy)} onClick={() => void handleSaveSourceUnit()}>
+                {busy === "save-source-unit" ? "保存中" : "保存标题与类型"}
+              </button>
+            </div>
+            <div className="chapter-merge-actions">
+              <button type="button" className="secondary-button" disabled={selectedChapterIndex <= 0 || Boolean(busy)} onClick={() => void handleMergeSourceUnit("PREVIOUS")}>
+                并入上一单元
+              </button>
+              <button type="button" className="secondary-button" disabled={selectedChapterIndex < 0 || selectedChapterIndex >= chapters.length - 1 || Boolean(busy)} onClick={() => void handleMergeSourceUnit("NEXT")}>
+                与下一单元合并
+              </button>
+              <span>合并只删除错误边界，不删除原文。</span>
+            </div>
+            <div className="chapter-split-row">
+              <label>
+                新单元标题
+                <input value={splitTitleDraft} maxLength={500} placeholder="例如：第二章 旧债" onChange={(event) => setSplitTitleDraft(event.target.value)} />
+              </label>
+              <label>
+                从哪一行开始
+                <select
+                  aria-label="新单元起始行"
+                  value={splitOffset || ""}
+                  onChange={(event) => setSplitOffset(Number(event.target.value))}
+                >
+                  <option value="">请选择原文行</option>
+                  {splitLineOptions.map((option) => (
+                    <option key={option.offset} value={option.offset}>
+                      {`第 ${formatNumber(option.line)} 行：${option.preview}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                新单元类型
+                <select value={splitTypeDraft} onChange={(event) => setSplitTypeDraft(event.target.value as "VOLUME" | "CHAPTER")}>
+                  <option value="CHAPTER">章节</option>
+                  <option value="VOLUME">分卷</option>
+                </select>
+              </label>
+              <button type="button" disabled={!splitTitleDraft.trim() || splitOffset <= 0 || Boolean(busy)} onClick={() => void handleSplitSourceUnit()}>
+                {busy === "split-source-unit" ? "切分中" : "切分为新单元"}
+              </button>
+              <small>{splitOffset > 0 ? `将从原文第 ${formatNumber(splitOffset + 1)} 个字符所在的行开始切分。` : "可从列表选择起始行，也可以直接点击下方原文中的目标行。"}</small>
+            </div>
+          </section>
+        )}
+        {chapterContent && activeVersion?.status !== "CONFIRMED" ? (
+          <textarea
+            className="chapter-text chapter-textarea"
+            aria-label="待校正的整章原文"
+            readOnly
+            value={chapterContent.content}
+            onSelect={(event) => selectSplitLine(event.currentTarget.selectionStart)}
+            onClick={(event) => selectSplitLine(event.currentTarget.selectionStart)}
+            onMouseUp={(event) => selectSplitLine(event.currentTarget.selectionStart)}
+            onKeyUp={(event) => selectSplitLine(event.currentTarget.selectionStart)}
+          />
+        ) : (
+          <div className="chapter-text">
+            {chapterContent?.content ?? "从左侧选择章节后查看原文。"}
+          </div>
+        )}
       </article>
     </section>
   );

@@ -245,6 +245,82 @@ def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> No
     assert snapshot in evidence.json()["context_text"]
 
 
+def test_review_structure_can_rename_split_and_merge_without_changing_source(client) -> None:
+    project = client.post("/api/projects", json={"name": "卷章校正"}).json()
+    text = (
+        "第一章 开始\n"
+        "第一段正文。\n"
+        "这里是新章\n"
+        "第二段正文。\n"
+        "第二章 结束\n"
+        "最后一段正文。"
+    )
+    imported = client.post(
+        f"/api/projects/{project['id']}/sources/import?filename=edit.txt",
+        content=text.encode("utf-8"),
+    ).json()
+    version_id = imported["version"]["id"]
+    first_unit = imported["units"][0]
+
+    renamed = client.patch(
+        f"/api/chapters/{first_unit['id']}",
+        json={"title": "第一章 新开端", "unit_type": "CHAPTER"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["units"][0]["title"] == "第一章 新开端"
+
+    split_char = text.index("这里是新章")
+    split = client.post(
+        f"/api/chapters/{first_unit['id']}/split",
+        json={
+            "split_char": split_char,
+            "title": "插入章",
+            "unit_type": "CHAPTER",
+        },
+    )
+    assert split.status_code == 200
+    split_payload = split.json()
+    assert split_payload["version"]["chapter_count"] == 3
+    assert [unit["ordinal"] for unit in split_payload["units"]] == [1, 2, 3]
+    assert [unit["title"] for unit in split_payload["units"]] == [
+        "第一章 新开端",
+        "插入章",
+        "第二章 结束",
+    ]
+    assert split_payload["units"][0]["end_char"] == split_char
+    assert split_payload["units"][1]["start_char"] == split_char
+    inserted_id = split_payload["selected_unit_id"]
+    with client.app.state.session_factory() as session:
+        moved_evidence = session.scalar(
+            select(EvidenceSpan).where(
+                EvidenceSpan.source_version_id == version_id,
+                EvidenceSpan.text_snapshot == "这里是新章",
+            )
+        )
+        assert moved_evidence is not None
+        assert moved_evidence.source_unit_id == inserted_id
+
+    merged = client.post(
+        f"/api/chapters/{inserted_id}/merge",
+        json={"direction": "PREVIOUS"},
+    )
+    assert merged.status_code == 200
+    merged_payload = merged.json()
+    assert merged_payload["version"]["chapter_count"] == 2
+    assert [unit["ordinal"] for unit in merged_payload["units"]] == [1, 2]
+    assert merged_payload["selected_unit_id"] == first_unit["id"]
+    assert merged_payload["units"][0]["end_char"] == merged_payload["units"][1]["start_char"]
+
+    confirmed = client.post(f"/api/source-versions/{version_id}/confirm")
+    assert confirmed.status_code == 200
+    rejected = client.patch(
+        f"/api/chapters/{first_unit['id']}",
+        json={"title": "不应修改", "unit_type": "CHAPTER"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "SOURCE_STRUCTURE_ALREADY_CONFIRMED"
+
+
 def test_reimporting_identical_file_reuses_source_version(client) -> None:
     project = client.post("/api/projects", json={"name": "幂等导入"}).json()
     url = f"/api/projects/{project['id']}/sources/import?filename=same.txt"
