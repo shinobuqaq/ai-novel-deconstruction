@@ -302,6 +302,11 @@ class AnalysisRun(Base):
         cascade="all, delete-orphan",
         order_by="AnalysisIssue.created_at",
     )
+    person_identity_decisions: Mapped[list["PersonIdentityDecision"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="PersonIdentityDecision.created_at",
+    )
 
 
 class AnalysisRunTask(Base):
@@ -518,6 +523,45 @@ class AnalysisIssue(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[AnalysisRun] = relationship(back_populates="issues")
+
+
+class PersonIdentityDecision(Base):
+    __tablename__ = "person_identity_decisions"
+    __table_args__ = (
+        Index(
+            "ux_person_identity_decision_run_pair",
+            "run_id",
+            "pair_key",
+            unique=True,
+        ),
+        Index(
+            "ix_person_identity_decisions_run_created",
+            "run_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("pid")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    pair_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    left_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    right_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    canonical_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="person_identity_decisions")
 
 
 class Task(Base):

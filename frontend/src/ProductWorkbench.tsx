@@ -277,6 +277,7 @@ type FormalWorkbenchProps = {
   onSelectChapter: (chapterId: string) => void;
   busy: string;
   onAnalysisRunChange: (run: AnalysisRun) => void;
+  onWorkbenchChange: (workbench: Workbench) => void;
   onRepairNarrative: () => void;
   onStartDeepAnalysis: () => void;
   onConfirmAnalysis: () => void;
@@ -296,6 +297,7 @@ function FormalWorkbench({
   onSelectChapter,
   busy,
   onAnalysisRunChange,
+  onWorkbenchChange,
   onRepairNarrative,
   onStartDeepAnalysis,
   onConfirmAnalysis,
@@ -317,9 +319,15 @@ function FormalWorkbench({
   const [issueNote, setIssueNote] = useState("");
   const [issueBusy, setIssueBusy] = useState("");
   const [issueError, setIssueError] = useState("");
+  const [identityBusy, setIdentityBusy] = useState("");
+  const [identityError, setIdentityError] = useState("");
   const [focusTarget, setFocusTarget] = useState<{ view: WorkbenchView; id: string } | null>(null);
   const viewData = revisionData ?? data;
   const unclassifiedCharacters = viewData.characters.filter((item) => item.role_required && item.role === "UNCLASSIFIED");
+  const blockingIdentityCandidates = viewData.person_identity_candidates.filter((item) => item.review_priority === "BLOCKING");
+  const optionalIdentityCandidates = viewData.person_identity_candidates.filter((item) => item.review_priority === "OPTIONAL");
+  const primaryIdentityCandidates = blockingIdentityCandidates.slice(0, 8);
+  const remainingBlockingIdentityCandidates = blockingIdentityCandidates.slice(8);
   const isHistoricalRevision = revisionData !== null && revisionData.deep_revision !== data.deep_revision;
   const sourceChapterNumbers = useMemo(() => {
     const numbers = new Map<string, number>();
@@ -536,6 +544,101 @@ function FormalWorkbench({
     }
   }
 
+  async function decidePersonIdentity(
+    candidateKey: string,
+    decision: "SAME" | "DIFFERENT",
+  ) {
+    try {
+      setIdentityBusy(candidateKey);
+      setIdentityError("");
+      setRevisionData(null);
+      onWorkbenchChange(
+        await api.decidePersonIdentity(data.run_id, candidateKey, decision),
+      );
+    } catch (reason) {
+      setIdentityError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIdentityBusy("");
+    }
+  }
+
+  async function undoPersonIdentityDecision(decisionId: string) {
+    try {
+      setIdentityBusy(decisionId);
+      setIdentityError("");
+      setRevisionData(null);
+      onWorkbenchChange(await api.undoPersonIdentityDecision(decisionId));
+    } catch (reason) {
+      setIdentityError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIdentityBusy("");
+    }
+  }
+
+  const identityCandidateCard = (
+    candidate: Workbench["person_identity_candidates"][number],
+  ) => (
+    <article className="identity-candidate-card" key={candidate.candidate_key}>
+      <div className="identity-candidate-names">
+        <strong>{candidate.left_name}</strong>
+        <span>可能是同一人</span>
+        <strong>{candidate.right_name}</strong>
+      </div>
+      <p>{candidate.reason}</p>
+      <small>
+        {candidate.review_priority === "BLOCKING" ? "完成这项确认后才能最终确认拆解" : "这项不阻止最终确认，可按重要性抽查"}
+        {candidate.recommended_decision === "SAME" ? ` · 若为同一人，建议统一显示为“${candidate.recommended_name}”` : " · 结构线索更支持保留为不同人物"}
+        {` · 候选置信度 ${candidate.confidence}%`}
+      </small>
+      {candidate.cooccurrence_count > 0 && <small className="identity-warning">有 {candidate.cooccurrence_count} 个事件同时提到这两个名字，请优先查看原文再决定。</small>}
+      <div className="identity-signal-list">
+        {candidate.signals.map((signal) => <span key={signal}>{signal}</span>)}
+      </div>
+      {evidenceButtons(candidate.evidence_ids, "查看身份依据")}
+      {!isHistoricalRevision && analysisStatus !== "CONFIRMED" && (
+        <div className="identity-candidate-actions">
+          {candidate.recommended_decision === "SAME" ? (
+            <>
+              <button
+                type="button"
+                disabled={Boolean(identityBusy)}
+                onClick={() => void decidePersonIdentity(candidate.candidate_key, "SAME")}
+              >
+                {identityBusy === candidate.candidate_key ? "正在保存" : "确认为同一人"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={Boolean(identityBusy)}
+                onClick={() => void decidePersonIdentity(candidate.candidate_key, "DIFFERENT")}
+              >
+                确认是不同人物
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={Boolean(identityBusy)}
+                onClick={() => void decidePersonIdentity(candidate.candidate_key, "DIFFERENT")}
+              >
+                {identityBusy === candidate.candidate_key ? "正在保存" : "建议：确认为不同人物"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={Boolean(identityBusy)}
+                onClick={() => void decidePersonIdentity(candidate.candidate_key, "SAME")}
+              >
+                仍确认为同一人
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </article>
+  );
+
   const workbenchTabs: Array<{ key: WorkbenchView; label: string; count?: number }> = [
     { key: "overview", label: "总览" },
     { key: "source", label: "原文", count: sourceChapterNumbers.size },
@@ -708,6 +811,60 @@ function FormalWorkbench({
 
           {!searchQuery.trim() && view === "characters" && (
             <div className="character-workbench-view">
+              {(viewData.person_identity_candidates.length > 0 || viewData.person_identity_decisions.length > 0) && (
+                <section className="identity-review-panel" aria-label="人物身份候选">
+                  <header>
+                    <div>
+                      <span>人物身份校对</span>
+                      <h3>
+                        {viewData.person_identity_candidates.length > 0
+                          ? `${blockingIdentityCandidates.length} 组需要确认 · ${optionalIdentityCandidates.length} 组可选抽查`
+                          : "人物身份候选已经处理"}
+                      </h3>
+                    </div>
+                    <b>{viewData.person_identity_decisions.length} 项已裁决</b>
+                  </header>
+                  <p>这里只列出系统有直接别名线索、但不敢自动合并的人物。确认后，事件、剧情、关系和事实状态会同步使用统一姓名；原始模型结果不会被改写。</p>
+                  {identityError && <div className="inline-error">{identityError}</div>}
+                  {primaryIdentityCandidates.map(identityCandidateCard)}
+                  {remainingBlockingIdentityCandidates.length > 0 && (
+                    <details className="identity-optional-candidates">
+                      <summary>展开其余 {remainingBlockingIdentityCandidates.length} 组需要确认的候选</summary>
+                      <div>{remainingBlockingIdentityCandidates.map(identityCandidateCard)}</div>
+                    </details>
+                  )}
+                  {optionalIdentityCandidates.length > 0 && (
+                    <details className="identity-optional-candidates">
+                      <summary>展开 {optionalIdentityCandidates.length} 组可选抽查候选</summary>
+                      <div>{optionalIdentityCandidates.map(identityCandidateCard)}</div>
+                    </details>
+                  )}
+                  {viewData.person_identity_decisions.length > 0 && (
+                    <div className="identity-decision-list">
+                      <strong>已保存的身份裁决</strong>
+                      {viewData.person_identity_decisions.map((decision) => (
+                        <div key={decision.id}>
+                          <span>
+                            {decision.decision === "SAME"
+                              ? `同一人：${decision.left_name}、${decision.right_name} → ${decision.canonical_name}`
+                              : `不同人物：${decision.left_name}、${decision.right_name}`}
+                          </span>
+                          {!isHistoricalRevision && analysisStatus !== "CONFIRMED" && (
+                            <button
+                              type="button"
+                              className="text-action"
+                              disabled={Boolean(identityBusy)}
+                              onClick={() => void undoPersonIdentityDecision(decision.id)}
+                            >
+                              {identityBusy === decision.id ? "正在撤销" : "撤销"}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
               <div className="character-role-summary">
                 <strong>按人物在故事中的作用分组</strong>
                 <span>角色定位结合人物目标、关键事件、人物关系和剧情作用；出现次数只作为辅助信息。</span>
@@ -999,6 +1156,8 @@ function FormalWorkbench({
           <div><strong>正在查看以前的拆解版本</strong><span>切换回标有“当前”的版本后，才能继续标记问题和重新分析。</span></div>
         ) : analysisStatus === "CONFIRMED" ? (
           <div><strong>当前拆解结果已经确认</strong><span>人物、剧情、事实状态和核心分析均已保存，可以继续回查原文。</span></div>
+        ) : blockingIdentityCandidates.length > 0 ? (
+          <><div><strong>还有人物身份需要确认</strong><span>人物页有 {blockingIdentityCandidates.length} 组高价值名字候选。处理后，相关剧情和事实会同步更新。</span></div><button type="button" onClick={() => onViewChange("characters")}>去确认人物身份</button></>
         ) : viewData.narrative_status !== "READY" ? (
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
@@ -2039,6 +2198,7 @@ export default function ProductWorkbench() {
                             onSelectChapter={setSelectedChapter}
                             busy={busy}
                             onAnalysisRunChange={(run) => void loadAnalysisResults(run)}
+                            onWorkbenchChange={setWorkbench}
                             onRepairNarrative={() => void handleRepairNarrative()}
                             onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
                             onConfirmAnalysis={() => void handleConfirmAnalysis()}

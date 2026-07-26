@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0012_analysis_digests",)
+    assert revision == ("0013_person_identity_decisions",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -292,6 +292,18 @@ def test_migrated_schema_contains_task_attempt_constraints(
             row[1]
             for row in connection.execute("PRAGMA table_info(event_candidates)")
         }
+        person_identity_decision_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(person_identity_decisions)"
+            )
+        }
+        person_identity_decision_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(person_identity_decisions)"
+            )
+        }
 
     assert {
         "current_attempt_id",
@@ -412,6 +424,22 @@ def test_migrated_schema_contains_task_attempt_constraints(
         "ix_analysis_issues_run_status",
     }.issubset(issue_indexes)
     assert "details_json" in event_candidate_columns
+    assert {
+        "id",
+        "run_id",
+        "pair_key",
+        "left_name",
+        "right_name",
+        "canonical_name",
+        "decision",
+        "created_at",
+        "updated_at",
+    } == person_identity_decision_columns
+    assert {
+        "ux_person_identity_decision_run_pair",
+        "ix_person_identity_decisions_run_created",
+        "ix_person_identity_decisions_run_id",
+    }.issubset(person_identity_decision_indexes)
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -468,7 +496,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0012_analysis_digests",)
+    assert revision_after == ("0013_person_identity_decisions",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"

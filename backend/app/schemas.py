@@ -468,6 +468,38 @@ class WorkbenchCharacterRead(BaseModel):
     identity_notes: list[str] = Field(default_factory=list)
 
 
+class WorkbenchPersonIdentityCandidateRead(BaseModel):
+    candidate_key: str
+    left_name: str
+    right_name: str
+    left_aliases: list[str] = Field(default_factory=list)
+    right_aliases: list[str] = Field(default_factory=list)
+    recommended_name: str
+    reason: str
+    signals: list[str] = Field(default_factory=list)
+    confidence: int
+    review_priority: str
+    recommended_decision: str
+    cooccurrence_count: int = 0
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class WorkbenchPersonIdentityDecisionRead(BaseModel):
+    id: str
+    candidate_key: str
+    left_name: str
+    right_name: str
+    canonical_name: str | None
+    decision: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PersonIdentityDecisionWrite(BaseModel):
+    candidate_key: str = Field(min_length=1, max_length=64)
+    decision: str = Field(pattern=r"^(SAME|DIFFERENT)$")
+
+
 class WorkbenchEventRead(BaseModel):
     id: str
     title: str
@@ -677,6 +709,12 @@ class WorkbenchRead(BaseModel):
     source_version_id: str
     status: str
     characters: list[WorkbenchCharacterRead]
+    person_identity_candidates: list[WorkbenchPersonIdentityCandidateRead] = Field(
+        default_factory=list
+    )
+    person_identity_decisions: list[WorkbenchPersonIdentityDecisionRead] = Field(
+        default_factory=list
+    )
     related_entities: list[EntityCandidateRead]
     events: list[WorkbenchEventRead]
     phases: list[WorkbenchPhaseRead]

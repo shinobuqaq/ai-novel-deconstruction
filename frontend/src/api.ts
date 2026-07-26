@@ -337,6 +337,33 @@ export type WorkbenchCharacter = {
   identity_notes: string[];
 };
 
+export type PersonIdentityCandidate = {
+  candidate_key: string;
+  left_name: string;
+  right_name: string;
+  left_aliases: string[];
+  right_aliases: string[];
+  recommended_name: string;
+  reason: string;
+  signals: string[];
+  confidence: number;
+  review_priority: "BLOCKING" | "OPTIONAL";
+  recommended_decision: "SAME" | "DIFFERENT";
+  cooccurrence_count: number;
+  evidence_ids: string[];
+};
+
+export type PersonIdentityDecision = {
+  id: string;
+  candidate_key: string;
+  left_name: string;
+  right_name: string;
+  canonical_name: string | null;
+  decision: "SAME" | "DIFFERENT";
+  created_at: string;
+  updated_at: string;
+};
+
 export type WorkbenchEvent = {
   id: string;
   title: string;
@@ -595,6 +622,8 @@ export type Workbench = {
   source_version_id: string;
   status: string;
   characters: WorkbenchCharacter[];
+  person_identity_candidates: PersonIdentityCandidate[];
+  person_identity_decisions: PersonIdentityDecision[];
   related_entities: EntityCandidate[];
   events: WorkbenchEvent[];
   phases: WorkbenchPhase[];
@@ -783,6 +812,22 @@ export const api = {
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
   analysisWorkbench: (runId: string, deepRevision?: number) =>
     request<Workbench>(`/api/analysis-runs/${runId}/workbench${deepRevision ? `?deep_revision=${deepRevision}` : ""}`),
+  decidePersonIdentity: (
+    runId: string,
+    candidateKey: string,
+    decision: "SAME" | "DIFFERENT",
+  ) =>
+    request<Workbench>(`/api/analysis-runs/${runId}/person-identity-decisions`, {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_key: candidateKey,
+        decision,
+      }),
+    }),
+  undoPersonIdentityDecision: (decisionId: string) =>
+    request<Workbench>(`/api/person-identity-decisions/${decisionId}`, {
+      method: "DELETE",
+    }),
   stateAtChapter: (runId: string, chapterOrdinal: number, deepRevision?: number) =>
     request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
   startDeepAnalysis: (runId: string) =>

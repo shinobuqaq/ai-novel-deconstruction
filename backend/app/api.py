@@ -23,6 +23,7 @@ from .models import (
     EventCandidate,
     DeepAnalysis,
     NarrativeSynthesis,
+    PersonIdentityDecision,
     Project,
     SourceDocument,
     SourceIssue,
@@ -74,6 +75,7 @@ from .schemas import (
     ModelSettingsRead,
     OpenAIConfigRead,
     OpenAIConfigWrite,
+    PersonIdentityDecisionWrite,
     ProjectCreate,
     ProjectRead,
     SourceDocumentRead,
@@ -1324,6 +1326,95 @@ def analysis_workbench_get(
             ) from error
         raise
     return WorkbenchRead.model_validate(projection)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/person-identity-decisions",
+    response_model=WorkbenchRead,
+)
+def person_identity_decision_create(
+    run_id: str,
+    payload: PersonIdentityDecisionWrite,
+    session: Session = Depends(get_db),
+) -> WorkbenchRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    if run.status == "CONFIRMED":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ANALYSIS_ALREADY_CONFIRMED",
+                "message": "这次拆解已经确认，人物身份不能再原地修改。",
+            },
+        )
+    projection = build_workbench_projection(session, run_id)
+    candidate = next(
+        (
+            item
+            for item in projection.get("person_identity_candidates", [])
+            if item.get("candidate_key") == payload.candidate_key
+        ),
+        None,
+    )
+    if candidate is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "PERSON_IDENTITY_CANDIDATE_NOT_FOUND",
+                "message": "这组人物身份候选已经处理或不存在，请刷新后再试。",
+            },
+        )
+    decision = PersonIdentityDecision(
+        run_id=run_id,
+        pair_key=candidate["candidate_key"],
+        left_name=candidate["left_name"],
+        right_name=candidate["right_name"],
+        canonical_name=(
+            candidate["recommended_name"]
+            if payload.decision == "SAME"
+            else None
+        ),
+        decision=payload.decision,
+    )
+    session.add(decision)
+    session.commit()
+    return WorkbenchRead.model_validate(
+        build_workbench_projection(session, run_id)
+    )
+
+
+@router.delete(
+    "/api/person-identity-decisions/{decision_id}",
+    response_model=WorkbenchRead,
+)
+def person_identity_decision_delete(
+    decision_id: str,
+    session: Session = Depends(get_db),
+) -> WorkbenchRead:
+    decision = session.get(PersonIdentityDecision, decision_id)
+    if decision is None:
+        raise HTTPException(
+            status_code=404,
+            detail="PERSON_IDENTITY_DECISION_NOT_FOUND",
+        )
+    run = session.get(AnalysisRun, decision.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    if run.status == "CONFIRMED":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ANALYSIS_ALREADY_CONFIRMED",
+                "message": "这次拆解已经确认，人物身份不能再原地修改。",
+            },
+        )
+    run_id = decision.run_id
+    session.delete(decision)
+    session.commit()
+    return WorkbenchRead.model_validate(
+        build_workbench_projection(session, run_id)
+    )
 
 
 @router.get(

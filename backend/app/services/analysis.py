@@ -4262,6 +4262,17 @@ def confirm_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
             "仍有人物没有完成角色定位，请先重新整理人物和剧情结构。",
             status_code=409,
         )
+    identity_candidates = [
+        candidate
+        for candidate in projection.get("person_identity_candidates", [])
+        if candidate.get("review_priority") == "BLOCKING"
+    ]
+    if identity_candidates:
+        raise SourceImportError(
+            "PERSON_IDENTITY_REVIEW_REQUIRED",
+            f"仍有 {len(identity_candidates)} 组人物名字需要确认是同一人还是不同人物。",
+            status_code=409,
+        )
     deep_analysis = session.scalar(
         select(DeepAnalysis).where(DeepAnalysis.run_id == run.id)
     )

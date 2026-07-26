@@ -9,6 +9,7 @@ from app.services.workbench import (
     _canonical_person,
     _canonical_person_name_map,
     _event_candidate_groups,
+    _person_identity_candidate_suggestions,
     _person_groups,
     _project_canonical_person_names,
     _required_role_character_ids,
@@ -249,6 +250,78 @@ def test_ambiguous_alias_is_not_silently_projected_to_either_person() -> None:
     assert mapping["张妍"] == "张妍"
     assert mapping["王明"] == "王明"
     assert "老师" not in mapping
+
+
+def test_one_way_person_alias_becomes_a_review_candidate_not_an_auto_merge() -> None:
+    characters = [
+        {
+            "name": "昂热",
+            "aliases": ["昂热校长"],
+            "appearance_count": 20,
+            "confidence": 100,
+            "evidence_ids": ["e1", "e2"],
+        },
+        {
+            "name": "希尔伯特·让·昂热",
+            "aliases": ["校长阁下"],
+            "appearance_count": 2,
+            "confidence": 100,
+            "evidence_ids": ["e3"],
+        },
+    ]
+    suggestions = _person_identity_candidate_suggestions(
+        [
+            _person("昂热", ["校长", "昂热校长"], 100),
+            _person("希尔伯特·让·昂热", ["昂热", "校长阁下"], 100),
+        ],
+        characters,
+        [],
+        [],
+    )
+
+    assert len(suggestions) == 1
+    assert {
+        suggestions[0]["left_name"],
+        suggestions[0]["right_name"],
+    } == {"昂热", "希尔伯特·让·昂热"}
+    assert suggestions[0]["recommended_name"] == "昂热"
+    assert suggestions[0]["confidence"] == 82
+    assert suggestions[0]["review_priority"] == "BLOCKING"
+    assert suggestions[0]["recommended_decision"] == "SAME"
+    assert "别名中出现" in suggestions[0]["reason"]
+
+
+def test_cooccurring_person_names_are_optional_and_recommend_separation() -> None:
+    suggestions = _person_identity_candidate_suggestions(
+        [
+            _person("路明非", ["路鸣泽"], 100),
+            _person("路鸣泽", [], 100),
+        ],
+        [
+            {
+                "name": "路明非",
+                "aliases": [],
+                "appearance_count": 20,
+                "confidence": 100,
+                "evidence_ids": ["e1"],
+            },
+            {
+                "name": "路鸣泽",
+                "aliases": [],
+                "appearance_count": 20,
+                "confidence": 100,
+                "evidence_ids": ["e2"],
+            },
+        ],
+        [{"people": ["路明非", "路鸣泽"]}],
+        [],
+    )
+
+    assert len(suggestions) == 1
+    assert suggestions[0]["review_priority"] == "OPTIONAL"
+    assert suggestions[0]["recommended_decision"] == "DIFFERENT"
+    assert suggestions[0]["cooccurrence_count"] == 1
+    assert suggestions[0]["confidence"] == 57
 
 
 def test_event_candidates_with_alternate_titles_need_shared_exact_evidence() -> None:

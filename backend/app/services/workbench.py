@@ -16,6 +16,7 @@ from ..models import (
     EventCandidate,
     EvidenceSpan,
     NarrativeSynthesis,
+    PersonIdentityDecision,
     SourceUnit,
     Task,
     TaskStatus,
@@ -90,6 +91,12 @@ _TITLE_SUFFIXES = (
     "老师", "先生", "女士", "同学", "老板", "经理", "主任", "局长",
     "队长", "医生", "警官", "师傅", "大人", "前辈",
 )
+_GENERIC_IDENTITY_CANDIDATE_NAMES = {
+    *_GENERIC_PERSON_ALIASES,
+    "男孩", "女孩", "年轻人", "中年人", "婴儿", "妈妈", "爸爸",
+    "父亲", "母亲", "叔叔", "校长", "副校长", "教授", "二副", "大副",
+    "轮机长", "龙", "龙王", "父母", "家长",
+}
 
 
 def _specific_person_name(value: str) -> int:
@@ -101,6 +108,23 @@ def _specific_person_name(value: str) -> int:
     if 2 <= len(normalized) <= 6:
         return 3
     return 2
+
+
+def _generic_identity_candidate_name(value: str) -> bool:
+    normalized = _normalize(value)
+    if normalized in _GENERIC_IDENTITY_CANDIDATE_NAMES:
+        return True
+    return (
+        len(normalized) > 6
+        and any(
+            normalized.endswith(suffix)
+            for suffix in (
+                "男人", "女人", "男孩", "女孩", "年轻人", "中年人",
+                "老人", "少年", "少女", "婴儿", "妈妈", "爸爸",
+                "父亲", "母亲", "叔叔",
+            )
+        )
+    )
 
 
 def _person_groups(entities: list[EntityCandidate]) -> list[list[EntityCandidate]]:
@@ -378,6 +402,169 @@ def _canonical_person_name_map(characters: list[dict]) -> dict[str, str]:
         for normalized, canonical_names in owners.items()
         if len(canonical_names) == 1
     }
+
+
+def _person_identity_candidate_suggestions(
+    entities: list[EntityCandidate],
+    characters: list[dict],
+    events: list[dict],
+    decisions: list[PersonIdentityDecision],
+) -> list[dict]:
+    """Find unresolved direct identity links without merging them automatically."""
+    canonical_characters = {
+        _normalize(str(character.get("name") or "")): character
+        for character in characters
+        if _normalize(str(character.get("name") or ""))
+    }
+    owners: dict[str, set[str]] = {}
+    for character in characters:
+        canonical = str(character.get("name") or "")
+        for name in [canonical, *character.get("aliases", [])]:
+            normalized = _normalize(str(name))
+            if normalized:
+                owners.setdefault(normalized, set()).add(canonical)
+
+    def owner(name: str) -> str | None:
+        normalized = _normalize(name)
+        exact = canonical_characters.get(normalized)
+        if exact is not None:
+            return str(exact["name"])
+        claimed = owners.get(normalized, set())
+        return next(iter(claimed)) if len(claimed) == 1 else None
+
+    people = [entity for entity in entities if entity.entity_type == "PERSON"]
+    raw_names: dict[str, list[EntityCandidate]] = {}
+    for entity in people:
+        normalized = _normalize(entity.name)
+        if normalized:
+            raw_names.setdefault(normalized, []).append(entity)
+
+    links: dict[str, dict] = {}
+    for entity in people:
+        source_owner = owner(entity.name)
+        if not source_owner:
+            continue
+        for alias in _read_json(entity.aliases_json):
+            normalized_alias = _normalize(alias)
+            for target in raw_names.get(normalized_alias, []):
+                target_owner = owner(target.name)
+                if not target_owner or target_owner == source_owner:
+                    continue
+                ordered = sorted(
+                    (source_owner, target_owner),
+                    key=lambda value: (_normalize(value), value),
+                )
+                pair_key = f"pic_{_hash(':'.join(_normalize(value) for value in ordered))[:32]}"
+                link = links.setdefault(pair_key, {
+                    "candidate_key": pair_key,
+                    "left_name": ordered[0],
+                    "right_name": ordered[1],
+                    "directions": set(),
+                })
+                link["directions"].add((source_owner, target_owner))
+
+    decided_keys = {decision.pair_key for decision in decisions}
+    character_by_name = {
+        str(character["name"]): character
+        for character in characters
+    }
+    event_owner_sets: list[set[str]] = []
+    for event in events:
+        event_owner_sets.append({
+            participant_owner
+            for name in event.get("people", [])
+            if (participant_owner := owner(str(name)))
+        })
+
+    suggestions: list[dict] = []
+    for pair_key, link in links.items():
+        if pair_key in decided_keys:
+            continue
+        left = character_by_name.get(link["left_name"])
+        right = character_by_name.get(link["right_name"])
+        if left is None or right is None:
+            continue
+        directions: set[tuple[str, str]] = link["directions"]
+        reciprocal = (
+            (left["name"], right["name"]) in directions
+            and (right["name"], left["name"]) in directions
+        )
+        left_evidence = list(left.get("evidence_ids", []))
+        right_evidence = list(right.get("evidence_ids", []))
+        shared_evidence = [
+            evidence_id
+            for evidence_id in left_evidence
+            if evidence_id in set(right_evidence)
+        ]
+        evidence_ids = _unique([
+            *shared_evidence[:2],
+            *left_evidence[:2],
+            *right_evidence[:2],
+        ])[:4]
+        cooccurrence_count = sum(
+            left["name"] in owners_in_event and right["name"] in owners_in_event
+            for owners_in_event in event_owner_sets
+        )
+        recommended = max(
+            (left, right),
+            key=lambda item: (
+                _specific_person_name(str(item["name"])),
+                int(item.get("appearance_count") or 0),
+                int(item.get("confidence") or 0),
+                -len(str(item["name"])),
+            ),
+        )["name"]
+        signals = ["候选人物的别名直接指向另一人物"]
+        if reciprocal:
+            signals.append("双方互相把对方列为别名")
+        if shared_evidence:
+            signals.append(f"共享 {len(shared_evidence)} 处原文证据")
+        if cooccurrence_count:
+            signals.append(f"有 {cooccurrence_count} 个事件同时提到双方，需重点核对")
+        confidence = 95 if reciprocal else 82
+        if shared_evidence:
+            confidence = max(confidence, 88)
+        if cooccurrence_count:
+            confidence = max(40, confidence - 25)
+        review_priority = (
+            "BLOCKING"
+            if (
+                not _generic_identity_candidate_name(str(left["name"]))
+                and not _generic_identity_candidate_name(str(right["name"]))
+                and cooccurrence_count == 0
+            )
+            else "OPTIONAL"
+        )
+        direction_labels = [
+            f"“{source}”的别名中出现“{target}”"
+            for source, target in sorted(directions)
+        ]
+        suggestions.append({
+            "candidate_key": pair_key,
+            "left_name": left["name"],
+            "right_name": right["name"],
+            "left_aliases": list(left.get("aliases", [])),
+            "right_aliases": list(right.get("aliases", [])),
+            "recommended_name": recommended,
+            "reason": "；".join(direction_labels),
+            "signals": signals,
+            "confidence": confidence,
+            "review_priority": review_priority,
+            "recommended_decision": (
+                "DIFFERENT" if cooccurrence_count else "SAME"
+            ),
+            "cooccurrence_count": cooccurrence_count,
+            "evidence_ids": evidence_ids,
+        })
+    suggestions.sort(
+        key=lambda item: (
+            item["review_priority"] != "BLOCKING",
+            -int(item["confidence"]),
+            item["left_name"],
+            item["right_name"],
+        )
+    )
+    return suggestions
 
 
 def _project_canonical_person_names(
@@ -912,19 +1099,49 @@ def build_workbench_projection(
             )
 
     resolution_by_name: dict[str, str] = {}
-    person_resolution_by_name: dict[str, str] = {}
-    entity_resolutions: list[dict] = []
-    if deep_payload is not None:
-        entity_resolutions = deep_payload.get("entity_resolutions", [])
-        for resolution in entity_resolutions:
-            canonical = resolution.get("canonical_name", "")
-            for name in resolution.get("merged_names", []):
-                target = (
-                    person_resolution_by_name
-                    if resolution.get("entity_type") == "PERSON"
-                    else resolution_by_name
-                )
-                target[_normalize(name)] = canonical
+    entity_resolutions: list[dict] = (
+        list(deep_payload.get("entity_resolutions", []))
+        if deep_payload is not None
+        else []
+    )
+    person_identity_decisions = list(session.scalars(
+        select(PersonIdentityDecision)
+        .where(PersonIdentityDecision.run_id == run_id)
+        .order_by(PersonIdentityDecision.created_at, PersonIdentityDecision.id)
+    ))
+    different_pairs = [{
+        _normalize(decision.left_name),
+        _normalize(decision.right_name),
+    } for decision in person_identity_decisions if decision.decision == "DIFFERENT"]
+    entity_resolutions = [
+        resolution
+        for resolution in entity_resolutions
+        if not any(
+            pair.issubset({
+                _normalize(str(name))
+                for name in resolution.get("merged_names", [])
+            })
+            for pair in different_pairs
+        )
+    ]
+    entity_resolutions.extend([
+        {
+            "entity_type": "PERSON",
+            "canonical_name": decision.canonical_name or decision.left_name,
+            "merged_names": [decision.left_name, decision.right_name],
+            "resolution_type": "ALIAS",
+            "reason": "用户在人物身份候选中确认这两个名字属于同一人物。",
+            "evidence_ids": [],
+        }
+        for decision in person_identity_decisions
+        if decision.decision == "SAME"
+    ])
+    for resolution in entity_resolutions:
+        if resolution.get("entity_type") == "PERSON":
+            continue
+        canonical = resolution.get("canonical_name", "")
+        for name in resolution.get("merged_names", []):
+            resolution_by_name[_normalize(name)] = canonical
     if resolution_by_name:
         for event in events:
             event["related_entities"] = _unique([
@@ -937,6 +1154,19 @@ def build_workbench_projection(
         events,
         entity_resolutions,
     )
+    person_identity_candidates = _person_identity_candidate_suggestions(
+        entities,
+        characters,
+        events,
+        person_identity_decisions,
+    )
+    projected_person_names = _canonical_person_name_map(characters)
+    person_identity_candidates = [
+        candidate
+        for candidate in person_identity_candidates
+        if projected_person_names.get(_normalize(candidate["left_name"]), candidate["left_name"])
+        != projected_person_names.get(_normalize(candidate["right_name"]), candidate["right_name"])
+    ]
     _project_canonical_person_names(
         characters,
         events,
@@ -1019,6 +1249,20 @@ def build_workbench_projection(
         "source_version_id": run.source_version_id,
         "status": run.status,
         "characters": characters,
+        "person_identity_candidates": person_identity_candidates,
+        "person_identity_decisions": [
+            {
+                "id": decision.id,
+                "candidate_key": decision.pair_key,
+                "left_name": decision.left_name,
+                "right_name": decision.right_name,
+                "canonical_name": decision.canonical_name,
+                "decision": decision.decision,
+                "created_at": decision.created_at,
+                "updated_at": decision.updated_at,
+            }
+            for decision in person_identity_decisions
+        ],
         "related_entities": related_projection,
         "events": events,
         "phases": phases,
