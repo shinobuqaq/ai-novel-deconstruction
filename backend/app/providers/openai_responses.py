@@ -13,6 +13,7 @@ from ..services.provider_config import (
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
     model_cost_snapshot,
+    provider_http_headers,
     resolve_analysis_route,
     schema_for_provider,
 )
@@ -150,10 +151,7 @@ class OpenAIResponsesProvider:
             ) as client:
                 response = await client.post(
                     endpoint,
-                    headers={
-                        "Authorization": f"Bearer {service.api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=provider_http_headers(service.api_key, json_content=True),
                     json=request_body,
                 )
         except httpx.TimeoutException as exc:

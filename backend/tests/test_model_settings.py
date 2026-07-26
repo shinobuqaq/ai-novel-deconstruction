@@ -10,6 +10,7 @@ from app.providers.base import ProviderError
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.services.provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
+    PROVIDER_HTTP_USER_AGENT,
     ModelSettingsError,
     ModelProbeResult,
     discover_models,
@@ -198,6 +199,7 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
+        assert request.headers["user-agent"] == PROVIDER_HTTP_USER_AGENT
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "z-model"}, {"id": "a-model"}]})
         body = json.loads(request.content)
@@ -456,6 +458,7 @@ def test_selected_model_probe_records_strict_capabilities(client) -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["user-agent"] == PROVIDER_HTTP_USER_AGENT
         body = json.loads(request.content)
         assert body["model"] == "strict-model"
         assert "temperature" not in body

@@ -25,6 +25,11 @@ STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
 STRUCTURED_JSON_ONLY = "JSON_ONLY"
 STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
 PROVIDER_FAILURE_SWITCH_THRESHOLD = 3
+PROVIDER_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 # JSON Schema files used by the application may contain document metadata such
 # as `$id` and `$schema`. Those keywords are valid JSON Schema, but several
@@ -32,6 +37,21 @@ PROVIDER_FAILURE_SWITCH_THRESHOLD = 3
 # are placed inside a structured-output request. Keep the full schema locally
 # and remove only wire-incompatible metadata at the provider boundary.
 _WIRE_SCHEMA_METADATA = {"$schema", "$id", "$comment"}
+
+
+def provider_http_headers(
+    api_key: str | None,
+    *,
+    json_content: bool = False,
+) -> dict[str, str]:
+    """Return consistent browser-compatible headers for model services."""
+    headers = {
+        "Authorization": f"Bearer {api_key or ''}",
+        "User-Agent": PROVIDER_HTTP_USER_AGENT,
+    }
+    if json_content:
+        headers["Content-Type"] = "application/json"
+    return headers
 
 
 def schema_for_provider(value: object) -> object:
@@ -625,7 +645,7 @@ async def discover_models(
         async with httpx.AsyncClient(timeout=30, transport=transport) as client:
             response = await client.get(
                 f"{service.base_url}/models",
-                headers={"Authorization": f"Bearer {service.api_key}"},
+                headers=provider_http_headers(service.api_key),
             )
     except httpx.TimeoutException as exc:
         raise ModelSettingsError("PROVIDER_TIMEOUT", "连接模型服务超时，请检查接口地址或网络。") from exc
@@ -746,10 +766,7 @@ async def _request_probe(
         async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
             return await client.post(
                 endpoint,
-                headers={
-                    "Authorization": f"Bearer {service.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=provider_http_headers(service.api_key, json_content=True),
                 json=body,
             )
     except httpx.TimeoutException as exc:
