@@ -1260,6 +1260,16 @@ def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> N
             registry,
         )
     assert repair_components == {"overview", "characters", "plot", "relations"}
+    with client.app.state.session_factory() as session:
+        deep_tasks = list(session.scalars(
+            select(Task)
+            .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+            .where(
+                AnalysisRunTask.run_id == run["id"],
+                Task.kind == "analysis.deep_insights",
+            )
+        ))
+    assert len(deep_tasks) == 1
 
     repaired = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert repaired.status_code == 200

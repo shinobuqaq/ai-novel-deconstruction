@@ -757,7 +757,11 @@ async def execute_task(
                     enqueue_narrative_synthesis(session, settings, run)
                 elif claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND:
                     payload_requests = payload.get("revision_requests", [])
-                    if payload_requests and payload.get("enqueue_deep_after_narrative", True):
+                    if (
+                        persisted_narrative is not None
+                        and payload_requests
+                        and payload.get("enqueue_deep_after_narrative", True)
+                    ):
                         enqueue_deep_analysis(
                             session,
                             settings,
