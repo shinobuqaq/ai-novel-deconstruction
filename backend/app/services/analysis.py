@@ -58,7 +58,7 @@ NARRATIVE_PROMPT_VERSION = "2.1.0"
 # 完整送进模型输入，否则覆盖校验对模型是不可满足的。
 REQUIRED_CHARACTER_ROSTER_SIZE = 100
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.8.1"
+DEEP_PROMPT_VERSION = "1.8.4"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -2686,9 +2686,42 @@ def parse_hierarchical_digest(value: dict) -> HierarchicalDigestOutput:
         ) from exc
 
 
+_DEEP_SCENE_FUNCTION_COMPATIBILITY = {
+    "DIALOGUE": "OTHER",
+    "RESOLUTION": "AFTERMATH",
+}
+
+
+def _normalize_deep_scene_functions(value: dict) -> dict:
+    """Normalize two observed provider aliases without accepting unknown values."""
+    scenes = value.get("scene_analysis")
+    if not isinstance(scenes, list):
+        return value
+    normalized = dict(value)
+    normalized_scenes: list[object] = []
+    changed = False
+    for item in scenes:
+        if not isinstance(item, dict):
+            normalized_scenes.append(item)
+            continue
+        normalized_item = dict(item)
+        function = str(item.get("function") or "").strip().upper()
+        replacement = _DEEP_SCENE_FUNCTION_COMPATIBILITY.get(function)
+        if replacement is not None:
+            normalized_item["function"] = replacement
+            changed = True
+        normalized_scenes.append(normalized_item)
+    if not changed:
+        return value
+    normalized["scene_analysis"] = normalized_scenes
+    return normalized
+
+
 def parse_deep_analysis(value: dict) -> DeepAnalysisOutput:
     try:
-        return DeepAnalysisOutput.model_validate(value)
+        return DeepAnalysisOutput.model_validate(
+            _normalize_deep_scene_functions(value)
+        )
     except ValidationError as exc:
         raise StructuredOutputValidationError(
             "DEEP_ANALYSIS_OUTPUT_INVALID",
@@ -4017,11 +4050,15 @@ def persist_deep_analysis(
         raise ValueError("DEEP_ANALYSIS_EVENT_REFERENCE_INVALID")
     available_entities_by_name: dict[str, tuple[str, str]] = {}
     for item in foundation["characters"]:
-        for name in [item["name"], *item.get("aliases", [])]:
-            available_entities_by_name[_normalized_name(name)] = ("PERSON", item["id"])
+        available_entities_by_name[_normalized_name(item["name"])] = (
+            "PERSON",
+            item["id"],
+        )
     for item in foundation["related_entities"]:
-        for name in [item["name"], *item.get("aliases", [])]:
-            available_entities_by_name[_normalized_name(name)] = (item["entity_type"], item["id"])
+        available_entities_by_name[_normalized_name(item["name"])] = (
+            item["entity_type"],
+            item["id"],
+        )
     accepted_entity_resolutions = _validated_entity_resolutions(
         output.entity_resolutions,
         available_entities_by_name=available_entities_by_name,

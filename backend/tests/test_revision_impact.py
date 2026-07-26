@@ -2,12 +2,14 @@ import pytest
 
 from app.services.analysis import (
     EntityResolutionProposal,
+    StructuredOutputValidationError,
     _validate_deep_temporal_consistency,
     _validated_entity_resolutions,
     build_deep_revision_impact,
     deep_revision_scope,
     merge_targeted_narrative_payload,
     narrative_phase_id,
+    parse_deep_analysis,
 )
 from app.services.tasks import _deep_consistency_message
 
@@ -276,6 +278,74 @@ def test_entity_resolution_discards_aliases_already_bound_to_same_entity() -> No
     )
 
     assert accepted == []
+
+
+def test_entity_resolution_accepts_distinct_canonical_entries() -> None:
+    resolution = EntityResolutionProposal(
+        canonical_name="诺顿",
+        merged_names=["诺顿", "龙王诺顿"],
+        entity_type="PERSON",
+        resolution_type="ALIAS",
+        reason="两个人物条目由原文确认是同一位龙王。",
+        confidence=100,
+        evidence_ids=["evidence-norton"],
+    )
+
+    accepted = _validated_entity_resolutions(
+        [resolution],
+        available_entities_by_name={
+            "诺顿": ("PERSON", "character-norton"),
+            "龙王诺顿": ("PERSON", "character-dragon-norton"),
+        },
+        chapter_count=33,
+    )
+
+    assert accepted == [resolution]
+
+
+def _minimal_deep_payload(scene_function: str) -> dict:
+    return {
+        "fact_versions": [],
+        "state_changes": [],
+        "actor_knowledge": [],
+        "knowledge_transfers": [],
+        "world_rules": [],
+        "foreshadowing": [],
+        "conflicts": [],
+        "scene_analysis": [
+            {
+                "chapter_ordinal": 1,
+                "function": scene_function,
+                "summary": "场景完成阶段性收束。",
+                "information_released": [],
+                "action_dialogue_balance": "BALANCED",
+                "pace": "STEADY",
+                "evidence_ids": ["evidence-1"],
+            }
+        ],
+        "claims": [],
+        "entity_resolutions": [],
+    }
+
+
+def test_deep_scene_function_normalizes_observed_provider_aliases() -> None:
+    assert (
+        parse_deep_analysis(
+            _minimal_deep_payload("RESOLUTION")
+        ).scene_analysis[0].function
+        == "AFTERMATH"
+    )
+    assert (
+        parse_deep_analysis(
+            _minimal_deep_payload("DIALOGUE")
+        ).scene_analysis[0].function
+        == "OTHER"
+    )
+
+
+def test_deep_scene_function_still_rejects_unknown_values() -> None:
+    with pytest.raises(StructuredOutputValidationError):
+        parse_deep_analysis(_minimal_deep_payload("MONTAGE"))
 
 
 def test_deep_consistency_errors_are_explained_in_plain_chinese() -> None:
