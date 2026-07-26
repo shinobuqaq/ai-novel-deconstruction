@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from app.models import EvidenceSpan, SourceVersion
 from app.services.source_import import parse_chapters, parse_source
+
+
+F01_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "f01_chapter_format_samples"
 
 
 def _docx_bytes(paragraphs: list[str]) -> bytes:
@@ -79,6 +84,69 @@ def test_chapter_parser_keeps_exact_ranges_and_flags_duplicates() -> None:
     assert text[chapters[0].start_char:chapters[0].end_char].startswith("第一章")
     assert issues[0].code == "CHAPTER_DUPLICATE_CONTENT"
     assert issues[0].severity == "BLOCKING"
+
+
+def test_f01_chapter_format_manifest_is_green() -> None:
+    manifest = json.loads(
+        (F01_FIXTURE_DIR / "manifest.json").read_text(encoding="utf-8")
+    )
+    expected_unit_types = {
+        "chapter": "CHAPTER",
+        "volume": "VOLUME",
+        "front_matter": "PREFACE",
+    }
+
+    for sample in manifest["samples"]:
+        text = (F01_FIXTURE_DIR / sample["file"]).read_text(encoding="utf-8")
+        chapters, issues = parse_chapters(text, "txt")
+        expected_units = sample["expected_units"]
+
+        assert len(chapters) == len(expected_units), sample["id"]
+        for chapter, expected in zip(chapters, expected_units, strict=True):
+            assert expected["title_contains"] in chapter.title, sample["id"]
+            assert chapter.unit_type == expected_unit_types[expected["type"]], sample["id"]
+            boundary_issues = [
+                issue
+                for issue in issues
+                if issue.unit_ordinal == chapter.ordinal
+                and issue.code in {
+                    "CHAPTER_BOUNDARY_REVIEW",
+                    "FRONT_MATTER_REVIEW",
+                }
+            ]
+            if expected["confidence"] == "candidate":
+                assert len(boundary_issues) == 1, sample["id"]
+                assert boundary_issues[0].severity == "BLOCKING", sample["id"]
+            else:
+                assert not boundary_issues, sample["id"]
+
+        if sample["id"] == "s14_false_positive_guard":
+            assert [chapter.title for chapter in chapters] == [
+                "第一章 倒计时",
+                "第二章 复盘",
+            ]
+
+
+def test_isolated_section_heading_requires_confirmation() -> None:
+    text = (
+        "第二幕 双S级任务\n前半段正文。\n\n"
+        "第四节……“英雄”救“美”\n这一节的正文。\n\n"
+        "第三幕 狩猎前奏\n后半段正文。"
+    )
+
+    chapters, issues = parse_chapters(text, "txt")
+
+    assert [item.title for item in chapters] == [
+        "第二幕 双S级任务",
+        "第四节……“英雄”救“美”",
+        "第三幕 狩猎前奏",
+    ]
+    section_issue = next(
+        item for item in issues
+        if item.code == "CHAPTER_BOUNDARY_REVIEW"
+    )
+    assert section_issue.unit_ordinal == 2
+    assert section_issue.severity == "BLOCKING"
 
 
 def test_markdown_book_title_is_kept_as_title_not_empty_chapter() -> None:
@@ -208,7 +276,7 @@ def test_new_parser_version_reparses_unchanged_file(client) -> None:
     assert result["reused_existing"] is False
     assert result["version"]["id"] != first["version"]["id"]
     assert result["version"]["version_no"] == 2
-    assert result["version"]["parser_version"] == 2
+    assert result["version"]["parser_version"] == 3
     assert result["version"]["chapter_count"] == 1
 
 

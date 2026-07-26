@@ -675,7 +675,7 @@ function FormalWorkbench({
               <div className="source-chapter-list">
                 {sourceChapters.map((chapter) => (
                   <button type="button" key={chapter.id} className={selectedChapterId === chapter.id ? "active" : ""} onClick={() => onSelectChapter(chapter.id)}>
-                    <span>{chapter.unit_type === "TITLE" ? "作品信息" : chapter.unit_type === "PREFACE" ? "正文前内容" : `第 ${sourceChapterNumbers.get(chapter.id) ?? chapter.ordinal} 章`}</span><strong>{chapter.title}</strong><small>{chapter.char_count.toLocaleString("zh-CN")} 字</small>
+                    <span>{chapter.unit_type === "TITLE" ? "作品信息" : chapter.unit_type === "PREFACE" ? "正文前内容" : chapter.unit_type === "VOLUME" ? "分卷" : `第 ${sourceChapterNumbers.get(chapter.id) ?? chapter.ordinal} 章`}</span><strong>{chapter.title}</strong><small>{chapter.char_count.toLocaleString("zh-CN")} 字</small>
                   </button>
                 ))}
                 {!sourceChapters.length && <p className="result-empty">当前来源还没有可显示的章节。</p>}
@@ -1147,6 +1147,7 @@ export default function ProductWorkbench() {
   const chapterCount = chapters.filter((chapter) => chapter.unit_type === "CHAPTER").length;
   const titleUnitCount = chapters.filter((chapter) => chapter.unit_type === "TITLE").length;
   const prefaceUnitCount = chapters.filter((chapter) => chapter.unit_type === "PREFACE").length;
+  const volumeUnitCount = chapters.filter((chapter) => chapter.unit_type === "VOLUME").length;
   let currentStage = 0;
   if (activeVersion?.status === "CONFIRMED") currentStage = 1;
   if (workbench?.narrative_status === "READY") currentStage = 3;
@@ -1363,6 +1364,7 @@ export default function ProductWorkbench() {
           <h2>章节目录</h2>
           <span>
             {chapterCount} 章
+            {volumeUnitCount ? ` · ${volumeUnitCount} 卷` : ""}
             {titleUnitCount ? ` · ${titleUnitCount} 项作品信息` : ""}
             {prefaceUnitCount ? ` · ${prefaceUnitCount} 项正文前内容` : ""}
           </span>
@@ -1380,7 +1382,9 @@ export default function ProductWorkbench() {
                   ? "作品"
                   : chapter.unit_type === "PREFACE"
                     ? "正文前"
-                  : chapterDisplayNumbers.get(chapter.id) ?? chapter.ordinal}
+                    : chapter.unit_type === "VOLUME"
+                      ? "卷"
+                      : chapterDisplayNumbers.get(chapter.id) ?? chapter.ordinal}
               </span>
               <b>{chapter.title}</b>
               <small>{formatNumber(chapter.char_count)} 字符</small>
