@@ -11,7 +11,17 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.models import AnalysisRun, AnalysisRunTask, EntityCandidate, EventCandidate, NarrativeSynthesis, Task, TaskAttempt, TaskStatus
+from app.models import (
+    AnalysisRun,
+    AnalysisRunStatus,
+    AnalysisRunTask,
+    EntityCandidate,
+    EventCandidate,
+    NarrativeSynthesis,
+    Task,
+    TaskAttempt,
+    TaskStatus,
+)
 from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
@@ -1175,6 +1185,37 @@ def test_failed_update_keeps_last_usable_workbench_in_review(client) -> None:
     workbench = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert workbench.status_code == 200
     assert workbench.json()["narrative_status"] == "READY"
+
+    with client.app.state.session_factory() as session:
+        shadow_run = AnalysisRun(
+            source_version_id=version_id,
+            stage="ENTITIES_EVENTS",
+            status=AnalysisRunStatus.PENDING.value,
+            total_batches=1,
+        )
+        session.add(shadow_run)
+        session.flush()
+        cancelled_task = Task(
+            project_id=shadow_run.source_version.document.project_id,
+            kind="analysis.entities_events",
+            payload_json="{}",
+            status=TaskStatus.CANCELLED.value,
+            max_attempts=1,
+        )
+        session.add(cancelled_task)
+        session.flush()
+        session.add(AnalysisRunTask(
+            run_id=shadow_run.id,
+            task_id=cancelled_task.id,
+            batch_index=1,
+        ))
+        session.commit()
+
+    preferred = client.get(
+        f"/api/source-versions/{version_id}/analysis/entities-events"
+    ).json()
+    assert preferred["id"] == run["id"]
+    assert preferred["has_usable_result"] is True
 
 
 def test_incomplete_legacy_narrative_is_blocked_and_can_be_repaired(client) -> None:

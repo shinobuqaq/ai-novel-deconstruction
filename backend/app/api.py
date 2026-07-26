@@ -1032,12 +1032,22 @@ def entities_events_latest(
         raise HTTPException(status_code=404, detail="SOURCE_VERSION_NOT_FOUND")
     run = session.scalar(
         select(AnalysisRun)
+        .join(NarrativeSynthesis, NarrativeSynthesis.run_id == AnalysisRun.id)
         .where(
             AnalysisRun.source_version_id == version_id,
             AnalysisRun.stage == ANALYSIS_STAGE,
         )
         .order_by(AnalysisRun.created_at.desc())
     )
+    if run is None:
+        run = session.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.source_version_id == version_id,
+                AnalysisRun.stage == ANALYSIS_STAGE,
+            )
+            .order_by(AnalysisRun.created_at.desc())
+        )
     return _analysis_run_read(session, run) if run else None
 
 
