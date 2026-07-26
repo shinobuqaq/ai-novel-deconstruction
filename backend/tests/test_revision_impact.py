@@ -1,7 +1,9 @@
 import pytest
 
 from app.services.analysis import (
+    EntityResolutionProposal,
     _validate_deep_temporal_consistency,
+    _validated_entity_resolutions,
     build_deep_revision_impact,
     deep_revision_scope,
     merge_targeted_narrative_payload,
@@ -190,6 +192,90 @@ def test_temporal_guard_rejects_future_evidence_and_same_chapter_conflicts() -> 
             },
             {"evidence-1": 1},
         )
+
+
+def test_knowledge_transfer_accepts_paraphrase_backed_by_same_evidence() -> None:
+    _validate_deep_temporal_consistency(
+        {
+            "actor_knowledge": [
+                {
+                    "actor": "楚子航",
+                    "proposition": "爆血存在突破临界血限后变成死侍的风险",
+                    "state": "KNOWS",
+                    "chapter_ordinal": 23,
+                    "evidence_ids": ["evidence-23"],
+                }
+            ],
+            "knowledge_transfers": [
+                {
+                    "source_actor": "昂热",
+                    "target_actor": "楚子航",
+                    "proposition": "爆血会损害身体，突破临界血限将不可逆地变成死侍",
+                    "transfer_type": "TOLD",
+                    "resulting_state": "KNOWS",
+                    "chapter_ordinal": 23,
+                    "evidence_ids": ["evidence-23"],
+                }
+            ],
+        },
+        {"evidence-23": 23},
+    )
+
+
+def test_knowledge_transfer_rejects_unrelated_result_without_shared_evidence() -> None:
+    with pytest.raises(ValueError, match="KNOWLEDGE_TRANSFER_RESULT_MISSING"):
+        _validate_deep_temporal_consistency(
+            {
+                "actor_knowledge": [
+                    {
+                        "actor": "楚子航",
+                        "proposition": "爆血存在失控风险",
+                        "state": "KNOWS",
+                        "chapter_ordinal": 23,
+                        "evidence_ids": ["evidence-risk"],
+                    }
+                ],
+                "knowledge_transfers": [
+                    {
+                        "source_actor": "昂热",
+                        "target_actor": "楚子航",
+                        "proposition": "学院准备召开听证会",
+                        "transfer_type": "TOLD",
+                        "resulting_state": "KNOWS",
+                        "chapter_ordinal": 23,
+                        "evidence_ids": ["evidence-hearing"],
+                    }
+                ],
+            },
+            {
+                "evidence-risk": 23,
+                "evidence-hearing": 23,
+            },
+        )
+
+
+def test_entity_resolution_discards_aliases_already_bound_to_same_entity() -> None:
+    resolution = EntityResolutionProposal(
+        canonical_name="夏弥",
+        merged_names=["夏弥", "耶梦加得"],
+        entity_type="PERSON",
+        resolution_type="IDENTITY_REVEAL",
+        reason="输入已经把两者归到同一个人物条目。",
+        valid_from_chapter=31,
+        confidence=100,
+        evidence_ids=["evidence-31"],
+    )
+
+    accepted = _validated_entity_resolutions(
+        [resolution],
+        available_entities_by_name={
+            "夏弥": ("PERSON", "character-xia-mi"),
+            "耶梦加得": ("PERSON", "character-xia-mi"),
+        },
+        chapter_count=33,
+    )
+
+    assert accepted == []
 
 
 def test_deep_consistency_errors_are_explained_in_plain_chinese() -> None:

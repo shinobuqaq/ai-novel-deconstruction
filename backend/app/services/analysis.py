@@ -58,7 +58,7 @@ NARRATIVE_PROMPT_VERSION = "2.1.0"
 # 完整送进模型输入，否则覆盖校验对模型是不可满足的。
 REQUIRED_CHARACTER_ROSTER_SIZE = 100
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.8.0"
+DEEP_PROMPT_VERSION = "1.8.1"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -3782,17 +3782,35 @@ def _validate_deep_temporal_consistency(
         state_at_chapter[key] = value
 
     knowledge_at_chapter: dict[tuple[str, str, int], str] = {}
+    knowledge_support: dict[
+        tuple[str, int, str],
+        list[tuple[str, set[str]]],
+    ] = {}
     for item in payload.get("actor_knowledge", []):
-        key = (
-            _normalized_name(str(item.get("actor") or "")),
-            re.sub(r"\s+", "", str(item.get("proposition") or "")).casefold(),
-            int(item.get("chapter_ordinal") or 0),
-        )
+        actor = _normalized_name(str(item.get("actor") or ""))
+        proposition = re.sub(
+            r"\s+",
+            "",
+            str(item.get("proposition") or ""),
+        ).casefold()
+        chapter = int(item.get("chapter_ordinal") or 0)
+        key = (actor, proposition, chapter)
         state = str(item.get("state") or "")
         previous = knowledge_at_chapter.get(key)
         if previous is not None and previous != state:
             raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_REPLAY_CONFLICT")
         knowledge_at_chapter[key] = state
+        knowledge_support.setdefault(
+            (actor, chapter, state),
+            [],
+        ).append((
+            proposition,
+            {
+                str(evidence_id)
+                for evidence_id in item.get("evidence_ids", [])
+                if evidence_id
+            },
+        ))
 
     for item in payload.get("knowledge_transfers", []):
         source = _normalized_name(str(item.get("source_actor") or ""))
@@ -3800,13 +3818,85 @@ def _validate_deep_temporal_consistency(
         transfer_type = str(item.get("transfer_type") or "")
         if source == target and transfer_type != "WITNESSED":
             raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_SELF_REFERENCE")
-        target_key = (
-            target,
-            re.sub(r"\s+", "", str(item.get("proposition") or "")).casefold(),
-            int(item.get("chapter_ordinal") or 0),
+        proposition = re.sub(
+            r"\s+",
+            "",
+            str(item.get("proposition") or ""),
+        ).casefold()
+        chapter = int(item.get("chapter_ordinal") or 0)
+        resulting_state = str(item.get("resulting_state") or "")
+        transfer_evidence_ids = {
+            str(evidence_id)
+            for evidence_id in item.get("evidence_ids", [])
+            if evidence_id
+        }
+        matching_results = knowledge_support.get(
+            (target, chapter, resulting_state),
+            [],
         )
-        if knowledge_at_chapter.get(target_key) != str(item.get("resulting_state") or ""):
+        if not any(
+            result_proposition == proposition
+            or bool(result_evidence_ids.intersection(transfer_evidence_ids))
+            for result_proposition, result_evidence_ids in matching_results
+        ):
             raise ValueError("DEEP_ANALYSIS_KNOWLEDGE_TRANSFER_RESULT_MISSING")
+
+
+def _validated_entity_resolutions(
+    resolutions: list[EntityResolutionProposal],
+    *,
+    available_entities_by_name: dict[str, tuple[str, str]],
+    chapter_count: int,
+) -> list[EntityResolutionProposal]:
+    """Validate real merges and discard aliases already resolved upstream."""
+    resolved_names: set[str] = set()
+    accepted: list[EntityResolutionProposal] = []
+    for resolution in resolutions:
+        normalized_names = [
+            _normalized_name(name)
+            for name in resolution.merged_names
+        ]
+        entity_ids = {
+            available_entities_by_name.get(name, (None, None))[1]
+            for name in normalized_names
+        }
+        if (
+            len(set(normalized_names)) != len(normalized_names)
+            or _normalized_name(resolution.canonical_name) not in normalized_names
+            or any(name not in available_entities_by_name for name in normalized_names)
+            or any(
+                available_entities_by_name[name][0] != resolution.entity_type
+                for name in normalized_names
+            )
+            or None in entity_ids
+            or resolved_names.intersection(normalized_names)
+            or (
+                resolution.valid_from_chapter is not None
+                and resolution.valid_from_chapter > chapter_count
+            )
+            or (
+                resolution.valid_to_chapter is not None
+                and (
+                    resolution.valid_to_chapter > chapter_count
+                    or (
+                        resolution.valid_from_chapter is not None
+                        and resolution.valid_to_chapter
+                        < resolution.valid_from_chapter
+                    )
+                )
+            )
+        ):
+            raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")
+        if len(entity_ids) == 1:
+            # characters/related_entities already group canonical names and
+            # aliases under one stable ID. Repeating that known relationship
+            # is a harmless no-op, not a reason to discard the whole analysis.
+            continue
+        if len(entity_ids) != len(normalized_names):
+            raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")
+        resolved_names.update(normalized_names)
+        accepted.append(resolution)
+    return accepted
 
 
 def persist_deep_analysis(
@@ -3932,43 +4022,17 @@ def persist_deep_analysis(
     for item in foundation["related_entities"]:
         for name in [item["name"], *item.get("aliases", [])]:
             available_entities_by_name[_normalized_name(name)] = (item["entity_type"], item["id"])
-    resolved_names: set[str] = set()
-    for resolution in output.entity_resolutions:
-        normalized_names = [_normalized_name(name) for name in resolution.merged_names]
-        entity_ids = {
-            available_entities_by_name.get(name, (None, None))[1]
-            for name in normalized_names
-        }
-        if (
-            len(set(normalized_names)) != len(normalized_names)
-            or _normalized_name(resolution.canonical_name) not in normalized_names
-            or any(name not in available_entities_by_name for name in normalized_names)
-            or any(
-                available_entities_by_name[name][0] != resolution.entity_type
-                for name in normalized_names
-            )
-            or len(entity_ids) != len(normalized_names)
-            or None in entity_ids
-            or resolved_names.intersection(normalized_names)
-            or (
-                resolution.valid_from_chapter is not None
-                and resolution.valid_from_chapter > version.chapter_count
-            )
-            or (
-                resolution.valid_to_chapter is not None
-                and (
-                    resolution.valid_to_chapter > version.chapter_count
-                    or (
-                        resolution.valid_from_chapter is not None
-                        and resolution.valid_to_chapter < resolution.valid_from_chapter
-                    )
-                )
-            )
-        ):
-            raise ValueError("DEEP_ANALYSIS_ENTITY_RESOLUTION_INVALID")
-        resolved_names.update(normalized_names)
+    accepted_entity_resolutions = _validated_entity_resolutions(
+        output.entity_resolutions,
+        available_entities_by_name=available_entities_by_name,
+        chapter_count=version.chapter_count,
+    )
 
     payload = output.model_dump(mode="json")
+    payload["entity_resolutions"] = [
+        resolution.model_dump(mode="json")
+        for resolution in accepted_entity_resolutions
+    ]
     revision_scope = set(task_payload.get("revision_scope") or DEEP_ANALYSIS_COLLECTIONS)
     previous_payload: dict | None = None
     if task_payload.get("revision_requests"):
