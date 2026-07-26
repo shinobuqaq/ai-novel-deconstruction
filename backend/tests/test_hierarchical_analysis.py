@@ -164,6 +164,9 @@ def test_long_book_builds_source_linked_range_and_stage_digests(client) -> None:
     )
     assert final_input["hierarchical_digests"][0]["start_chapter"] == 1
     assert final_input["hierarchical_digests"][-1]["end_chapter"] == 12
+    assert len(final_input["hierarchical_digests"]) == len(stage_digests)
+    assert final_input["context"]["stage_digest_count"] == len(stage_digests)
+    assert final_input["context"]["stage_digest_complete"] is True
 
     diagnostics = client.get(f"/api/analysis-runs/{run['id']}/diagnostics").json()
     hierarchy_stage = next(

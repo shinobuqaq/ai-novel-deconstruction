@@ -53,7 +53,10 @@ ANALYSIS_STAGE = "ENTITIES_EVENTS"
 ANALYSIS_PROMPT_ID = "entities_events"
 ANALYSIS_PROMPT_VERSION = "1.3.0"
 NARRATIVE_PROMPT_ID = "narrative_synthesis"
-NARRATIVE_PROMPT_VERSION = "2.0.0"
+NARRATIVE_PROMPT_VERSION = "2.1.0"
+# 校验器要求 character_roles 覆盖的人物名册大小；上下文构建必须把同一份名册
+# 完整送进模型输入，否则覆盖校验对模型是不可满足的。
+REQUIRED_CHARACTER_ROSTER_SIZE = 100
 DEEP_PROMPT_ID = "deep_insights"
 DEEP_PROMPT_VERSION = "1.7.0"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
@@ -822,7 +825,8 @@ class NarrativeSynthesisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     story_overview: StoryOverviewProposal
-    character_roles: list[CharacterRoleProposal] = Field(max_length=100)
+    # 上限必须等于必答名册大小：小于名册会让覆盖校验按构造不可满足。
+    character_roles: list[CharacterRoleProposal] = Field(max_length=REQUIRED_CHARACTER_ROSTER_SIZE)
     character_relations: list[CharacterRelationProposal] = Field(max_length=200)
     narrative_phases: list[NarrativePhaseProposal] = Field(max_length=40)
     event_relations: list[EventRelationProposal] = Field(max_length=300)
@@ -837,7 +841,8 @@ class NarrativeOverviewOutput(BaseModel):
 class NarrativeCharactersOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    character_roles: list[CharacterRoleProposal] = Field(max_length=100)
+    # 上限必须等于必答名册大小，理由同 NarrativeSynthesisOutput。
+    character_roles: list[CharacterRoleProposal] = Field(max_length=REQUIRED_CHARACTER_ROSTER_SIZE)
 
 
 class NarrativePlotOutput(BaseModel):
@@ -1545,6 +1550,78 @@ def _build_chapter_digests(
     return digests
 
 
+def _required_character_entries(foundation: dict[str, Any]) -> list[dict[str, Any]]:
+    """校验与上下文共用的必答人物名册：排序键必须与覆盖校验保持一字不差。"""
+    return sorted(
+        foundation.get("characters", []),
+        key=lambda item: (
+            -int(item.get("appearance_count") or 0),
+            -int(item.get("confidence") or 0),
+            str(item.get("name") or ""),
+        ),
+    )[:REQUIRED_CHARACTER_ROSTER_SIZE]
+
+
+def _compact_roster_character(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": item.get("name"),
+        "aliases": list(item.get("aliases", []))[:6],
+        "appearance_count": item.get("appearance_count"),
+        "activity_level": item.get("activity_level"),
+        "first_chapter_ordinal": item.get("first_chapter_ordinal"),
+        "last_chapter_ordinal": item.get("last_chapter_ordinal"),
+        "description": _short_text(item.get("description"), 60),
+        "evidence_ids": list(item.get("evidence_ids", []))[:2],
+    }
+
+
+def _raise_for_character_roles_coverage(
+    foundation: dict[str, Any],
+    roles: list["CharacterRoleProposal"],
+    *,
+    valid_character_names: set[str],
+) -> None:
+    if any(
+        _normalized_name(item.name) not in valid_character_names
+        for item in roles
+    ):
+        raise ValueError("NARRATIVE_CHARACTER_REFERENCE_INVALID")
+    returned_role_names = {
+        _normalized_name(item.name)
+        for item in roles
+    }
+    if len(returned_role_names) != len(roles):
+        raise ValueError("NARRATIVE_CHARACTER_ROLES_DUPLICATED")
+    missing_required = [
+        item["name"]
+        for item in _required_character_entries(foundation)
+        if not {
+            _normalized_name(item["name"]),
+            *(_normalized_name(alias) for alias in item.get("aliases", [])),
+        }.intersection(returned_role_names)
+    ]
+    if missing_required:
+        raise ValueError("NARRATIVE_CHARACTER_ROLES_INCOMPLETE")
+
+
+def _raise_for_narrative_roster_context(
+    foundation: dict[str, Any],
+    context_manifest: dict[str, Any],
+) -> None:
+    """名册条目被预算裁剪时覆盖校验对模型不可满足，必须在线调用之前失败。
+
+    kind=="character" 的材料只来自必答名册，因此入选数量小于名册长度即说明
+    有条目落入 omitted；此时与其让模型烧完全部重试预算，不如立即失败并把
+    预算不足的原因暴露给调用方。
+    """
+    required_count = len(_required_character_entries(foundation))
+    selected_count = int(
+        (context_manifest.get("selected_by_kind") or {}).get("character", 0)
+    )
+    if selected_count < required_count:
+        raise ValueError("NARRATIVE_ROSTER_BUDGET_EXCEEDED")
+
+
 def _build_synthesis_context(
     *,
     foundation: dict[str, Any],
@@ -1580,7 +1657,9 @@ def _build_synthesis_context(
     extra_priorities = {
         "revision_requests": 12_000,
         "revision_impact": 12_000,
-        "hierarchical_digests": 11_500,
+        # 逐条注入后不能再排在章节摘要/事件之前：名册+全部阶段摘要会占满预算，
+        # 把可引用的事件清零。放在首见章事件之后、普通事件之前，宽裕时才部分入选。
+        "hierarchical_digests": 8_500,
         "story_overview": 4_500,
         "narrative_phases": 4_000,
         "character_roles": 3_500,
@@ -1591,6 +1670,23 @@ def _build_synthesis_context(
     for key, value in (extra_values or {}).items():
         if value is None:
             continue
+        if key == "hierarchical_digests" and isinstance(value, list):
+            # STAGE 摘要必须逐条成为独立材料：整包注入时在贪心选择器里
+            # 全有全无，预算紧张会把全部阶段弧线一次性挤出上下文。
+            for index, digest in enumerate(value):
+                digest_key = f"extra:{key}:{index:04d}"
+                start_chapter = (
+                    digest.get("start_chapter") if isinstance(digest, dict) else None
+                )
+                materials.append(ContextMaterial(
+                    key=digest_key,
+                    kind=f"extra:{key}",
+                    text=_material_json(f"extra:{key}", digest_key, digest),
+                    priority=extra_priorities.get(key, 2_000),
+                    reason="阶段级剧情弧线摘要",
+                    chapter_ordinal=int(start_chapter) if start_chapter else None,
+                ))
+            continue
         materials.append(ContextMaterial(
             key=f"extra:{key}",
             kind=f"extra:{key}",
@@ -1599,17 +1695,17 @@ def _build_synthesis_context(
             reason="任务必需的上游结果" if key in {"revision_requests", "story_overview"} else "上一阶段结果",
         ))
 
-    characters = list(foundation.get("characters", []))
-    for item in characters:
-        appearance = int(item.get("appearance_count") or 0)
-        confidence = int(item.get("confidence") or 0)
-        payload = _material_json("character", str(item.get("id") or item.get("name")), item)
+    # 只注入必答名册（与覆盖校验同一份、同排序），且必须排在摘要层之前：
+    # 名册缺席时覆盖校验对模型不可满足；名册之外的人物不进入合成上下文，
+    # 因为 characters 组件的输出上限恰等于名册大小，多余人物会诱导超限输出。
+    for item in _required_character_entries(foundation):
+        key = str(item.get("id") or item.get("name"))
         materials.append(ContextMaterial(
-            key=str(item.get("id") or item.get("name")),
+            key=key,
             kind="character",
-            text=payload,
-            priority=2_000 + appearance * 5 + confidence,
-            reason="人物身份和跨章连续性",
+            text=_material_json("character", key, _compact_roster_character(item)),
+            priority=11_800,
+            reason="覆盖校验的必答人物名册",
         ))
 
     related_entities = list(foundation.get("related_entities", []))
@@ -1692,6 +1788,8 @@ def _build_synthesis_context(
             selected_values["chapters"] = value
         elif item.kind == "chapter_digest":
             selected_values["chapter_digests"].append(value)
+        elif item.kind == "extra:hierarchical_digests":
+            selected_values.setdefault("hierarchical_digests", []).append(value)
         elif item.kind.startswith("extra:"):
             selected_values[item.key.removeprefix("extra:")] = value
         elif item.kind == "character":
@@ -1702,6 +1800,17 @@ def _build_synthesis_context(
             selected_values["related_entities"].append(value)
         elif item.kind == "evidence":
             selected_values["evidence"].append(value)
+    stage_digest_total = len((extra_values or {}).get("hierarchical_digests") or [])
+    if stage_digest_total:
+        # 即使一条都没入选，payload 形状也要稳定（空列表而不是键缺失）。
+        selected_values.setdefault("hierarchical_digests", [])
+    if isinstance(selected_values.get("hierarchical_digests"), list):
+        # 部分入选后仍按阶段顺序呈现，模型看到的是有序但可能有缺口的弧线。
+        selected_values["hierarchical_digests"].sort(
+            key=lambda digest: int(digest.get("sequence_no") or 0)
+            if isinstance(digest, dict)
+            else 0
+        )
     selected_values["context"] = {
         "selection_mode": "预算内相关材料选择",
         "budget_source": context_budget.source,
@@ -1719,6 +1828,9 @@ def _build_synthesis_context(
         "chapter_digest_complete": len(selected_values["chapter_digests"]) == len(chapter_digests),
         "chapter_catalog_complete": bool(selected_values["chapters"])
         and len(selected_values["chapters"]) == len(chapters),
+        "stage_digest_count": stage_digest_total,
+        "stage_digest_complete": len(selected_values.get("hierarchical_digests", []))
+        == stage_digest_total,
     }
     return selected_values, selection.manifest()
 
@@ -2262,6 +2374,11 @@ def provider_payload_for_narrative_synthesis(
         "revision_requests": selected.get("revision_requests", []),
     }
     component = str(task_payload.get("narrative_component") or "").strip()
+    # 覆盖校验只作用于 characters 组件与旧版整体合成；其他组件没有覆盖硬要求,
+    # 名册不完整时仍可运行（定向修订可能刻意只重做别的组件）。深层拆解走独立
+    # 构建器，同样不受此闸约束。
+    if component in {"", "characters"}:
+        _raise_for_narrative_roster_context(foundation, context_manifest)
     if component:
         output_model = NARRATIVE_COMPONENT_MODELS.get(component)
         if output_model is None:
@@ -3247,35 +3364,11 @@ def persist_narrative_synthesis(
         raise ValueError("NARRATIVE_EVIDENCE_REFERENCE_INVALID")
     if not _normalized_name(output.story_overview.protagonist) in valid_character_names:
         raise ValueError("NARRATIVE_PROTAGONIST_REFERENCE_INVALID")
-    if any(
-        not _normalized_name(item.name) in valid_character_names
-        for item in output.character_roles
-    ):
-        raise ValueError("NARRATIVE_CHARACTER_REFERENCE_INVALID")
-    required_characters = sorted(
-        foundation["characters"],
-        key=lambda item: (
-            -int(item.get("appearance_count") or 0),
-            -int(item.get("confidence") or 0),
-            item.get("name", ""),
-        ),
-    )[:100]
-    returned_role_names = {
-        _normalized_name(item.name)
-        for item in output.character_roles
-    }
-    if len(returned_role_names) != len(output.character_roles):
-        raise ValueError("NARRATIVE_CHARACTER_ROLES_DUPLICATED")
-    missing_required = [
-        item["name"]
-        for item in required_characters
-        if not {
-            _normalized_name(item["name"]),
-            *(_normalized_name(alias) for alias in item.get("aliases", [])),
-        }.intersection(returned_role_names)
-    ]
-    if missing_required:
-        raise ValueError("NARRATIVE_CHARACTER_ROLES_INCOMPLETE")
+    _raise_for_character_roles_coverage(
+        foundation,
+        output.character_roles,
+        valid_character_names=valid_character_names,
+    )
     if any(
         not _normalized_name(item.source_name) in valid_character_names
         or not _normalized_name(item.target_name) in valid_character_names
@@ -3369,6 +3462,21 @@ def persist_narrative_component(
         current_component: output.model_dump(mode="json")
     }
     _raise_for_narrative_internal_references(component_payloads[current_component])
+    if current_component == "characters":
+        # 覆盖校验必须在 characters 组件自己的落盘阶段执行：推迟到四组件组装时，
+        # 失败会落在最后完成的组件上无限重试，而缺角色的工件已冻结、永远修不好。
+        from .workbench import build_workbench_projection
+
+        foundation = build_workbench_projection(session, run.id, include_synthesis=False)
+        _raise_for_character_roles_coverage(
+            foundation,
+            output.character_roles,
+            valid_character_names={
+                _normalized_name(name)
+                for item in foundation["characters"]
+                for name in [item["name"], *item.get("aliases", [])]
+            },
+        )
     sibling_tasks = list(session.scalars(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
