@@ -348,6 +348,28 @@ def test_deep_scene_function_still_rejects_unknown_values() -> None:
         parse_deep_analysis(_minimal_deep_payload("MONTAGE"))
 
 
+def test_deep_conflict_accepts_person_against_group() -> None:
+    payload = _minimal_deep_payload("AFTERMATH")
+    payload["scene_analysis"] = []
+    payload["conflicts"] = [
+        {
+            "title": "血统听证会交锋",
+            "conflict_type": "PERSON_V_GROUP",
+            "participants": ["楚子航", "校董会"],
+            "goals": "楚子航试图保住学籍，校董会试图证明其血统危险。",
+            "obstacles": "校董会掌握了异常血样。",
+            "stakes": "楚子航是否会被学院制裁。",
+            "escalation": [],
+            "resolution": "",
+            "status": "ESCALATING",
+            "event_ids": [],
+            "evidence_ids": ["evidence-1"],
+        }
+    ]
+
+    assert parse_deep_analysis(payload).conflicts[0].conflict_type == "PERSON_V_GROUP"
+
+
 def test_deep_consistency_errors_are_explained_in_plain_chinese() -> None:
     assert "后文章节" in _deep_consistency_message("DEEP_ANALYSIS_FUTURE_EVIDENCE_LEAK")
     assert "互相矛盾的状态" in _deep_consistency_message("DEEP_ANALYSIS_STATE_REPLAY_CONFLICT")

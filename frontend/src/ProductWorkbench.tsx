@@ -177,6 +177,7 @@ const CONFLICT_TYPE_LABELS: Record<string, string> = {
   PERSON_V_PERSON: "人物之间",
   PERSON_V_SELF: "人物内心",
   PERSON_V_WORLD: "人物与环境或规则",
+  PERSON_V_GROUP: "人物与群体",
   GROUP_V_GROUP: "群体之间",
   OTHER: "其他冲突",
 };

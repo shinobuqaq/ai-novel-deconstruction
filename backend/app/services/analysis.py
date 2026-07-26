@@ -58,7 +58,7 @@ NARRATIVE_PROMPT_VERSION = "2.1.0"
 # 完整送进模型输入，否则覆盖校验对模型是不可满足的。
 REQUIRED_CHARACTER_ROSTER_SIZE = 100
 DEEP_PROMPT_ID = "deep_insights"
-DEEP_PROMPT_VERSION = "1.8.4"
+DEEP_PROMPT_VERSION = "1.8.5"
 HIERARCHICAL_DIGEST_PROMPT_ID = "hierarchical_digest"
 HIERARCHICAL_DIGEST_PROMPT_VERSION = "1.0.0"
 MAX_BATCH_CHARS = 18_000
@@ -966,7 +966,14 @@ class ConflictProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=180)
-    conflict_type: Literal["PERSON_V_PERSON", "PERSON_V_SELF", "PERSON_V_WORLD", "GROUP_V_GROUP", "OTHER"]
+    conflict_type: Literal[
+        "PERSON_V_PERSON",
+        "PERSON_V_SELF",
+        "PERSON_V_WORLD",
+        "PERSON_V_GROUP",
+        "GROUP_V_GROUP",
+        "OTHER",
+    ]
     participants: list[str] = Field(default_factory=list, max_length=12)
     goals: str = Field(default="", max_length=800)
     obstacles: str = Field(default="", max_length=800)
