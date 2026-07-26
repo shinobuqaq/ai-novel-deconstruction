@@ -661,8 +661,6 @@ async def execute_task(
             "prompt_tokens": response.prompt_tokens,
             "completion_tokens": response.completion_tokens,
         }
-        if isinstance(response.parameters.get("cost"), dict):
-            usage_payload["cost"] = response.parameters["cost"]
         artifact_payload = {
             "task_id": claim.id,
             "response": response.parsed,
@@ -810,8 +808,6 @@ def execute_task_sync(
                 "prompt_tokens": exc.prompt_tokens,
                 "completion_tokens": exc.completion_tokens,
             }
-            if isinstance(exc.diagnostics.get("cost"), dict):
-                failure_usage["cost"] = exc.diagnostics["cost"]
             failure_provider_name = (
                 exc.provider_name
                 or str((active_route or {}).get("service_id") or "")

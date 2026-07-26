@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AnalysisCallContent,
   AnalysisIssue,
-  AnalysisCostEstimate,
+  AnalysisUsageEstimate,
   AnalysisRun,
   AnalysisRunDiagnostics,
   api,
@@ -33,15 +33,6 @@ const STAGES = [
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-function formatCost(value: number, currency: string) {
-  return new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: value < 1 ? 6 : 2,
-  }).format(value);
 }
 
 function formatDuration(value: number) {
@@ -1192,7 +1183,7 @@ export default function ProductWorkbench() {
   const [analysisDiagnostics, setAnalysisDiagnostics] = useState<AnalysisRunDiagnostics | null>(null);
   const [analysisCallContents, setAnalysisCallContents] = useState<Record<string, AnalysisCallContent>>({});
   const [loadingCallContent, setLoadingCallContent] = useState("");
-  const [analysisEstimate, setAnalysisEstimate] = useState<AnalysisCostEstimate | null>(null);
+  const [analysisEstimate, setAnalysisEstimate] = useState<AnalysisUsageEstimate | null>(null);
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("overview");
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | null>(null);
@@ -1577,7 +1568,7 @@ export default function ProductWorkbench() {
 
   async function handleRetryNarrativeComponent(component: "overview" | "characters" | "plot" | "relations", label: string) {
     if (!analysisRun) return;
-    if (!window.confirm(`将只重新生成“${label}”，其他已经成功的版块不会重做。这个版块会发起新的在线 AI 请求；如果服务失败或输出不合格，系统可能按当前设置自动重试，因此可能产生少量费用。是否继续？`)) return;
+    if (!window.confirm(`将只重新生成“${label}”，其他已经成功的版块不会重做。这个版块会发起新的在线 AI 请求；如果服务失败或输出不合格，系统可能按当前设置自动重试，因此会增加令牌用量。是否继续？`)) return;
     try {
       setBusy(`retry-component-${component}`);
       setError("");
@@ -1967,18 +1958,9 @@ export default function ProductWorkbench() {
                               <strong>人物和事件分析尚未开始</strong>
                               <span>当前使用“{analysisProfile?.name}”，系统会按篇幅自动分批；中断后可以继续。</span>
                               {analysisEstimate && (
-                                <div className="analysis-cost-preview">
+                                <div className="analysis-usage-preview">
                                   <span>预计基础调用 {analysisEstimate.planned_call_count} 次；全部触发重试时最多 {analysisEstimate.retry_ceiling_call_count} 次。</span>
-                                  {analysisEstimate.pricing_available && analysisEstimate.cost_currency && analysisEstimate.maximum_cost_without_retries !== null ? (
-                                    <strong>
-                                      按最大输出计算：正常完成不超过 {formatCost(analysisEstimate.maximum_cost_without_retries, analysisEstimate.cost_currency)}；
-                                      {analysisEstimate.maximum_cost_with_retries !== null
-                                        ? `全部重试上限 ${formatCost(analysisEstimate.maximum_cost_with_retries, analysisEstimate.cost_currency)}`
-                                        : "切换备用服务后的总金额因各服务价格不同暂不估算"}
-                                    </strong>
-                                  ) : (
-                                    <strong>当前没有可靠模型单价，只估算调用量，不显示金额。</strong>
-                                  )}
+                                  <strong>预计输入令牌上限约 {formatNumber(analysisEstimate.estimated_input_tokens)}；最大输出令牌合计 {formatNumber(analysisEstimate.maximum_output_tokens)}。</strong>
                                   <small>{analysisEstimate.basis}</small>
                                 </div>
                               )}
@@ -2063,11 +2045,6 @@ export default function ProductWorkbench() {
                                 <span>累计模型等待 {formatDuration(analysisDiagnostics.duration_seconds)}</span>
                                 <span>输入令牌约 {formatNumber(analysisDiagnostics.prompt_tokens)}</span>
                                 <span>输出令牌约 {formatNumber(analysisDiagnostics.completion_tokens)}</span>
-                                {analysisDiagnostics.cost_complete && analysisDiagnostics.actual_cost !== null && analysisDiagnostics.cost_currency ? (
-                                  <span>实际费用 {formatCost(analysisDiagnostics.actual_cost, analysisDiagnostics.cost_currency)}</span>
-                                ) : analysisDiagnostics.prompt_tokens + analysisDiagnostics.completion_tokens > 0 ? (
-                                  <span>当时未设置完整单价</span>
-                                ) : null}
                               </div>
                             </header>
                             <div className="analysis-stage-list">

@@ -191,9 +191,6 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
         reasoning_effort="medium",
         timeout_seconds=90,
         max_retries=4,
-        input_price_per_million_tokens=2.0,
-        output_price_per_million_tokens=4.0,
-        price_currency="USD",
     )
     seen: list[httpx.Request] = []
 
@@ -234,25 +231,17 @@ def test_model_catalog_and_compatible_request_use_saved_profile(client) -> None:
     assert response.provider_id == service.id
     assert response.model == "quality-model"
     assert response.parameters["max_retries"] == 4
-    assert response.parameters["cost"] == {
-        "currency": "USD",
-        "input_price_per_million_tokens": 2.0,
-        "output_price_per_million_tokens": 4.0,
-        "prompt_tokens": 12,
-        "completion_tokens": 8,
-        "input_cost": 0.000024,
-        "output_cost": 0.000032,
-        "total_cost": 0.000056,
-    }
+    assert response.prompt_tokens == 12
+    assert response.completion_tokens == 8
     assert [request.url.path for request in seen] == ["/v1/models", "/v1/chat/completions"]
 
 
-def test_invalid_output_preserves_billed_usage_and_price_snapshot(client) -> None:
+def test_invalid_output_preserves_token_usage(client) -> None:
     settings = client.app.state.settings
     service = save_model_service(
         settings,
         service_id="openai-default",
-        name="计费失败测试",
+        name="令牌记录失败测试",
         service_type="OPENAI_COMPATIBLE",
         base_url="https://provider.example/v1",
         api_key="sk-test",
@@ -262,15 +251,12 @@ def test_invalid_output_preserves_billed_usage_and_price_snapshot(client) -> Non
         profile_id=ENTITIES_EVENTS_PROFILE_ID,
         name="人物与事件精确提取",
         service_id=service.id,
-        model="priced-model",
+        model="usage-model",
         temperature=None,
         max_output_tokens=4096,
         reasoning_effort="auto",
         timeout_seconds=30,
         max_retries=1,
-        input_price_per_million_tokens=3.0,
-        output_price_per_million_tokens=9.0,
-        price_currency="USD",
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -299,7 +285,6 @@ def test_invalid_output_preserves_billed_usage_and_price_snapshot(client) -> Non
     assert caught.value.code == "PROVIDER_INVALID_OUTPUT"
     assert caught.value.prompt_tokens == 100
     assert caught.value.completion_tokens == 20
-    assert caught.value.diagnostics["cost"]["total_cost"] == pytest.approx(0.00048)
 
 
 def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> None:
@@ -308,9 +293,6 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
     assert profile["temperature"] is None
     assert profile["reasoning_effort"] == "auto"
     assert profile["context_window_tokens"] is None
-    assert profile["input_price_per_million_tokens"] is None
-    assert profile["output_price_per_million_tokens"] is None
-    assert profile["price_currency"] == "USD"
 
     response = client.put(
         f"/api/settings/analysis-profiles/{profile['id']}",
@@ -331,29 +313,58 @@ def test_default_profile_uses_auto_parameters_and_accepts_one_token(client) -> N
     assert response.json()["context_window_tokens"] == 128000
 
 
-def test_analysis_profile_requires_complete_pricing_pair(client) -> None:
-    profile = client.get("/api/settings/models").json()["analysis_profiles"][0]
-
-    response = client.put(
-        f"/api/settings/analysis-profiles/{profile['id']}",
-        json={
-            "name": profile["name"],
-            "service_id": profile["service_id"],
-            "model": "priced-model",
-            "temperature": None,
-            "max_output_tokens": 16_000,
-            "reasoning_effort": "auto",
-            "timeout_seconds": 30,
-            "max_retries": 0,
-            "context_window_tokens": None,
-            "input_price_per_million_tokens": 2.5,
-            "output_price_per_million_tokens": None,
+def test_legacy_monetary_fields_are_ignored_and_removed_on_next_save(client) -> None:
+    settings = client.app.state.settings
+    profile = read_model_settings(settings).analysis_profiles[0]
+    save_analysis_profile(
+        settings,
+        profile_id=profile.id,
+        name=profile.name,
+        service_id=profile.service_id,
+        model=profile.model,
+        temperature=profile.temperature,
+        max_output_tokens=profile.max_output_tokens,
+        reasoning_effort=profile.reasoning_effort,
+        timeout_seconds=profile.timeout_seconds,
+        max_retries=profile.max_retries,
+    )
+    path = settings.workspace_dir / "secrets" / "model_settings.json"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored_profile = stored["analysis_profiles"][0]
+    stored_profile.update(
+        {
+            "input_price_per_million_tokens": 1.0,
+            "output_price_per_million_tokens": 2.0,
             "price_currency": "USD",
+        }
+    )
+    path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+
+    response = client.get("/api/settings/models")
+    assert response.status_code == 200
+    response_profile = response.json()["analysis_profiles"][0]
+    assert not {
+        "input_price_per_million_tokens",
+        "output_price_per_million_tokens",
+        "price_currency",
+    }.intersection(response_profile)
+
+    saved = client.put(
+        f"/api/settings/analysis-profiles/{profile.id}",
+        json={
+            **response_profile,
+            "input_price_per_million_tokens": 9.0,
+            "output_price_per_million_tokens": 9.0,
+            "price_currency": "CNY",
         },
     )
-
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "MODEL_PRICING_INCOMPLETE"
+    assert saved.status_code == 200
+    persisted_profile = json.loads(path.read_text(encoding="utf-8"))["analysis_profiles"][0]
+    assert not {
+        "input_price_per_million_tokens",
+        "output_price_per_million_tokens",
+        "price_currency",
+    }.intersection(persisted_profile)
 
 
 def test_analysis_profile_rejects_context_window_without_input_space(client) -> None:

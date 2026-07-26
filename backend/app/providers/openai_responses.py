@@ -12,7 +12,6 @@ from ..services.provider_config import (
     STRUCTURED_STRICT,
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
-    model_cost_snapshot,
     provider_http_headers,
     resolve_analysis_route,
     schema_for_provider,
@@ -224,14 +223,7 @@ class OpenAIResponsesProvider:
             parsed_json = parse_json_text(output_text)
             parsed = parsed_json.value
         except JsonTextParseError as exc:
-            cost = model_cost_snapshot(
-                profile,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-            )
             diagnostics = exc.diagnostics()
-            if cost is not None:
-                diagnostics["cost"] = cost
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
                 message="在线 AI 返回的 JSON 格式无法由程序安全修复，系统会自动重试。",
@@ -244,17 +236,10 @@ class OpenAIResponsesProvider:
                 raw_text=exc.raw_text,
             ) from exc
         except (ValueError, KeyError, StopIteration, TypeError) as exc:
-            cost = model_cost_snapshot(
-                profile,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-            )
             diagnostics: dict[str, object] = {
                 "phase": "response_envelope",
                 "classification": "missing_output_text",
             }
-            if cost is not None:
-                diagnostics["cost"] = cost
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
                 message="在线 AI 已响应，但响应中没有可识别的正文结果，系统会自动重试。",
@@ -265,11 +250,6 @@ class OpenAIResponsesProvider:
                 provider_name=service.id,
                 model=profile.model,
             ) from exc
-        cost = model_cost_snapshot(
-            profile,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
         return ProviderResponse(
             raw_text=output_text,
             parsed=parsed,
@@ -286,7 +266,6 @@ class OpenAIResponsesProvider:
                 "timeout_seconds": profile.timeout_seconds,
                 "max_retries": profile.max_retries,
                 "context_window_tokens": profile.context_window_tokens,
-                "cost": cost,
                 "json_repairs": list(parsed_json.repairs),
             },
         )

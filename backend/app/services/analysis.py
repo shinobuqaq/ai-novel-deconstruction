@@ -38,7 +38,6 @@ from .source_import import SourceImportError, source_text
 from .provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
     ModelSettingsError,
-    model_cost_snapshot,
     prepare_task_provider_routes,
     resolve_analysis_profile,
     snapshot_provider_routes,
@@ -1976,7 +1975,7 @@ def build_analysis_batches(text: str, units: list[SourceUnit]) -> list[AnalysisB
     return batches
 
 
-def estimate_analysis_cost(
+def estimate_analysis_usage(
     session: Session,
     settings: Settings,
     version: SourceVersion,
@@ -2027,20 +2026,6 @@ def estimate_analysis_cost(
         profile.max_retries + 1,
         len(provider_routes) * 3,
     )
-    normal_cost = model_cost_snapshot(
-        profile,
-        prompt_tokens=estimated_input_tokens,
-        completion_tokens=maximum_output_tokens,
-    )
-    retry_cost = (
-        model_cost_snapshot(
-            profile,
-            prompt_tokens=estimated_input_tokens * retry_multiplier,
-            completion_tokens=maximum_output_tokens * retry_multiplier,
-        )
-        if len(provider_routes) == 1
-        else None
-    )
     return {
         "source_version_id": version.id,
         "batch_count": len(batches),
@@ -2048,23 +2033,10 @@ def estimate_analysis_cost(
         "retry_ceiling_call_count": planned_call_count * retry_multiplier,
         "estimated_input_tokens": estimated_input_tokens,
         "maximum_output_tokens": maximum_output_tokens,
-        "maximum_cost_without_retries": (
-            normal_cost["total_cost"] if normal_cost is not None else None
-        ),
-        "maximum_cost_with_retries": (
-            retry_cost["total_cost"] if retry_cost is not None else None
-        ),
-        "cost_currency": profile.price_currency if normal_cost is not None else None,
-        "pricing_available": normal_cost is not None,
         "basis": (
             "按当前分批数量、必要的长篇范围与阶段整理、四个故事结构小任务、一次深层分析和最大输出设置"
-            "和字符数近似令牌数计算；"
-            + (
-                "备用服务价格可能不同，因此只显示主服务正常完成的金额，不猜测切换后的总金额；"
-                if len(provider_routes) > 1
-                else ""
-            )
-            + "这是避免低估的保守上限，不是预扣费或最终账单。"
+            "和字符数近似令牌数计算。这是用于判断调用规模和上下文压力的保守上限；"
+            "实际输入、输出令牌以模型服务返回的运行记录为准。"
         ),
     }
 

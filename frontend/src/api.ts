@@ -141,9 +141,6 @@ export type AnalysisProfile = {
   timeout_seconds: number;
   max_retries: number;
   context_window_tokens: number | null;
-  input_price_per_million_tokens: number | null;
-  output_price_per_million_tokens: number | null;
-  price_currency: "USD" | "CNY";
   failover_targets: Array<{ service_id: string; model: string }>;
 };
 
@@ -201,9 +198,6 @@ export type AnalysisStageDiagnostic = {
   completion_tokens: number;
   input_chars: number;
   output_chars: number;
-  actual_cost: number | null;
-  cost_currency: string | null;
-  cost_complete: boolean;
   selected_material_count: number;
   selected_material_chars: number;
   omitted_material_count: number;
@@ -260,23 +254,16 @@ export type AnalysisRunDiagnostics = {
   completion_tokens: number;
   input_chars: number;
   output_chars: number;
-  actual_cost: number | null;
-  cost_currency: string | null;
-  cost_complete: boolean;
   stages: AnalysisStageDiagnostic[];
 };
 
-export type AnalysisCostEstimate = {
+export type AnalysisUsageEstimate = {
   source_version_id: string;
   batch_count: number;
   planned_call_count: number;
   retry_ceiling_call_count: number;
   estimated_input_tokens: number;
   maximum_output_tokens: number;
-  maximum_cost_without_retries: number | null;
-  maximum_cost_with_retries: number | null;
-  cost_currency: string | null;
-  pricing_available: boolean;
   basis: string;
 };
 
@@ -796,7 +783,7 @@ export const api = {
       method: "POST",
     }),
   analysisEstimate: (versionId: string) =>
-    request<AnalysisCostEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
+    request<AnalysisUsageEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
   analysisDiagnostics: (runId: string) =>
     request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
   analysisCallContent: (runId: string, attemptId: string) =>
