@@ -362,6 +362,77 @@ def _apply_person_resolutions(
     return merged
 
 
+def _canonical_person_name_map(characters: list[dict]) -> dict[str, str]:
+    """Map only names and aliases that belong to exactly one projected person."""
+    owners: dict[str, set[str]] = {}
+    for character in characters:
+        canonical = str(character.get("name") or "").strip()
+        if not canonical:
+            continue
+        for name in [canonical, *character.get("aliases", [])]:
+            normalized = _normalize(str(name))
+            if normalized:
+                owners.setdefault(normalized, set()).add(canonical)
+    return {
+        normalized: next(iter(canonical_names))
+        for normalized, canonical_names in owners.items()
+        if len(canonical_names) == 1
+    }
+
+
+def _project_canonical_person_names(
+    characters: list[dict],
+    events: list[dict],
+    phases: list[dict],
+    story_overview: dict | None,
+    character_relations: list[dict],
+    deep_payload: dict | None,
+) -> None:
+    """Propagate the final person projection through every structured consumer."""
+    canonical_by_name = _canonical_person_name_map(characters)
+    if not canonical_by_name:
+        return
+
+    def canonical(name: object) -> object:
+        if not isinstance(name, str):
+            return name
+        return canonical_by_name.get(_normalize(name), name)
+
+    for event in events:
+        event["people"] = _unique([
+            str(canonical(name))
+            for name in event.get("people", [])
+        ])
+    for phase in phases:
+        phase["people"] = _unique([
+            str(canonical(name))
+            for name in phase.get("people", [])
+        ])
+    if story_overview is not None:
+        story_overview["protagonist"] = canonical(
+            story_overview.get("protagonist", "")
+        )
+    for relation in character_relations:
+        relation["source_name"] = canonical(relation.get("source_name", ""))
+        relation["target_name"] = canonical(relation.get("target_name", ""))
+    if deep_payload is None:
+        return
+    for fact in deep_payload.get("fact_versions", []):
+        fact["subject"] = canonical(fact.get("subject", ""))
+    for change in deep_payload.get("state_changes", []):
+        change["subject"] = canonical(change.get("subject", ""))
+    for knowledge in deep_payload.get("actor_knowledge", []):
+        knowledge["actor"] = canonical(knowledge.get("actor", ""))
+    for transfer in deep_payload.get("knowledge_transfers", []):
+        transfer["source_actor"] = canonical(transfer.get("source_actor", ""))
+        transfer["target_actor"] = canonical(transfer.get("target_actor", ""))
+    for conflict in deep_payload.get("conflicts", []):
+        conflict["participants"] = _unique([
+            str(canonical(name))
+            for name in conflict.get("participants", [])
+        ])
+
+
 def _event_candidate_groups(
     candidates: list[EventCandidate],
 ) -> list[tuple[tuple[str, str, str], list[EventCandidate]]]:
@@ -866,55 +937,14 @@ def build_workbench_projection(
         events,
         entity_resolutions,
     )
-    if story_overview is not None:
-        story_overview["protagonist"] = person_resolution_by_name.get(
-            _normalize(story_overview.get("protagonist", "")),
-            story_overview.get("protagonist", ""),
-        )
-    for phase in phases:
-        phase["people"] = _unique([
-            person_resolution_by_name.get(_normalize(name), name)
-            for name in phase.get("people", [])
-        ])
-    for relation in character_relations:
-        relation["source_name"] = person_resolution_by_name.get(
-            _normalize(relation.get("source_name", "")),
-            relation.get("source_name", ""),
-        )
-        relation["target_name"] = person_resolution_by_name.get(
-            _normalize(relation.get("target_name", "")),
-            relation.get("target_name", ""),
-        )
-    if deep_payload is not None and person_resolution_by_name:
-        for fact in deep_payload.get("fact_versions", []):
-            fact["subject"] = person_resolution_by_name.get(
-                _normalize(fact.get("subject", "")),
-                fact.get("subject", ""),
-            )
-        for change in deep_payload.get("state_changes", []):
-            change["subject"] = person_resolution_by_name.get(
-                _normalize(change.get("subject", "")),
-                change.get("subject", ""),
-            )
-        for knowledge in deep_payload.get("actor_knowledge", []):
-            knowledge["actor"] = person_resolution_by_name.get(
-                _normalize(knowledge.get("actor", "")),
-                knowledge.get("actor", ""),
-            )
-        for transfer in deep_payload.get("knowledge_transfers", []):
-            transfer["source_actor"] = person_resolution_by_name.get(
-                _normalize(transfer.get("source_actor", "")),
-                transfer.get("source_actor", ""),
-            )
-            transfer["target_actor"] = person_resolution_by_name.get(
-                _normalize(transfer.get("target_actor", "")),
-                transfer.get("target_actor", ""),
-            )
-        for conflict in deep_payload.get("conflicts", []):
-            conflict["participants"] = _unique([
-                person_resolution_by_name.get(_normalize(name), name)
-                for name in conflict.get("participants", [])
-            ])
+    _project_canonical_person_names(
+        characters,
+        events,
+        phases,
+        story_overview,
+        character_relations,
+        deep_payload,
+    )
 
     grouped_related: dict[tuple[str, str], list[EntityCandidate]] = {}
     for entity in related_entities:

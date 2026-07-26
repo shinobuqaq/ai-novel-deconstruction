@@ -7,8 +7,10 @@ from app.services.workbench import (
     _apply_person_resolutions,
     _annotate_fact_timeline,
     _canonical_person,
+    _canonical_person_name_map,
     _event_candidate_groups,
     _person_groups,
+    _project_canonical_person_names,
     _required_role_character_ids,
     _safe_person_group_names,
 )
@@ -192,6 +194,61 @@ def test_evidence_backed_person_resolution_is_projection_only_and_reversible() -
 
     unchanged = _apply_person_resolutions("run_identity", characters, events, [])
     assert len(unchanged) == 2
+
+
+def test_canonical_person_names_propagate_to_all_structured_consumers() -> None:
+    characters = [{
+        "id": "c1",
+        "name": "诺诺",
+        "aliases": ["陈墨瞳", "红发巫女"],
+    }]
+    events = [{"people": ["陈墨瞳", "诺诺"]}]
+    phases = [{"people": ["红发巫女", "陈墨瞳"]}]
+    overview = {"protagonist": "陈墨瞳"}
+    relations = [{"source_name": "陈墨瞳", "target_name": "诺诺"}]
+    deep = {
+        "fact_versions": [{"subject": "陈墨瞳"}],
+        "state_changes": [{"subject": "红发巫女"}],
+        "actor_knowledge": [{"actor": "陈墨瞳"}],
+        "knowledge_transfers": [{
+            "source_actor": "陈墨瞳",
+            "target_actor": "红发巫女",
+        }],
+        "conflicts": [{"participants": ["陈墨瞳", "诺诺"]}],
+    }
+
+    _project_canonical_person_names(
+        characters,
+        events,
+        phases,
+        overview,
+        relations,
+        deep,
+    )
+
+    assert events[0]["people"] == ["诺诺"]
+    assert phases[0]["people"] == ["诺诺"]
+    assert overview["protagonist"] == "诺诺"
+    assert relations[0] == {"source_name": "诺诺", "target_name": "诺诺"}
+    assert deep["fact_versions"][0]["subject"] == "诺诺"
+    assert deep["state_changes"][0]["subject"] == "诺诺"
+    assert deep["actor_knowledge"][0]["actor"] == "诺诺"
+    assert deep["knowledge_transfers"][0] == {
+        "source_actor": "诺诺",
+        "target_actor": "诺诺",
+    }
+    assert deep["conflicts"][0]["participants"] == ["诺诺"]
+
+
+def test_ambiguous_alias_is_not_silently_projected_to_either_person() -> None:
+    mapping = _canonical_person_name_map([
+        {"name": "张妍", "aliases": ["老师"]},
+        {"name": "王明", "aliases": ["老师"]},
+    ])
+
+    assert mapping["张妍"] == "张妍"
+    assert mapping["王明"] == "王明"
+    assert "老师" not in mapping
 
 
 def test_event_candidates_with_alternate_titles_need_shared_exact_evidence() -> None:
