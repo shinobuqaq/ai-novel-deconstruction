@@ -9,6 +9,7 @@ from app.services.workbench import (
     _canonical_person,
     _event_candidate_groups,
     _person_groups,
+    _safe_person_group_names,
 )
 
 
@@ -78,11 +79,37 @@ def test_direct_person_alias_is_grouped_without_generic_title_merges() -> None:
 def test_person_aliases_do_not_form_an_unreviewed_transitive_chain() -> None:
     groups = _person_groups([
         _person("甲", ["乙"]),
-        _person("乙", ["丙"]),
-        _person("丙", []),
+        _person("乙", ["甲", "丙"]),
+        _person("丙", ["乙"]),
     ])
 
     assert sorted(len(group) for group in groups) == [1, 2]
+
+
+def test_specific_people_need_reciprocal_aliases_before_automatic_merge() -> None:
+    route_mingfei = _person("路明非", ["明非", "路鸣泽"], 100)
+    route_mingze = _person("路鸣泽", ["鸣泽", "小魔鬼"], 100)
+
+    groups = _person_groups([route_mingfei, route_mingze])
+
+    assert sorted([item.name for item in group] for group in groups) == [
+        ["路明非"],
+        ["路鸣泽"],
+    ]
+    assert _safe_person_group_names(
+        [route_mingfei],
+        {"路明非", "路鸣泽"},
+    ) == ["路明非", "明非"]
+
+
+def test_reciprocal_specific_aliases_remain_safe_for_automatic_merge() -> None:
+    groups = _person_groups([
+        _person("诺诺", ["陈墨瞳"], 100),
+        _person("陈墨瞳", ["诺诺"], 100),
+    ])
+
+    assert len(groups) == 1
+    assert sorted(item.name for item in groups[0]) == ["诺诺", "陈墨瞳"]
 
 
 def test_evidence_backed_person_resolution_is_projection_only_and_reversible() -> None:

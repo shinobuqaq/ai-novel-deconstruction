@@ -129,9 +129,17 @@ def _person_groups(entities: list[EntityCandidate]) -> list[list[EntityCandidate
             right_name = _normalize(people[right].name)
             if not left_name or not right_name:
                 continue
+            left_names_right = right_name in aliases[left]
+            right_names_left = left_name in aliases[right]
             directly_linked = (
-                left_name in aliases[right]
-                or right_name in aliases[left]
+                left_names_right
+                and right_names_left
+            ) or (
+                (left_names_right or right_names_left)
+                and min(
+                    _specific_person_name(people[left].name),
+                    _specific_person_name(people[right].name),
+                ) <= 1
             )
             if not directly_linked:
                 continue
@@ -148,6 +156,30 @@ def _person_groups(entities: list[EntityCandidate]) -> list[list[EntityCandidate
     for index, person in enumerate(people):
         grouped.setdefault(find(index), []).append(person)
     return list(grouped.values())
+
+
+def _safe_person_group_names(
+    group: list[EntityCandidate],
+    all_canonical_names: set[str],
+) -> list[str]:
+    """Keep aliases unless they collide with another unmerged named person."""
+    group_canonical_names = {
+        _normalize(item.name)
+        for item in group
+        if _normalize(item.name)
+    }
+    return _unique([
+        name
+        for item in group
+        for name in [item.name, *_read_json(item.aliases_json)]
+        if (
+            (normalized := _normalize(name))
+            and (
+                normalized in group_canonical_names
+                or normalized not in all_canonical_names
+            )
+        )
+    ])
 
 
 def _canonical_person(group: list[EntityCandidate]) -> EntityCandidate:
@@ -489,6 +521,11 @@ def build_workbench_projection(
     }
 
     person_groups = _person_groups(entities)
+    canonical_person_names = {
+        _normalize(entity.name)
+        for entity in entities
+        if entity.entity_type == "PERSON" and _normalize(entity.name)
+    }
     person_names: set[str] = set()
     for group in person_groups:
         names = [
@@ -599,11 +636,7 @@ def build_workbench_projection(
     characters: list[dict] = []
     for group in sorted(person_groups, key=lambda items: _canonical_person(items).name):
         entity = _canonical_person(group)
-        group_names = _unique([
-            name
-            for item in group
-            for name in [item.name, *_read_json(item.aliases_json)]
-        ])
+        group_names = _safe_person_group_names(group, canonical_person_names)
         aliases = [name for name in group_names if _normalize(name) != _normalize(entity.name)]
         normalized_group_names = {_normalize(name) for name in group_names}
         evidence_ids = _unique([
