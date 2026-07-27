@@ -781,7 +781,7 @@ function FormalWorkbench({
                 <div>
                   <strong>{viewData.story_overview ? "故事发动机已有候选答案" : "故事发动机尚未生成"}</strong>
                   <strong>{viewData.deep_analysis ? "深层证据已经生成" : "伏笔、节奏等深层证据未生成"}</strong>
-                  <strong>两个最终结算出口尚未完整生成</strong>
+                  <strong>本书学习结算仍需专项分析</strong>
                 </div>
               </section>
 
@@ -869,24 +869,24 @@ function FormalWorkbench({
 
               <section className="learning-report-section learning-settlement">
                 <header>
-                  <div><span>单书最终结算</span><h3>拆完这本书，最后必须带走什么</h3></div>
-                  <p>这两个出口尚未由当前分析管线完整生成。现在只展示已有材料与真实缺口，不把半成品包装成完成。</p>
+                  <div><span>单书学习结算</span><h3>拆完这本书，哪些方法值得参考</h3></div>
+                  <p>这里总结的是对参考书的学习成果，不会直接生成你的新书设定，也不会直接交给写作 Agent。</p>
                 </header>
                 <div className="learning-settlement-grid">
                   <article>
-                    <header><span>6.4</span><i>尚未生成</i></header>
-                    <h4>倒推的最小开书包</h4>
-                    <p>目标是还原作者开书第一天桌上真正需要的最小材料，而不是再写一份剧情简介。</p>
+                    <header><span>6.4</span><i>只有推断原料</i></header>
+                    <h4>作者开书前可能锁定了什么</h4>
+                    <p>系统可以从成书倒推作者可能提前做出的关键决策，但这只是学习参考，不是你的新书最小开书包。</p>
                     <ul>
-                      <li>{viewData.story_overview ? "已有：故事前提与核心冲突候选" : "缺少：故事前提与核心冲突候选"}</li>
-                      <li>{protagonist ? "已有：主角目标、动机和能力原料" : "缺少：主角最小完整集原料"}</li>
-                      <li>缺少：品类预期、金手指五要素、开篇最小世界圈和首个连载单元</li>
+                      <li>{viewData.story_overview ? "可参考：故事前提与核心冲突候选" : "尚缺：故事前提与核心冲突候选"}</li>
+                      <li>{protagonist ? "可参考：主角目标、动机和能力原料" : "尚缺：主角设计原料"}</li>
+                      <li>尚未专项回答：品类预期、金手指规则、开篇准备边界和首个连载单元</li>
                     </ul>
                   </article>
                   <article>
                     <header><span>6.5 / 8.1</span><i>{patternCandidates.length ? "N=1 候选" : "尚未生成"}</i></header>
-                    <h4>可复制套路库</h4>
-                    <p>单书里发现的写法只能进入待验证候选；跨书验证后才能升级为品类规律。</p>
+                    <h4>可参考方法候选</h4>
+                    <p>单书里发现的写法只能作为参考候选；跨书验证后才能升级为品类规律，也不能因此照搬原作。</p>
                     {patternCandidates.length ? (
                       <div className="learning-pattern-list">
                         {patternCandidates.slice(0, 3).map((claim) => (
@@ -901,8 +901,8 @@ function FormalWorkbench({
                   </article>
                 </div>
                 <div className="learning-agent-gap">
-                  <strong>7.1 / 7.2 · 写作 Agent 交付契约尚未生成</strong>
-                  <span>后续每类方法论产出必须说明由哪个 Agent、在写作管线哪一步、以什么结构消费，并同时提供结构定义与填充实例。</span>
+                  <strong>边界：你的新书最小开书包不在这里自动生成</strong>
+                  <span>它需要你与 AI 在独立的新书共创流程中逐步讨论和确认。只有你主动选择的参考方法可以带入讨论，写作 Agent 最终读取的是你确认后的新书开书包。</span>
                 </div>
               </section>
             </div>
