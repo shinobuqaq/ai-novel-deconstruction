@@ -604,6 +604,56 @@ export type WorkbenchCharacterDesignEvidence = {
   };
 };
 
+export type WorkbenchChapterEndHook = {
+  chapter_ordinal: number;
+  chapter_title: string;
+  ending_evidence_id: string;
+  ending_evidence_ids: string[];
+  hook_type: "CRISIS_SUSPENSION" | "NEW_INFORMATION" | "PAYOFF_PRIMING" | "REVERSAL" | "EMOTIONAL_FREEZE" | "NONE";
+  strength: "STRONG" | "MEDIUM" | "LIGHT" | "NONE";
+  hook_question: string;
+  rationale: string;
+  retention_basis: string;
+  response_status: "RESOLVED" | "PARTIAL" | "UNRESOLVED" | "NOT_APPLICABLE";
+  response_evidence_id: string | null;
+  response_evidence_ids: string[];
+  response_summary: string;
+  response_chapter_ordinal: number | null;
+  response_distance: number | null;
+  phase_id: string | null;
+  phase_title: string | null;
+};
+
+export type WorkbenchChapterEndHooksEvidence = {
+  question_id: "4.9";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  chapters: WorkbenchChapterEndHook[];
+  summary: {
+    type_distribution: Array<{ hook_type: WorkbenchChapterEndHook["hook_type"]; count: number; ratio: number }>;
+    strength_distribution: Array<{ strength: WorkbenchChapterEndHook["strength"]; count: number; ratio: number }>;
+    type_transition_count: number;
+    max_consecutive_strong: number;
+    max_consecutive_same_type: number;
+    no_hook_count: number;
+    no_hook_ratio: number;
+    resolved_or_partial_count: number;
+    unresolved_count: number;
+    response_distance: { average: number | null; median: number | null; maximum: number | null };
+  };
+  coverage: {
+    source_chapter_count: number;
+    required_sample_count: number;
+    sampled_chapter_count: number;
+    sample_policy: "ALL_CHAPTERS" | "BALANCED_50";
+    sampled_chapter_ordinals: number[];
+    ending_evidence_complete: boolean;
+    response_reference_complete: boolean;
+    ignored_trailing_boilerplate_count: number;
+  };
+};
+
 export type WorkbenchLearningQuestion = {
   question_id: string;
   stage_id: number;
@@ -756,6 +806,9 @@ export type Workbench = {
   deep_revision: number | null;
   character_design_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   character_design_evidence: WorkbenchCharacterDesignEvidence | null;
+  chapter_end_hooks_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  chapter_end_hooks_evidence: WorkbenchChapterEndHooksEvidence | null;
+  chapter_end_hooks: WorkbenchChapterEndHook[];
   learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
@@ -958,6 +1011,8 @@ export const api = {
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
   startCharacterDesignEvidence: (runId: string, force = false) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/character-design/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startChapterEndHooks: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/chapter-end-hooks/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startLearningReport: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

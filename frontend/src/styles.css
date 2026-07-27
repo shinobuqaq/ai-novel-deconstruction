@@ -412,6 +412,29 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
 .desire-conflict-list dl div { display: grid; gap: 3px; }
 .desire-conflict-list dt { color: #728089; font-size: var(--font-size-readable-min); }
 .desire-conflict-list dd { margin: 0; color: #344b53; font-size: var(--font-size-readable-min); line-height: 1.55; }
+.chapter-end-hooks-ledger { padding-top: 4px; }
+.hook-type-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); border: 1px solid #dce4e7; }
+.hook-type-summary > div { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 7px; padding: 9px 11px; border-left: 1px solid #dce4e7; background: #fff; }
+.hook-type-summary > div:first-child { border-left: 0; }
+.hook-type-summary strong { color: #285963; font-size: 17px; }
+.hook-type-summary span, .hook-type-summary small { color: #6c7c84; font-size: var(--font-size-readable-min); }
+.chapter-hook-list { display: grid; gap: 8px; }
+.chapter-hook-list > article { display: grid; gap: 8px; min-width: 0; padding: 13px 15px; border: 1px solid #d8e1e4; border-left: 3px solid #4d8a78; background: #fff; }
+.chapter-hook-list > article.strong { border-left-color: #b14e45; }
+.chapter-hook-list > article.light, .chapter-hook-list > article.none { border-left-color: #9a8a68; background: #fffdf8; }
+.chapter-hook-list article > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.chapter-hook-list article > header > div { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+.chapter-hook-list article > header strong { overflow-wrap: anywhere; color: #304b53; }
+.chapter-hook-list article > header span, .chapter-hook-list article > header i { color: #718087; font-size: var(--font-size-readable-min); font-style: normal; }
+.chapter-hook-list article > header b { color: #277487; font-size: var(--font-size-readable-min); }
+.chapter-hook-list h4, .chapter-hook-list p, .chapter-hook-list small { margin: 0; overflow-wrap: anywhere; line-height: 1.55; }
+.chapter-hook-list h4 { color: #253d45; font-size: 15px; }
+.chapter-hook-list p, .chapter-hook-list small { color: #596a72; font-size: var(--font-size-readable-min); }
+.chapter-hook-response { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding-top: 8px; border-top: 1px solid #e2e8ea; }
+.chapter-hook-response strong { color: #315a63; font-size: var(--font-size-readable-min); }
+.chapter-hook-response span { color: #6a7980; font-size: var(--font-size-readable-min); }
+.chapter-hook-response p { grid-column: 1 / -1; }
+.chapter-hook-evidence-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .phase-overview-list, .formal-card-list { display: grid; gap: 10px; }
 .phase-card, .formal-card { display: grid; gap: 9px; padding: 15px; border: 1px solid #dce2e7; border-radius: 7px; background: #fff; }
 .phase-card header, .formal-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -991,6 +1014,12 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
   .character-design-coverage, .character-design-fields, .desire-conflict-list dl { grid-template-columns: 1fr; }
   .character-design-coverage > div { border-left: 0; border-top: 1px solid #dce4e7; }
   .character-design-coverage > div:first-child { border-top: 0; }
+  .hook-type-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hook-type-summary > div { border-left: 0; border-top: 1px solid #dce4e7; }
+  .hook-type-summary > div:first-child { border-top: 0; }
+  .chapter-hook-list article > header { flex-direction: column; }
+  .chapter-hook-response { grid-template-columns: 1fr; }
+  .chapter-hook-response p { grid-column: auto; }
   .learning-coverage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .learning-coverage > div:nth-child(4n) { border-right: 1px solid #d7e0e4; }
   .learning-coverage > div:nth-child(2n) { border-right: 0; }
@@ -1000,6 +1029,15 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
   .formal-workbench-content { max-height: none; border-right: 0; border-bottom: 1px solid #d8dee5; }
   .formal-workbench-body.reading-wide .formal-workbench-content { padding: 18px 16px 28px; }
   .formal-evidence-reader { min-height: 360px; }
+  .formal-evidence-reader.open {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
+  }
+  .formal-evidence-reader.open .evidence-text { max-height: none; }
   .revision-toolbar { grid-template-columns: 1fr; }
   .revision-toolbar label { margin-top: 3px; }
   .revision-toolbar select { width: 100%; }

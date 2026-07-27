@@ -815,6 +815,36 @@ class WorkbenchCharacterDesignEvidenceRead(BaseModel):
     coverage: dict[str, object]
 
 
+class WorkbenchChapterEndHookRead(BaseModel):
+    chapter_ordinal: int
+    chapter_title: str
+    ending_evidence_id: str
+    ending_evidence_ids: list[str]
+    hook_type: str
+    strength: str
+    hook_question: str = ""
+    rationale: str
+    retention_basis: str = ""
+    response_status: str
+    response_evidence_id: str | None = None
+    response_evidence_ids: list[str] = Field(default_factory=list)
+    response_summary: str = ""
+    response_chapter_ordinal: int | None = None
+    response_distance: int | None = None
+    phase_id: str | None = None
+    phase_title: str | None = None
+
+
+class WorkbenchChapterEndHooksEvidenceRead(BaseModel):
+    question_id: str
+    revision: int
+    generated_at: datetime
+    is_current: bool
+    chapters: list[WorkbenchChapterEndHookRead]
+    summary: dict[str, object]
+    coverage: dict[str, object]
+
+
 class WorkbenchRead(BaseModel):
     run_id: str
     source_version_id: str
@@ -838,6 +868,9 @@ class WorkbenchRead(BaseModel):
     deep_revision: int | None = None
     character_design_status: str = "NOT_GENERATED"
     character_design_evidence: WorkbenchCharacterDesignEvidenceRead | None = None
+    chapter_end_hooks_status: str = "NOT_GENERATED"
+    chapter_end_hooks_evidence: WorkbenchChapterEndHooksEvidenceRead | None = None
+    chapter_end_hooks: list[WorkbenchChapterEndHookRead] = Field(default_factory=list)
     learning_report_status: str = "NOT_GENERATED"
     learning_report: WorkbenchLearningReportRead
     chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)

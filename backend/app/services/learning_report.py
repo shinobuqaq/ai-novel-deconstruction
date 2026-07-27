@@ -813,23 +813,44 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         required_artifact="主角双层欲望与最小完整集证据表",
     )
 
+    chapter_end_hooks_evidence = projection.get("chapter_end_hooks_evidence") or {}
     chapter_end_hooks = projection.get("chapter_end_hooks") or []
     required_hook_sample = chapter_count if chapter_count <= 50 else 50
     valid_hook_samples = [
         item
         for item in chapter_end_hooks
-        if item.get("ending_evidence_ids") and item.get("hook_type")
+        if item.get("ending_evidence_ids")
+        and item.get("hook_type")
+        and item.get("strength")
+        and (
+            item.get("hook_type") == "NONE"
+            or item.get("response_status") in {"RESOLVED", "PARTIAL", "UNRESOLVED"}
+        )
+        and (
+            item.get("response_status") not in {"RESOLVED", "PARTIAL"}
+            or (
+                item.get("response_evidence_ids")
+                and item.get("response_chapter_ordinal")
+                and item.get("response_distance") is not None
+            )
+        )
     ]
     hook_gaps: list[str] = []
+    if chapter_end_hooks_evidence and chapter_end_hooks_evidence.get("is_current") is False:
+        hook_gaps.append("章末钩账本对应旧版拆解或旧版正文，需要重新生成。")
     if len(valid_hook_samples) < required_hook_sample:
         hook_gaps.append(
             f"需要 {required_hook_sample} 章真实章末证据与分类，当前只有 {len(valid_hook_samples)} 章。"
         )
-    if valid_hook_samples and any(
-        item.get("hook_type") != "NONE" and not item.get("response_status")
-        for item in valid_hook_samples
-    ):
-        hook_gaps.append("已有章末样本缺少后续回应状态，无法计算赊账距离。")
+    coverage = (
+        chapter_end_hooks_evidence.get("coverage", {})
+        if isinstance(chapter_end_hooks_evidence, dict)
+        else {}
+    )
+    if chapter_end_hooks and coverage.get("ending_evidence_complete") is not True:
+        hook_gaps.append("章末钩账本没有通过程序的逐章结尾证据覆盖检查。")
+    if chapter_end_hooks and coverage.get("response_reference_complete") is not True:
+        hook_gaps.append("章末钩账本存在未核准的回应章节或回应原文。")
     checks["4.9"] = _readiness_check(
         "4.9",
         ready=not hook_gaps,
@@ -837,6 +858,14 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "chapter_count": chapter_count,
             "required_sample_count": required_hook_sample,
             "valid_chapter_end_sample_count": len(valid_hook_samples),
+            "sample_policy": coverage.get("sample_policy"),
+            "resolved_or_partial_count": (
+                chapter_end_hooks_evidence.get("summary", {}).get(
+                    "resolved_or_partial_count", 0
+                )
+                if isinstance(chapter_end_hooks_evidence, dict)
+                else 0
+            ),
             "generic_scene_analysis_count": len(deep.get("scene_analysis", [])),
         },
         gaps=hook_gaps,

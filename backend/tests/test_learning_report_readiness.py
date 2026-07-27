@@ -69,10 +69,21 @@ def _projection(*, complete_specialized_ledgers: bool) -> dict:
                 {
                     "chapter_ordinal": ordinal,
                     "hook_type": "NONE",
+                    "strength": "NONE",
+                    "response_status": "NOT_APPLICABLE",
                     "ending_evidence_ids": [f"evd_end_{ordinal}"],
                 }
                 for ordinal in range(1, 51)
             ],
+            "chapter_end_hooks_evidence": {
+                "is_current": True,
+                "coverage": {
+                    "sample_policy": "BALANCED_50",
+                    "ending_evidence_complete": True,
+                    "response_reference_complete": True,
+                },
+                "summary": {"resolved_or_partial_count": 0},
+            },
             "foreshadowing_ledger": {
                 "covered_chapter_count": 60,
                 "lifecycles": [],

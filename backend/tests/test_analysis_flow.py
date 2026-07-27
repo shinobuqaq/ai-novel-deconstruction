@@ -308,6 +308,30 @@ class StaticAnalysisProvider:
                 }],
                 "arc_summary": "林舟由被动回到旧宅，转为主动追查密信来源；短篇样本只能证明这一阶段变化。",
             }
+        elif task_kind == "analysis.chapter_end_hooks":
+            hook_input = json.loads(payload["input"])
+            response = next(
+                item
+                for item in hook_input["response_evidence_catalog"]
+                if item["chapter_ordinal"] == 2
+            )
+            output = {
+                "chapters": [
+                    {
+                        "chapter_ordinal": ending["chapter_ordinal"],
+                        "ending_evidence_id": ending["ending_evidence_id"],
+                        "hook_type": "NEW_INFORMATION" if ending["chapter_ordinal"] == 1 else "NONE",
+                        "strength": "STRONG" if ending["chapter_ordinal"] == 1 else "NONE",
+                        "hook_question": "寄信人是谁？" if ending["chapter_ordinal"] == 1 else "",
+                        "rationale": "密信在章末抛出新的身份问题。" if ending["chapter_ordinal"] == 1 else "主角作出决定后完整收束。",
+                        "retention_basis": "" if ending["chapter_ordinal"] == 1 else "依靠已经建立的追查主线维持阅读。",
+                        "response_status": "RESOLVED" if ending["chapter_ordinal"] == 1 else "NOT_APPLICABLE",
+                        "response_evidence_id": response["id"] if ending["chapter_ordinal"] == 1 else None,
+                        "response_summary": "下一章主角决定寻找寄信人。" if ending["chapter_ordinal"] == 1 else "",
+                    }
+                    for ending in hook_input["chapter_endings"]
+                ]
+            }
         else:
             assert task_kind == "analysis.learning_report"
             report_input = json.loads(payload["input"])
@@ -1000,6 +1024,47 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert already_current.status_code == 409
     assert already_current.json()["detail"]["code"] == "CHARACTER_DESIGN_ALREADY_CURRENT"
 
+    hooks_start = client.post(
+        f"/api/analysis-runs/{run['id']}/chapter-end-hooks/start"
+    )
+    assert hooks_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        hooks_claim = claim_next_task(
+            session,
+            worker_id="chapter-end-hooks-test-worker",
+            lease_seconds=60,
+        )
+    assert hooks_claim is not None
+    assert hooks_claim.kind == "analysis.chapter_end_hooks"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        hooks_claim,
+        registry,
+    )
+    hooks_projection = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert hooks_projection["chapter_end_hooks_status"] == "READY"
+    assert hooks_projection["chapter_end_hooks_evidence"]["revision"] == 1
+    assert hooks_projection["chapter_end_hooks_evidence"]["is_current"] is True
+    assert hooks_projection["chapter_end_hooks_evidence"]["coverage"]["sampled_chapter_count"] == 2
+    assert len(hooks_projection["chapter_end_hooks"]) == 2
+    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 3
+    hooks_diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    ).json()
+    hooks_stage = next(
+        item for item in hooks_diagnostics["stages"]
+        if item["key"] == "analysis.chapter_end_hooks"
+    )
+    assert hooks_stage["status"] == "SUCCEEDED"
+    hooks_already_current = client.post(
+        f"/api/analysis-runs/{run['id']}/chapter-end-hooks/start"
+    )
+    assert hooks_already_current.status_code == 409
+    assert hooks_already_current.json()["detail"]["code"] == "CHAPTER_END_HOOKS_ALREADY_CURRENT"
+
     with client.app.state.session_factory() as session:
         learning_task_count_before_character_revision = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
@@ -1008,7 +1073,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/analysis-runs/{run['id']}/learning-report/start"
     )
     assert blocked_learning_after_character.status_code == 409
-    assert blocked_learning_after_character.json()["detail"]["readiness"]["ready_question_count"] == 2
+    assert blocked_learning_after_character.json()["detail"]["readiness"]["ready_question_count"] == 3
     with client.app.state.session_factory() as session:
         assert session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
@@ -1080,6 +1145,8 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert latest_revision.json()["deep_revision"] == 2
     assert latest_revision.json()["character_design_status"] == "OUTDATED"
     assert latest_revision.json()["character_design_evidence"]["is_current"] is False
+    assert latest_revision.json()["chapter_end_hooks_status"] == "OUTDATED"
+    assert latest_revision.json()["chapter_end_hooks_evidence"]["is_current"] is False
     assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 1
     assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
     latest_unaffected_fact = next(

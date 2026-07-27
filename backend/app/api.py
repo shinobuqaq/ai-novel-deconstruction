@@ -122,6 +122,10 @@ from .services.character_design import (
     CHARACTER_DESIGN_TASK_KIND,
     enqueue_character_design_evidence,
 )
+from .services.chapter_end_hooks import (
+    CHAPTER_END_HOOKS_TASK_KIND,
+    enqueue_chapter_end_hooks,
+)
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
@@ -368,6 +372,7 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.narrative_synthesis", "故事结构整理"),
     ("analysis.deep_insights", "事实与核心分析"),
     (CHARACTER_DESIGN_TASK_KIND, "主角双层欲望与最小完整集证据"),
+    (CHAPTER_END_HOOKS_TASK_KIND, "逐章章末钩与回应账本"),
     (LEARNING_REPORT_TASK_KIND, "创作学习报告"),
 )
 
@@ -417,6 +422,7 @@ def _analysis_run_diagnostics(
         if kind in {
             "analysis.hierarchical_digest",
             CHARACTER_DESIGN_TASK_KIND,
+            CHAPTER_END_HOOKS_TASK_KIND,
             LEARNING_REPORT_TASK_KIND,
         } and not stage_tasks:
             continue
@@ -439,6 +445,7 @@ def _analysis_run_diagnostics(
             kind in {
                 "analysis.deep_insights",
                 CHARACTER_DESIGN_TASK_KIND,
+                CHAPTER_END_HOOKS_TASK_KIND,
                 LEARNING_REPORT_TASK_KIND,
             }
             and any(task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks)
@@ -1724,6 +1731,68 @@ def character_design_start(
             detail={
                 "code": "CHARACTER_DESIGN_SOURCE_NOT_READY",
                 "message": "主角、故事结构或深层拆解尚未就绪，暂时不能生成 2.2 证据表。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/chapter-end-hooks/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def chapter_end_hooks_start(
+    run_id: str,
+    request: Request,
+    force: bool = False,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    active_deep = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == "analysis.deep_insights",
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+    )
+    if active_deep is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEEP_ANALYSIS_RUNNING",
+                "message": "事实状态和核心拆解仍在生成，请完成后再分析逐章章末钩。",
+            },
+        )
+    task = enqueue_chapter_end_hooks(
+        session,
+        request.app.state.settings,
+        run,
+        force=force,
+    )
+    if task is None:
+        projection = build_workbench_projection(session, run_id)
+        if projection.get("chapter_end_hooks_status") == "READY":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CHAPTER_END_HOOKS_ALREADY_CURRENT",
+                    "message": "当前章末钩账本已经基于最新正文和拆解生成；需要重做时请明确使用重新分析。",
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CHAPTER_END_HOOKS_SOURCE_NOT_READY",
+                "message": "真实章节、故事结构或深层拆解尚未就绪，暂时不能生成 4.9 逐章账本。",
             },
         )
     return _analysis_run_read(session, run)

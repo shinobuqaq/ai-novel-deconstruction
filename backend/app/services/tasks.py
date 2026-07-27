@@ -60,6 +60,13 @@ from .character_design import (
     persist_character_design_evidence,
     provider_payload_for_character_design,
 )
+from .chapter_end_hooks import (
+    CHAPTER_END_HOOKS_TASK_KIND,
+    ChapterEndHooksValidationError,
+    parse_chapter_end_hooks,
+    persist_chapter_end_hooks,
+    provider_payload_for_chapter_end_hooks,
+)
 
 
 ANALYSIS_TASK_KINDS = {
@@ -68,6 +75,7 @@ ANALYSIS_TASK_KINDS = {
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
     CHARACTER_DESIGN_TASK_KIND,
+    CHAPTER_END_HOOKS_TASK_KIND,
     LEARNING_REPORT_TASK_KIND,
 }
 
@@ -424,6 +432,26 @@ async def execute_task(
                 message=message,
                 retryable=False,
             ) from exc
+    elif claim.kind == CHAPTER_END_HOOKS_TASK_KIND:
+        try:
+            with session_factory() as session:
+                provider_payload = provider_payload_for_chapter_end_hooks(
+                    session, settings, payload
+                )
+        except ValueError as exc:
+            reason_code = str(exc)
+            message = (
+                "逐章章末原文和回应候选超过当前模型可安全读取的范围，需要调整专项取样。"
+                if reason_code.startswith("CHAPTER_END_HOOKS_CONTEXT_TOO_LARGE")
+                else "正文、故事结构或深层拆解已经更新，请基于最新结果重新生成章末钩账本。"
+                if reason_code == "CHAPTER_END_HOOKS_SOURCE_OUTDATED"
+                else "真实章节、章末原文或深层拆解尚未就绪，暂时不能生成 4.9 账本。"
+            )
+            raise ProviderError(
+                code=reason_code.split(":", 1)[0],
+                message=message,
+                retryable=False,
+            ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_learning_report(
@@ -482,6 +510,7 @@ async def execute_task(
     persisted_narrative = None
     persisted_deep = None
     persisted_character_design = None
+    persisted_chapter_end_hooks = None
     persisted_learning_report = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
@@ -748,6 +777,70 @@ async def execute_task(
                     model=response.model,
                     raw_text=response.raw_text,
                 ) from exc
+    elif claim.kind == CHAPTER_END_HOOKS_TASK_KIND:
+        try:
+            chapter_end_hooks_output = parse_chapter_end_hooks(response.parsed)
+        except ChapterEndHooksValidationError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message("逐章章末钩与回应账本", exc.errors),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+                raw_text=response.raw_text,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_chapter_end_hooks = persist_chapter_end_hooks(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=chapter_end_hooks_output,
+                    valid_response_evidence_ids={
+                        str(item.get("id"))
+                        for item in json.loads(
+                            str(provider_payload.get("input") or "{}")
+                        ).get("response_evidence_catalog", [])
+                        if item.get("id")
+                    },
+                )
+            except ValueError as exc:
+                reason_code = str(exc)
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message=(
+                        "章末钩账本漏章，或引用的章末/回应原文与实际章节对应不上，请重新生成。"
+                        if reason_code != "CHAPTER_END_HOOKS_SOURCE_OUTDATED"
+                        else "生成期间正文或拆解结果已经更新，请基于最新结果重新生成。"
+                    ),
+                    retryable=reason_code != "CHAPTER_END_HOOKS_SOURCE_OUTDATED",
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=reason_code,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         try:
             learning_output = parse_learning_report(response.parsed)
@@ -831,6 +924,8 @@ async def execute_task(
             if claim.kind == DEEP_ANALYSIS_TASK_KIND
             else "analysis.character_design_evidence.result"
             if claim.kind == CHARACTER_DESIGN_TASK_KIND
+            else "analysis.chapter_end_hooks.result"
+            if claim.kind == CHAPTER_END_HOOKS_TASK_KIND
             else "analysis.learning_report.result"
             if claim.kind == LEARNING_REPORT_TASK_KIND
             else "fake.echo.result"
@@ -891,6 +986,11 @@ async def execute_task(
             artifact_payload["accepted"] = {
                 "learning_question_evidence_id": persisted_character_design.id,
                 "question_id": persisted_character_design.question_id,
+            }
+        if persisted_chapter_end_hooks is not None:
+            artifact_payload["accepted"] = {
+                "learning_question_evidence_id": persisted_chapter_end_hooks.id,
+                "question_id": persisted_chapter_end_hooks.question_id,
             }
         if persisted_learning_report is not None:
             artifact_payload["accepted"] = {

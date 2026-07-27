@@ -80,6 +80,7 @@ class OpenAIResponsesProvider:
                 "analysis.narrative_synthesis",
                 "analysis.deep_insights",
                 "analysis.character_design_evidence",
+                "analysis.chapter_end_hooks",
                 "analysis.learning_report",
             }
         ):
