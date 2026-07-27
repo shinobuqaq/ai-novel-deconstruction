@@ -1953,6 +1953,7 @@ export default function ProductWorkbench() {
           <h1>{activeProject?.name ?? "我的小说项目"}</h1>
         </div>
         <div className="topbar-actions">
+          <a className="button-link secondary-button" href="/new-book">新书共创</a>
           <a className="button-link secondary-button" href="/settings"><span aria-hidden="true">⚙</span> 设置</a>
           <div className={`api-status ${health}`}>
             <span className="status-dot" />
