@@ -147,8 +147,7 @@ class StaticAnalysisProvider:
             }
             if component:
                 output = {key: output[key] for key in component_fields[component]}
-        else:
-            assert task_kind == "analysis.deep_insights"
+        elif task_kind == "analysis.deep_insights":
             foundation = json.loads(payload["input"])
             character = foundation["characters"][0]
             event = foundation["events"][0]
@@ -269,6 +268,60 @@ class StaticAnalysisProvider:
                     }
                 ],
                 "entity_resolutions": [],
+            }
+        else:
+            assert task_kind == "analysis.learning_report"
+            report_input = json.loads(payload["input"])
+            evidence_id = next(
+                evidence["id"]
+                for material in report_input["materials"]
+                for evidence in material["evidence"]
+            )
+            answers = []
+            for question in report_input["question_catalog"]:
+                question_id = question["question_id"]
+                insufficient = question_id == "4.9"
+                answers.append({
+                    "question_id": question_id,
+                    "status": "INSUFFICIENT_EVIDENCE" if insufficient else "PARTIAL",
+                    "conclusion": (
+                        "现有材料没有逐章章末结尾证据，不能把阶段悬念当成章末钩统计。"
+                        if insufficient
+                        else f"样本只足以部分回答北极星问题 {question_id}。"
+                    ),
+                    "metrics": [] if insufficient else [{
+                        "label": "当前可核查发现",
+                        "value": "1",
+                        "unit": "项",
+                        "method": "按当前输入中带原文依据的结构项计数。",
+                        "evidence_ids": [evidence_id],
+                    }],
+                    "evidence_ids": [] if insufficient else [evidence_id],
+                    "counter_evidence_ids": [],
+                    "limitations": ["当前测试小说篇幅很短，不能外推长篇规律。"],
+                    "reusable_lessons": [] if insufficient else ["先确认结构机制，再考虑是否适合自己的新书。"],
+                    "do_not_copy": ["不能照搬原作人物、密信设定或具体表达。"],
+                })
+            output = {
+                "answers": answers,
+                "author_decisions": [{
+                    "title": "可能提前确定密信作为开篇发动机",
+                    "likely_timing": "BEFORE_WRITING",
+                    "inference": "密信同时改变主角目标并留下后续问题，可能是开篇前置决定。",
+                    "evidence_ids": [evidence_id],
+                    "limitations": ["只能从成书倒推，不能证明作者真实创作顺序。"],
+                    "confidence": 72,
+                }],
+                "method_candidates": [{
+                    "title": "用具体物件同时触发目标与悬念",
+                    "mechanism": "让一个可见物件既改变主角行动方向，又提出需要追查的问题。",
+                    "observed_result": "本书开篇中的密信促使主角从被动归来转为主动追查。",
+                    "applicability": ["开篇需要快速建立行动目标"],
+                    "risks": ["物件来源长期不解释会消耗信任"],
+                    "evidence_ids": [evidence_id],
+                    "do_not_copy": "参考目标与悬念合并的机制，不复制密信、人物和场景。",
+                    "verification_scope": "SINGLE_BOOK_PENDING",
+                }],
             }
         return ProviderResponse(
             raw_text=json.dumps(output, ensure_ascii=False),
@@ -926,6 +979,44 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     )
     assert missing_revision.status_code == 404
     assert missing_revision.json()["detail"]["code"] == "DEEP_ANALYSIS_REVISION_NOT_FOUND"
+
+    initial_learning = latest_revision.json()["learning_report"]
+    assert latest_revision.json()["learning_report_status"] == "NOT_GENERATED"
+    assert len(initial_learning["questions"]) == 42
+    assert all(item["status"] == "NOT_GENERATED" for item in initial_learning["questions"])
+    learning_start = client.post(
+        f"/api/analysis-runs/{run['id']}/learning-report/start"
+    )
+    assert learning_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        learning_claim = claim_next_task(
+            session,
+            worker_id="learning-report-test-worker",
+            lease_seconds=60,
+        )
+    assert learning_claim is not None
+    assert learning_claim.kind == "analysis.learning_report"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        learning_claim,
+        registry,
+    )
+    learning_workbench = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert learning_workbench["learning_report_status"] == "READY"
+    learning_report = learning_workbench["learning_report"]
+    assert learning_report["batch_label"] == "核心起步批次（7/42）"
+    assert len(learning_report["questions"]) == 42
+    assert sum(item["status"] != "NOT_GENERATED" for item in learning_report["questions"]) == 7
+    assert sum(item["status"] == "NOT_GENERATED" for item in learning_report["questions"]) == 35
+    hook_answer = next(
+        item for item in learning_report["questions"] if item["question_id"] == "4.9"
+    )
+    assert hook_answer["status"] == "INSUFFICIENT_EVIDENCE"
+    assert len(learning_report["author_decisions"]) == 1
+    assert learning_report["method_candidates"][0]["verification_scope"] == "SINGLE_BOOK_PENDING"
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

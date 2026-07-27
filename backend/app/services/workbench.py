@@ -22,6 +22,7 @@ from ..models import (
     TaskStatus,
 )
 from .analysis import REQUIRED_CHARACTER_ROSTER_SIZE, narrative_phase_id
+from .learning_report import build_learning_report_projection
 
 
 def _hash(value: str) -> str:
@@ -1244,6 +1245,12 @@ def build_workbench_projection(
     ):
         narrative_status = "INCOMPLETE"
 
+    learning_report_status, learning_report = build_learning_report_projection(
+        session,
+        run_id,
+        latest_deep_revision=deep_revision,
+    )
+
     return {
         "run_id": run_id,
         "source_version_id": run.source_version_id,
@@ -1273,6 +1280,8 @@ def build_workbench_projection(
         "deep_status": deep_status,
         "deep_analysis": deep_payload,
         "deep_revision": deep_revision,
+        "learning_report_status": learning_report_status,
+        "learning_report": learning_report,
         "chapters": [
             {"ordinal": chapter.ordinal, "title": chapter.title}
             for chapter in chapters

@@ -684,6 +684,75 @@ class WorkbenchDeepAnalysisRead(BaseModel):
     claims: list[WorkbenchClaimRead] = Field(default_factory=list)
 
 
+class WorkbenchLearningMetricRead(BaseModel):
+    label: str
+    value: str
+    unit: str = ""
+    method: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class WorkbenchLearningQuestionRead(BaseModel):
+    question_id: str
+    stage_id: int
+    stage_name: str
+    question: str
+    priority: str
+    analysis_requirement: str
+    evidence_view: str
+    recommended_rank: int | None = None
+    status: str
+    conclusion: str = ""
+    metrics: list[WorkbenchLearningMetricRead] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    counter_evidence_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    reusable_lessons: list[str] = Field(default_factory=list)
+    do_not_copy: list[str] = Field(default_factory=list)
+
+
+class WorkbenchLearningStageRead(BaseModel):
+    stage_id: int
+    stage_name: str
+    total_count: int
+    generated_count: int
+    answered_count: int
+    insufficient_count: int
+
+
+class WorkbenchAuthorDecisionRead(BaseModel):
+    title: str
+    likely_timing: str
+    inference: str
+    evidence_ids: list[str]
+    limitations: list[str]
+    confidence: int
+
+
+class WorkbenchMethodCandidateRead(BaseModel):
+    title: str
+    mechanism: str
+    observed_result: str
+    applicability: list[str]
+    risks: list[str]
+    evidence_ids: list[str]
+    do_not_copy: str
+    verification_scope: str
+
+
+class WorkbenchLearningReportRead(BaseModel):
+    catalog_version: str
+    batch_label: str
+    revision: int | None = None
+    source_deep_revision: int | None = None
+    generated_at: datetime | None = None
+    recommended_question_ids: list[str]
+    questions: list[WorkbenchLearningQuestionRead]
+    stages: list[WorkbenchLearningStageRead]
+    author_decisions: list[WorkbenchAuthorDecisionRead] = Field(default_factory=list)
+    method_candidates: list[WorkbenchMethodCandidateRead] = Field(default_factory=list)
+
+
 class WorkbenchChapterRefRead(BaseModel):
     ordinal: int
     title: str
@@ -710,6 +779,8 @@ class WorkbenchRead(BaseModel):
     deep_status: str = "NOT_GENERATED"
     deep_analysis: WorkbenchDeepAnalysisRead | None = None
     deep_revision: int | None = None
+    learning_report_status: str = "NOT_GENERATED"
+    learning_report: WorkbenchLearningReportRead
     chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)
 
 

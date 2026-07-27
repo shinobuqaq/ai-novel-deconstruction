@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0013_person_identity_decisions",)
+    assert revision == ("0014_learning_reports",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -304,6 +304,12 @@ def test_migrated_schema_contains_task_attempt_constraints(
                 "PRAGMA index_list(person_identity_decisions)"
             )
         }
+        learning_report_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(learning_reports)")
+        }
+        learning_report_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(learning_reports)")
+        }
 
     assert {
         "current_attempt_id",
@@ -440,6 +446,24 @@ def test_migrated_schema_contains_task_attempt_constraints(
         "ix_person_identity_decisions_run_created",
         "ix_person_identity_decisions_run_id",
     }.issubset(person_identity_decision_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "revision_no",
+        "source_deep_revision",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == learning_report_columns
+    assert {
+        "ux_learning_report_run_revision",
+        "ux_learning_report_task",
+        "ix_learning_reports_source_version",
+    }.issubset(learning_report_indexes)
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -496,7 +520,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0013_person_identity_decisions",)
+    assert revision_after == ("0014_learning_reports",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"

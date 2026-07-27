@@ -113,6 +113,10 @@ from .services.analysis import (
     refresh_analysis_run,
     start_entities_events_run,
 )
+from .services.learning_report import (
+    LEARNING_REPORT_TASK_KIND,
+    enqueue_learning_report,
+)
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
@@ -358,6 +362,7 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.hierarchical_digest", "长篇分层整理"),
     ("analysis.narrative_synthesis", "故事结构整理"),
     ("analysis.deep_insights", "事实与核心分析"),
+    (LEARNING_REPORT_TASK_KIND, "创作学习报告"),
 )
 
 _NARRATIVE_COMPONENT_LABELS = {
@@ -403,7 +408,7 @@ def _analysis_run_diagnostics(
     stage_rows: list[AnalysisStageDiagnosticRead] = []
     for kind, label in _ANALYSIS_STAGE_DIAGNOSTICS:
         stage_tasks = [task for task in tasks if task.kind == kind]
-        if kind == "analysis.hierarchical_digest" and not stage_tasks:
+        if kind in {"analysis.hierarchical_digest", LEARNING_REPORT_TASK_KIND} and not stage_tasks:
             continue
         stage_attempts = [
             attempt
@@ -1643,6 +1648,53 @@ def deep_analysis_start(
             detail={
                 "code": "NARRATIVE_SYNTHESIS_NOT_READY",
                 "message": "故事结构尚未整理完成，暂时不能生成事实状态和核心拆解。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/learning-report/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def learning_report_start(
+    run_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    active_deep = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == "analysis.deep_insights",
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+    )
+    if active_deep is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEEP_ANALYSIS_RUNNING",
+                "message": "事实状态和核心拆解仍在生成，请完成后再生成创作学习报告。",
+            },
+        )
+    task = enqueue_learning_report(session, request.app.state.settings, run)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEEP_ANALYSIS_NOT_READY",
+                "message": "事实状态和核心拆解尚未完成，暂时不能生成创作学习报告。",
             },
         )
     return _analysis_run_read(session, run)

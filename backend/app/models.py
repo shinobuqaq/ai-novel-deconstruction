@@ -297,6 +297,11 @@ class AnalysisRun(Base):
         cascade="all, delete-orphan",
         order_by="DeepAnalysis.revision_no",
     )
+    learning_reports: Mapped[list["LearningReport"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="LearningReport.revision_no",
+    )
     issues: Mapped[list["AnalysisIssue"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
@@ -497,6 +502,39 @@ class DeepAnalysis(Base):
     )
 
     run: Mapped[AnalysisRun] = relationship(back_populates="deep_analyses")
+
+
+class LearningReport(Base):
+    """Versioned, evidence-backed answers to the North Star question catalog."""
+
+    __tablename__ = "learning_reports"
+    __table_args__ = (
+        Index("ux_learning_report_run_revision", "run_id", "revision_no", unique=True),
+        Index("ux_learning_report_task", "created_by_task_id", unique=True),
+        Index("ix_learning_reports_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("lrp")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_deep_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="learning_reports")
 
 
 class AnalysisIssue(Base):

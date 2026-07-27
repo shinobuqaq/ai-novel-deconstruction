@@ -46,6 +46,13 @@ from .analysis import (
     refresh_analysis_run,
     StructuredOutputValidationError,
 )
+from .learning_report import (
+    LEARNING_REPORT_TASK_KIND,
+    LearningReportValidationError,
+    parse_learning_report,
+    persist_learning_report,
+    provider_payload_for_learning_report,
+)
 
 
 ANALYSIS_TASK_KINDS = {
@@ -53,6 +60,7 @@ ANALYSIS_TASK_KINDS = {
     HIERARCHICAL_DIGEST_TASK_KIND,
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
+    LEARNING_REPORT_TASK_KIND,
 }
 
 _IMMEDIATE_PROVIDER_SWITCH_CODES = {
@@ -88,6 +96,14 @@ _OUTPUT_FIELD_LABELS = {
     "conflicts": "冲突",
     "scene_analysis": "场景与节奏",
     "claims": "分析结论",
+    "answers": "学习问题答案",
+    "question_id": "北极星问题编号",
+    "metrics": "可核查计数",
+    "limitations": "限制与缺口",
+    "reusable_lessons": "可参考方法",
+    "do_not_copy": "不可照搬内容",
+    "author_decisions": "作者决策推断",
+    "method_candidates": "可参考方法候选",
     "name": "名称",
     "title": "标题",
     "role": "角色定位",
@@ -380,6 +396,11 @@ async def execute_task(
             provider_payload = provider_payload_for_deep_analysis(
                 session, settings, payload
             )
+    elif claim.kind == LEARNING_REPORT_TASK_KIND:
+        with session_factory() as session:
+            provider_payload = provider_payload_for_learning_report(
+                session, settings, payload
+            )
     else:
         provider_payload = payload
     route_index, route = _active_provider_route(payload)
@@ -432,6 +453,7 @@ async def execute_task(
     persisted_digest = None
     persisted_narrative = None
     persisted_deep = None
+    persisted_learning_report = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
             analysis_output = parse_provider_output(response.parsed)
@@ -640,6 +662,69 @@ async def execute_task(
                     model=response.model,
                     raw_text=response.raw_text,
                 ) from exc
+    elif claim.kind == LEARNING_REPORT_TASK_KIND:
+        try:
+            learning_output = parse_learning_report(response.parsed)
+        except LearningReportValidationError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message("创作学习报告", exc.errors),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+                raw_text=response.raw_text,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_learning_report = persist_learning_report(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=learning_output,
+                )
+            except ValueError as exc:
+                reason_code = str(exc)
+                message = (
+                    "创作学习报告引用了无效的原文依据，请重新生成。"
+                    if reason_code == "LEARNING_REPORT_EVIDENCE_REFERENCE_INVALID"
+                    else "创作学习报告缺少结论所需的原文依据或可核查计数，请重新生成。"
+                    if reason_code in {
+                        "LEARNING_REPORT_ANSWER_EVIDENCE_MISSING",
+                        "LEARNING_REPORT_METRIC_MISSING",
+                    }
+                    else "报告生成期间深层拆解已经更新，请基于最新结果重新生成。"
+                )
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message=message,
+                    retryable=reason_code != "LEARNING_REPORT_SOURCE_OUTDATED",
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=reason_code,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
 
     with session_factory() as session:
         if not task_claim_is_current(session, claim=claim):
@@ -658,6 +743,8 @@ async def execute_task(
             if claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND
             else "analysis.deep_insights.result"
             if claim.kind == DEEP_ANALYSIS_TASK_KIND
+            else "analysis.learning_report.result"
+            if claim.kind == LEARNING_REPORT_TASK_KIND
             else "fake.echo.result"
         )
         usage_payload: dict[str, object] = {
@@ -711,6 +798,10 @@ async def execute_task(
         if persisted_deep is not None:
             artifact_payload["accepted"] = {
                 "deep_analysis_id": persisted_deep.analysis_id,
+            }
+        if persisted_learning_report is not None:
+            artifact_payload["accepted"] = {
+                "learning_report_id": persisted_learning_report.report_id,
             }
         artifact = write_json_artifact(
             session,

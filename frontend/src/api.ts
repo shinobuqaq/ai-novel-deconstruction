@@ -557,6 +557,75 @@ export type WorkbenchDeepAnalysis = {
   claims: WorkbenchClaim[];
 };
 
+export type WorkbenchLearningMetric = {
+  label: string;
+  value: string;
+  unit: string;
+  method: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchLearningQuestion = {
+  question_id: string;
+  stage_id: number;
+  stage_name: string;
+  question: string;
+  priority: "CORE";
+  analysis_requirement: string;
+  evidence_view: string;
+  recommended_rank: number | null;
+  status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "NOT_GENERATED";
+  conclusion: string;
+  metrics: WorkbenchLearningMetric[];
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  limitations: string[];
+  reusable_lessons: string[];
+  do_not_copy: string[];
+};
+
+export type WorkbenchLearningStage = {
+  stage_id: number;
+  stage_name: string;
+  total_count: number;
+  generated_count: number;
+  answered_count: number;
+  insufficient_count: number;
+};
+
+export type WorkbenchAuthorDecision = {
+  title: string;
+  likely_timing: string;
+  inference: string;
+  evidence_ids: string[];
+  limitations: string[];
+  confidence: number;
+};
+
+export type WorkbenchMethodCandidate = {
+  title: string;
+  mechanism: string;
+  observed_result: string;
+  applicability: string[];
+  risks: string[];
+  evidence_ids: string[];
+  do_not_copy: string;
+  verification_scope: "SINGLE_BOOK_PENDING";
+};
+
+export type WorkbenchLearningReport = {
+  catalog_version: string;
+  batch_label: string;
+  revision: number | null;
+  source_deep_revision: number | null;
+  generated_at: string | null;
+  recommended_question_ids: string[];
+  questions: WorkbenchLearningQuestion[];
+  stages: WorkbenchLearningStage[];
+  author_decisions: WorkbenchAuthorDecision[];
+  method_candidates: WorkbenchMethodCandidate[];
+};
+
 export type WorkbenchChapterRef = {
   ordinal: number;
   title: string;
@@ -622,6 +691,8 @@ export type Workbench = {
   deep_status: "READY" | "OUTDATED" | "NOT_GENERATED";
   deep_analysis: WorkbenchDeepAnalysis | null;
   deep_revision: number | null;
+  learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
 };
 
@@ -820,6 +891,8 @@ export const api = {
     request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
   startDeepAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
+  startLearningReport: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>
     request<AnalysisIssue[]>(`/api/analysis-runs/${runId}/issues`),
   deepAnalysisImpact: (runId: string) =>

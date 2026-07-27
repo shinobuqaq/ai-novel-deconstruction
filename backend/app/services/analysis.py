@@ -4246,7 +4246,9 @@ def confirm_analysis_run(session: Session, run: AnalysisRun) -> AnalysisRun:
             status_code=409,
         )
     deep_analysis = session.scalar(
-        select(DeepAnalysis).where(DeepAnalysis.run_id == run.id)
+        select(DeepAnalysis)
+        .where(DeepAnalysis.run_id == run.id)
+        .order_by(DeepAnalysis.revision_no.desc())
     )
     if deep_analysis is None:
         raise SourceImportError(
