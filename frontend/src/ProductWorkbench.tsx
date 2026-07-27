@@ -213,6 +213,23 @@ const LEARNING_REPORT_STATUS_LABELS: Record<string, string> = {
   NOT_GENERATED: "尚未生成",
 };
 
+const CHARACTER_DESIGN_STATUS_LABELS: Record<string, string> = {
+  READY: "证据账本已生成",
+  GENERATING: "正在核对全书主角事件",
+  OUTDATED: "需要基于最新拆解重做",
+  FAILED: "上次生成失败",
+  NOT_GENERATED: "尚未生成",
+};
+
+const CHARACTER_DESIGN_FIELD_LABELS: Record<string, string> = {
+  surface_desire: "表层欲望",
+  deep_desire: "深层欲望",
+  motivation: "行动动机",
+  contrast: "性格反差",
+  boundary: "行为底线",
+  core_ability: "核心能力",
+};
+
 const AUTHOR_DECISION_TIMING_LABELS: Record<string, string> = {
   BEFORE_WRITING: "可能在开写前锁定",
   EARLY_SERIALIZATION: "可能在连载早期形成",
@@ -309,6 +326,7 @@ type FormalWorkbenchProps = {
   onWorkbenchChange: (workbench: Workbench) => void;
   onRepairNarrative: () => void;
   onStartDeepAnalysis: () => void;
+  onStartCharacterDesign: (force: boolean) => void;
   onStartLearningReport: () => void;
   onConfirmAnalysis: () => void;
 }
@@ -330,6 +348,7 @@ function FormalWorkbench({
   onWorkbenchChange,
   onRepairNarrative,
   onStartDeepAnalysis,
+  onStartCharacterDesign,
   onStartLearningReport,
   onConfirmAnalysis,
 }: FormalWorkbenchProps) {
@@ -672,6 +691,8 @@ function FormalWorkbench({
 
   const learningReport = viewData.learning_report;
   const learningReadiness = learningReport.readiness;
+  const characterDesign = viewData.character_design_evidence;
+  const characterDesignReadiness = learningReadiness.checks.find((item) => item.question_id === "2.2");
   const learningQuestionById = new Map(
     learningReport.questions.map((question) => [question.question_id, question]),
   );
@@ -862,6 +883,62 @@ function FormalWorkbench({
                     <small>{stage.generated_count}/{stage.total_count} 已生成</small>
                   </div>
                 ))}
+              </section>
+
+              <section className="learning-report-section character-design-ledger">
+                <header>
+                  <div><span>{characterDesignReadiness?.ready ? "已完成专项 · 北极星 2.2" : "当前专项 · 北极星 2.2"}</span><h3>主角双层欲望与最小完整集证据表</h3></div>
+                  <p>从已经拆出的全书主角事件中定位六项人物要素的首次行动证据；这是独立证据账本，不是七问报告，也不是新书人设。</p>
+                </header>
+                <div className={`character-design-state ${viewData.character_design_status.toLowerCase()}`}>
+                  <div>
+                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.character_design_status] ?? "状态未知"}</strong>
+                    <span>{viewData.character_design_status === "GENERATING" ? "后台正在核对全部主角事件和对应原文，完成后会保存为独立版本。" : characterDesignReadiness?.ready ? "六项首次展示均有事件、章节和原文对应关系。" : characterDesignReadiness?.gaps.join("；") || "需要先完成故事结构和深层拆解。"}</span>
+                  </div>
+                  {!isHistoricalRevision && viewData.deep_status === "READY" && viewData.character_design_status !== "GENERATING" && (
+                    <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>
+                      {busy === "start-character-design" ? "正在准备证据分析" : viewData.character_design_status === "READY" ? "重新分析 2.2" : viewData.character_design_status === "OUTDATED" ? "基于最新拆解重新生成" : viewData.character_design_status === "FAILED" ? "重新生成证据表" : "生成 2.2 证据表"}
+                    </button>
+                  )}
+                </div>
+
+                {characterDesign && (
+                  <>
+                    {!characterDesign.is_current && <div className="character-design-warning">当前显示的是旧版结果，只供回看；最新故事结构或深层拆解已经变化。</div>}
+                    <div className="character-design-coverage">
+                      <div><strong>{characterDesign.coverage.covered_event_count}/{characterDesign.coverage.protagonist_event_count}</strong><span>主角事件已纳入</span></div>
+                      <div><strong>{characterDesign.coverage.source_chapter_count}</strong><span>全书章节</span></div>
+                      <div><strong>{characterDesign.coverage.first_30_chapter_event_count}</strong><span>前 30 章主角事件</span></div>
+                      <div><strong>第 {characterDesign.revision} 版</strong><span>{characterDesign.is_current ? "对应当前拆解" : "旧版结果"}</span></div>
+                    </div>
+                    <div className="character-design-fields">
+                      {characterDesign.fields.map((item) => (
+                        <article className={item.status === "SUPPORTED" ? "supported" : "insufficient"} key={item.field}>
+                          <header><strong>{CHARACTER_DESIGN_FIELD_LABELS[item.field] ?? item.field}</strong><span>{item.status === "SUPPORTED" ? `首次展示：第 ${item.first_display_chapter_ordinal} 章` : "证据不足"}</span></header>
+                          <h4>{item.value || "当前材料无法形成可靠判断"}</h4>
+                          {item.display_event && <p>{item.display_event}</p>}
+                          <small>{item.explanation}</small>
+                          {evidenceButtons(item.evidence_ids, "查看首次展示原文")}
+                        </article>
+                      ))}
+                    </div>
+                    <article className="character-design-arc">
+                      <span>全书人物弧光</span>
+                      <p>{characterDesign.arc_summary}</p>
+                    </article>
+                    <div className="desire-conflict-list">
+                      <header><strong>两层欲望冲突节点</strong><span>{characterDesign.desire_conflicts.length} 个可核查节点</span></header>
+                      {characterDesign.desire_conflicts.map((item, index) => (
+                        <article key={`${item.event_id}-${index}`}>
+                          <header><strong>第 {item.chapter_ordinal} 章</strong><span>表层目标与深层需要发生冲突</span></header>
+                          <dl><div><dt>表层欲望</dt><dd>{item.surface_desire}</dd></div><div><dt>深层欲望</dt><dd>{item.deep_desire}</dd></div><div><dt>实际选择</dt><dd>{item.choice}</dd></div><div><dt>弧光变化</dt><dd>{item.arc_change}</dd></div></dl>
+                          {evidenceButtons(item.evidence_ids, "查看冲突原文")}
+                        </article>
+                      ))}
+                      {!characterDesign.desire_conflicts.length && <p className="result-empty">当前没有找到能由同一事件原文证明的双层欲望冲突节点，系统没有凑数。</p>}
+                    </div>
+                  </>
+                )}
               </section>
 
               <section className="learning-report-section">
@@ -1375,8 +1452,10 @@ function FormalWorkbench({
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
           <><div><strong>{viewData.deep_status === "OUTDATED" ? "故事结构已经更新" : "第一阶段结果可以确认"}</strong><span>{viewData.deep_status === "OUTDATED" ? "当前深层拆解仍对应上一版故事结构，请基于最新总览、人物、剧情和关系重新生成。" : "请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。"}</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : viewData.deep_status === "OUTDATED" ? "基于最新故事结构重新生成" : "确认故事结构并继续"}</button></>
+        ) : !characterDesignReadiness?.ready ? (
+          <><div><strong>{viewData.character_design_status === "GENERATING" ? "正在生成 2.2 主角证据账本" : "下一步先完成 2.2 主角证据账本"}</strong><span>{viewData.character_design_status === "GENERATING" ? "完成后会独立保存并把就绪度推进一项，不会提前生成七问报告。" : `当前只就绪 ${learningReadiness.ready_question_count}/7 项。系统会从已有拆书数据中核对主角六项要素及其首次行动证据。`}</span></div>{viewData.character_design_status !== "GENERATING" && <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>{busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}</button>}</>
         ) : !learningReadiness.ready ? (
-          <div><strong>创作问题的证据原料还不够</strong><span>当前只就绪 {learningReadiness.ready_question_count}/7 项。下一步先补：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}；补齐前不会调用在线模型。</span></div>
+          <div><strong>其余创作问题的证据原料还不够</strong><span>2.2 已完成，当前共就绪 {learningReadiness.ready_question_count}/7 项。后续按基线继续补：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}；补齐前不会生成七问报告。</span></div>
         ) : viewData.learning_report_status !== "READY" ? (
           <><div><strong>{viewData.learning_report_status === "GENERATING" ? "正在生成创作学习报告" : viewData.learning_report_status === "OUTDATED" ? "学习报告已经过期" : viewData.learning_report_status === "FAILED" ? "上次报告生成失败" : "候选批次原料已经就绪"}</strong><span>此批次是内部原型，不代表 Fable 指定的固定顺序；其余 35 问继续明确标为未生成。</span></div><button type="button" disabled={viewData.learning_report_status === "GENERATING" || busy === "start-learning-report"} onClick={onStartLearningReport}>{viewData.learning_report_status === "GENERATING" ? "正在生成" : busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成候选学习答案"}</button></>
         ) : (
@@ -1759,6 +1838,21 @@ export default function ProductWorkbench() {
       setBusy("start-deep-analysis");
       setError("");
       await loadAnalysisResults(await api.startDeepAnalysis(analysisRun.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleStartCharacterDesign(force = false) {
+    if (!analysisRun) return;
+    const confirmed = window.confirm("这一步会读取现有拆书数据并发起一次在线 AI 请求，用于生成独立的 2.2 主角证据账本，并计入 Token（令牌）用量。它不会生成七问报告，也不会写入新书开书包。是否继续？");
+    if (!confirmed) return;
+    try {
+      setBusy("start-character-design");
+      setError("");
+      await loadAnalysisResults(await api.startCharacterDesignEvidence(analysisRun.id, force));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2393,7 +2487,9 @@ export default function ProductWorkbench() {
                                 type="button"
                                 disabled={Boolean(busy)}
                                 onClick={() => void (
-                                  analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && workbench.learning_report_status !== "READY"
+                                  analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && !workbench.learning_report.readiness.ready
+                                    ? setWorkbenchView("learn")
+                                    : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && workbench.learning_report_status !== "READY"
                                     ? handleStartLearningReport()
                                     : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY"
                                     ? setWorkbenchView("issues")
@@ -2404,7 +2500,7 @@ export default function ProductWorkbench() {
                                       : handleStartAnalysis()
                                 )}
                               >
-                                {busy ? "正在准备" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && workbench.learning_report_status !== "READY" ? "重新生成学习报告" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" ? "去问题中心决定是否重做" : workbench?.narrative_status === "INCOMPLETE" ? "重新整理人物和剧情" : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY" ? "继续生成深层拆解" : "重新开始分析"}
+                                {busy ? "正在准备" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && !workbench.learning_report.readiness.ready ? "查看专项原料缺口" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" && workbench.learning_report_status !== "READY" ? "重新生成学习报告" : analysisRun.has_usable_result && workbench?.narrative_status === "READY" && workbench.deep_status === "READY" ? "去问题中心决定是否重做" : workbench?.narrative_status === "INCOMPLETE" ? "重新整理人物和剧情" : workbench?.narrative_status === "READY" && workbench.deep_status !== "READY" ? "继续生成深层拆解" : "重新开始分析"}
                               </button>
                             </div>
                           </div>
@@ -2428,6 +2524,7 @@ export default function ProductWorkbench() {
                             onWorkbenchChange={setWorkbench}
                             onRepairNarrative={() => void handleRepairNarrative()}
                             onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
+                            onStartCharacterDesign={(force) => void handleStartCharacterDesign(force)}
                             onStartLearningReport={() => void handleStartLearningReport()}
                             onConfirmAnalysis={() => void handleConfirmAnalysis()}
                           />

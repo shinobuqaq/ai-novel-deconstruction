@@ -22,6 +22,7 @@ from ..models import (
     TaskStatus,
 )
 from .analysis import REQUIRED_CHARACTER_ROSTER_SIZE, narrative_phase_id
+from .character_design import build_character_design_projection
 from .learning_report import assess_learning_report_readiness, build_learning_report_projection
 
 
@@ -780,6 +781,7 @@ def build_workbench_projection(
     run_id: str,
     *,
     include_synthesis: bool = True,
+    include_question_evidence: bool = True,
     deep_revision: int | None = None,
 ) -> dict:
     run = session.get(AnalysisRun, run_id)
@@ -1245,12 +1247,6 @@ def build_workbench_projection(
     ):
         narrative_status = "INCOMPLETE"
 
-    learning_report_status, learning_report = build_learning_report_projection(
-        session,
-        run_id,
-        latest_deep_revision=deep_revision,
-    )
-
     projection = {
         "run_id": run_id,
         "source_version_id": run.source_version_id,
@@ -1280,13 +1276,26 @@ def build_workbench_projection(
         "deep_status": deep_status,
         "deep_analysis": deep_payload,
         "deep_revision": deep_revision,
-        "learning_report_status": learning_report_status,
-        "learning_report": learning_report,
         "chapters": [
             {"ordinal": chapter.ordinal, "title": chapter.title}
             for chapter in chapters
         ],
     }
+    if include_question_evidence:
+        character_design_status, character_design_evidence = (
+            build_character_design_projection(session, run_id, projection)
+        )
+    else:
+        character_design_status, character_design_evidence = "NOT_GENERATED", None
+    projection["character_design_status"] = character_design_status
+    projection["character_design_evidence"] = character_design_evidence
+    learning_report_status, learning_report = build_learning_report_projection(
+        session,
+        run_id,
+        latest_deep_revision=deep_revision,
+    )
+    projection["learning_report_status"] = learning_report_status
+    projection["learning_report"] = learning_report
     learning_report["readiness"] = assess_learning_report_readiness(projection)
     return projection
 

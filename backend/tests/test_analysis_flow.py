@@ -269,6 +269,45 @@ class StaticAnalysisProvider:
                 ],
                 "entity_resolutions": [],
             }
+        elif task_kind == "analysis.character_design_evidence":
+            character_input = json.loads(payload["input"])
+            event = character_input["protagonist_events"][0]
+            evidence_id = event["evidence_ids"][0]
+            chapter_ordinal = event["chapter_ordinals"][0]
+            field_values = {
+                "surface_desire": "找到密信的寄信人并弄清来意。",
+                "deep_desire": "不再被动等待别人决定自己的处境。",
+                "motivation": "密信明确写着自己的名字，无法把风险交给别人处理。",
+                "contrast": "面对未知会警惕，但确认线索后会主动追查。",
+                "boundary": "没有可靠证据前不把猜测当成事实。",
+                "core_ability": "从具体线索中确定下一步可执行行动。",
+            }
+            output = {
+                "protagonist": character_input["protagonist"]["name"],
+                "fields": [
+                    {
+                        "field": field,
+                        "status": "SUPPORTED",
+                        "value": value,
+                        "first_display_chapter_ordinal": chapter_ordinal,
+                        "first_display_event_id": event["id"],
+                        "display_event": "林舟发现写着自己名字的密信后，决定天亮主动寻找寄信人。",
+                        "evidence_ids": [evidence_id],
+                        "explanation": "这一决定通过可核查行动展示了人物要素，而不是只依赖人物简介。",
+                    }
+                    for field, value in field_values.items()
+                ],
+                "desire_conflicts": [{
+                    "chapter_ordinal": chapter_ordinal,
+                    "event_id": event["id"],
+                    "surface_desire": "尽快找到寄信人。",
+                    "deep_desire": "掌握自己的处境，不再被动等待。",
+                    "choice": "林舟决定天亮后主动追查。",
+                    "arc_change": "从被动发现线索转为主动承担追查。",
+                    "evidence_ids": [evidence_id],
+                }],
+                "arc_summary": "林舟由被动回到旧宅，转为主动追查密信来源；短篇样本只能证明这一阶段变化。",
+            }
         else:
             assert task_kind == "analysis.learning_report"
             report_input = json.loads(payload["input"])
@@ -901,6 +940,79 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     )
     assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
     assert projection["deep_analysis"]["world_rules"][0]["discovered_chapter"] == 1
+    assert projection["character_design_status"] == "NOT_GENERATED"
+    assert projection["learning_report"]["readiness"]["ready_question_count"] == 1
+
+    character_start = client.post(
+        f"/api/analysis-runs/{run['id']}/character-design/start"
+    )
+    assert character_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        character_claim = claim_next_task(
+            session,
+            worker_id="character-design-test-worker",
+            lease_seconds=60,
+        )
+    assert character_claim is not None
+    assert character_claim.kind == "analysis.character_design_evidence"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        character_claim,
+        registry,
+    )
+    character_projection = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert character_projection["character_design_status"] == "READY"
+    assert character_projection["character_design_evidence"]["revision"] == 1
+    assert character_projection["character_design_evidence"]["is_current"] is True
+    assert len(character_projection["character_design_evidence"]["fields"]) == 6
+    assert character_projection["character_design_evidence"]["coverage"]["event_coverage_complete"] is True
+    assert character_projection["learning_report"]["readiness"]["ready_question_count"] == 2
+    with client.app.state.session_factory() as session:
+        cancelled_character_task = Task(
+            project_id=character_claim.project_id,
+            kind="analysis.character_design_evidence",
+            status=TaskStatus.CANCELLED.value,
+            payload_json="{}",
+            max_attempts=1,
+        )
+        session.add(cancelled_character_task)
+        session.flush()
+        session.add(AnalysisRunTask(
+            run_id=run["id"],
+            task_id=cancelled_character_task.id,
+            batch_index=999,
+        ))
+        session.commit()
+    character_diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    ).json()
+    character_stage = next(
+        item for item in character_diagnostics["stages"]
+        if item["key"] == "analysis.character_design_evidence"
+    )
+    assert character_stage["status"] == "SUCCEEDED"
+    already_current = client.post(
+        f"/api/analysis-runs/{run['id']}/character-design/start"
+    )
+    assert already_current.status_code == 409
+    assert already_current.json()["detail"]["code"] == "CHARACTER_DESIGN_ALREADY_CURRENT"
+
+    with client.app.state.session_factory() as session:
+        learning_task_count_before_character_revision = session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
+        )
+    blocked_learning_after_character = client.post(
+        f"/api/analysis-runs/{run['id']}/learning-report/start"
+    )
+    assert blocked_learning_after_character.status_code == 409
+    assert blocked_learning_after_character.json()["detail"]["readiness"]["ready_question_count"] == 2
+    with client.app.state.session_factory() as session:
+        assert session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
+        ) == learning_task_count_before_character_revision
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",
@@ -966,6 +1078,9 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert first_revision.json()["deep_revision"] == 1
     latest_revision = client.get(f"/api/analysis-runs/{run['id']}/workbench")
     assert latest_revision.json()["deep_revision"] == 2
+    assert latest_revision.json()["character_design_status"] == "OUTDATED"
+    assert latest_revision.json()["character_design_evidence"]["is_current"] is False
+    assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 1
     assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
     latest_unaffected_fact = next(
         item
@@ -980,12 +1095,35 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert missing_revision.status_code == 404
     assert missing_revision.json()["detail"]["code"] == "DEEP_ANALYSIS_REVISION_NOT_FOUND"
 
-    initial_learning = latest_revision.json()["learning_report"]
-    assert latest_revision.json()["learning_report_status"] == "NOT_GENERATED"
+    refreshed_character_start = client.post(
+        f"/api/analysis-runs/{run['id']}/character-design/start"
+    )
+    assert refreshed_character_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        refreshed_character_claim = claim_next_task(
+            session,
+            worker_id="character-design-refresh-worker",
+            lease_seconds=60,
+        )
+    assert refreshed_character_claim is not None
+    assert refreshed_character_claim.kind == "analysis.character_design_evidence"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        refreshed_character_claim,
+        registry,
+    )
+    current_revision = client.get(f"/api/analysis-runs/{run['id']}/workbench")
+    assert current_revision.status_code == 200
+    assert current_revision.json()["character_design_status"] == "READY"
+    assert current_revision.json()["character_design_evidence"]["revision"] == 2
+
+    initial_learning = current_revision.json()["learning_report"]
+    assert current_revision.json()["learning_report_status"] == "NOT_GENERATED"
     assert len(initial_learning["questions"]) == 42
     assert all(item["status"] == "NOT_GENERATED" for item in initial_learning["questions"])
     assert initial_learning["readiness"]["ready"] is False
-    assert initial_learning["readiness"]["ready_question_count"] == 1
+    assert initial_learning["readiness"]["ready_question_count"] == 2
     with client.app.state.session_factory() as session:
         learning_task_count_before = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")

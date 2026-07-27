@@ -754,6 +754,14 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         None,
     )
     character_design = projection.get("character_design_evidence") or {}
+    field_items = character_design.get("fields", []) if isinstance(character_design, dict) else []
+    character_design_by_field = {
+        str(item.get("field") or ""): item
+        for item in field_items
+        if isinstance(item, dict)
+    }
+    if not character_design_by_field and isinstance(character_design, dict):
+        character_design_by_field = character_design
     required_character_fields = {
         "surface_desire": "表层欲望",
         "deep_desire": "深层欲望",
@@ -765,10 +773,23 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
     character_gaps: list[str] = []
     if protagonist is None:
         character_gaps.append("尚未确认主角。")
+    if character_design and character_design.get("is_current") is False:
+        character_gaps.append("主角证据表基于旧人物或旧拆解结果，需要重新生成。")
+    coverage = character_design.get("coverage", {}) if isinstance(character_design, dict) else {}
+    if character_design and coverage.get("event_coverage_complete") is not True:
+        character_gaps.append("主角证据表没有覆盖当前运行的全部主角事件。")
     for key, label in required_character_fields.items():
-        item = character_design.get(key)
-        if not isinstance(item, dict) or not item.get("evidence_ids"):
+        item = character_design_by_field.get(key)
+        if (
+            not isinstance(item, dict)
+            or item.get("status", "SUPPORTED") != "SUPPORTED"
+            or not item.get("first_display_chapter_ordinal")
+            or not item.get("first_display_event_id")
+            or not item.get("evidence_ids")
+        ):
             character_gaps.append(f"缺少{label}的首次展示事件与原文。")
+    if character_design and not str(character_design.get("arc_summary") or "").strip():
+        character_gaps.append("主角证据表缺少全书人物弧光总结。")
     checks["2.2"] = _readiness_check(
         "2.2",
         ready=not character_gaps,
@@ -779,9 +800,14 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "contract_field_evidence_count": sum(
                 1
                 for key in required_character_fields
-                if isinstance(character_design.get(key), dict)
-                and character_design[key].get("evidence_ids")
+                if isinstance(character_design_by_field.get(key), dict)
+                and character_design_by_field[key].get("status", "SUPPORTED") == "SUPPORTED"
+                and character_design_by_field[key].get("evidence_ids")
             ),
+            "desire_conflict_count": len(character_design.get("desire_conflicts", []))
+            if isinstance(character_design, dict)
+            else 0,
+            "event_coverage_complete": coverage.get("event_coverage_complete"),
         },
         gaps=character_gaps,
         required_artifact="主角双层欲望与最小完整集证据表",

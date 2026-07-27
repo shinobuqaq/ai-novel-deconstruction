@@ -7,6 +7,7 @@
 - `narrative_component_v1.md`
 - `narrative_synthesis_v1.md`（只为兼容已经创建的旧任务，新任务按四个独立组件执行）
 - `deep_insights_v1.md`
+- `character_design_evidence_v1.md`
 - `learning_report_v1.md`
 
 每个正式提示词至少包含：

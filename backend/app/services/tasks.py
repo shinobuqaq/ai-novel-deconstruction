@@ -53,6 +53,13 @@ from .learning_report import (
     persist_learning_report,
     provider_payload_for_learning_report,
 )
+from .character_design import (
+    CHARACTER_DESIGN_TASK_KIND,
+    CharacterDesignValidationError,
+    parse_character_design_evidence,
+    persist_character_design_evidence,
+    provider_payload_for_character_design,
+)
 
 
 ANALYSIS_TASK_KINDS = {
@@ -60,6 +67,7 @@ ANALYSIS_TASK_KINDS = {
     HIERARCHICAL_DIGEST_TASK_KIND,
     NARRATIVE_SYNTHESIS_TASK_KIND,
     DEEP_ANALYSIS_TASK_KIND,
+    CHARACTER_DESIGN_TASK_KIND,
     LEARNING_REPORT_TASK_KIND,
 }
 
@@ -396,6 +404,26 @@ async def execute_task(
             provider_payload = provider_payload_for_deep_analysis(
                 session, settings, payload
             )
+    elif claim.kind == CHARACTER_DESIGN_TASK_KIND:
+        try:
+            with session_factory() as session:
+                provider_payload = provider_payload_for_character_design(
+                    session, settings, payload
+                )
+        except ValueError as exc:
+            reason_code = str(exc)
+            message = (
+                "主角事件和原文超过当前模型可安全读取的范围，需要先启用分段专项分析。"
+                if reason_code.startswith("CHARACTER_DESIGN_CONTEXT_TOO_LARGE")
+                else "主角、故事结构或深层拆解已经更新，请基于最新结果重新生成证据表。"
+                if reason_code == "CHARACTER_DESIGN_SOURCE_OUTDATED"
+                else "主角人物和事件原料尚未就绪，暂时不能生成 2.2 证据表。"
+            )
+            raise ProviderError(
+                code=reason_code.split(":", 1)[0],
+                message=message,
+                retryable=False,
+            ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_learning_report(
@@ -453,6 +481,7 @@ async def execute_task(
     persisted_digest = None
     persisted_narrative = None
     persisted_deep = None
+    persisted_character_design = None
     persisted_learning_report = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
@@ -662,6 +691,63 @@ async def execute_task(
                     model=response.model,
                     raw_text=response.raw_text,
                 ) from exc
+    elif claim.kind == CHARACTER_DESIGN_TASK_KIND:
+        try:
+            character_design_output = parse_character_design_evidence(response.parsed)
+        except CharacterDesignValidationError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message("主角双层欲望与最小完整集证据表", exc.errors),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+                raw_text=response.raw_text,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_character_design = persist_character_design_evidence(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=character_design_output,
+                )
+            except ValueError as exc:
+                reason_code = str(exc)
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message=(
+                        "主角证据表引用的事件、章节或原文对应不上，请重新生成。"
+                        if reason_code != "CHARACTER_DESIGN_SOURCE_OUTDATED"
+                        else "生成期间人物或拆解结果已经更新，请基于最新结果重新生成。"
+                    ),
+                    retryable=reason_code != "CHARACTER_DESIGN_SOURCE_OUTDATED",
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=reason_code,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         try:
             learning_output = parse_learning_report(response.parsed)
@@ -743,6 +829,8 @@ async def execute_task(
             if claim.kind == NARRATIVE_SYNTHESIS_TASK_KIND
             else "analysis.deep_insights.result"
             if claim.kind == DEEP_ANALYSIS_TASK_KIND
+            else "analysis.character_design_evidence.result"
+            if claim.kind == CHARACTER_DESIGN_TASK_KIND
             else "analysis.learning_report.result"
             if claim.kind == LEARNING_REPORT_TASK_KIND
             else "fake.echo.result"
@@ -798,6 +886,11 @@ async def execute_task(
         if persisted_deep is not None:
             artifact_payload["accepted"] = {
                 "deep_analysis_id": persisted_deep.analysis_id,
+            }
+        if persisted_character_design is not None:
+            artifact_payload["accepted"] = {
+                "learning_question_evidence_id": persisted_character_design.id,
+                "question_id": persisted_character_design.question_id,
             }
         if persisted_learning_report is not None:
             artifact_payload["accepted"] = {

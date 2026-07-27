@@ -76,7 +76,12 @@ class OpenAIResponsesProvider:
         # to the local Pydantic validator for those stages.
         if (
             service.service_type == "OPENAI_COMPATIBLE"
-            and task_kind in {"analysis.narrative_synthesis", "analysis.deep_insights"}
+            and task_kind in {
+                "analysis.narrative_synthesis",
+                "analysis.deep_insights",
+                "analysis.character_design_evidence",
+                "analysis.learning_report",
+            }
         ):
             structured_mode = STRUCTURED_JSON_ONLY
         reasoning_supported = not capabilities or capabilities.reasoning_effort != STRUCTURED_UNSUPPORTED

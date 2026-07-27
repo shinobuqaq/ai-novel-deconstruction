@@ -565,6 +565,45 @@ export type WorkbenchLearningMetric = {
   evidence_ids: string[];
 };
 
+export type WorkbenchCharacterDesignField = {
+  field: "surface_desire" | "deep_desire" | "motivation" | "contrast" | "boundary" | "core_ability";
+  status: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
+  value: string;
+  first_display_chapter_ordinal: number | null;
+  first_display_event_id: string | null;
+  display_event: string;
+  evidence_ids: string[];
+  explanation: string;
+};
+
+export type WorkbenchDesireConflict = {
+  chapter_ordinal: number;
+  event_id: string;
+  surface_desire: string;
+  deep_desire: string;
+  choice: string;
+  arc_change: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterDesignEvidence = {
+  question_id: "2.2";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  protagonist: string;
+  fields: WorkbenchCharacterDesignField[];
+  desire_conflicts: WorkbenchDesireConflict[];
+  arc_summary: string;
+  coverage: {
+    source_chapter_count: number;
+    protagonist_event_count: number;
+    covered_event_count: number;
+    event_coverage_complete: boolean;
+    first_30_chapter_event_count: number;
+  };
+};
+
 export type WorkbenchLearningQuestion = {
   question_id: string;
   stage_id: number;
@@ -715,6 +754,8 @@ export type Workbench = {
   deep_status: "READY" | "OUTDATED" | "NOT_GENERATED";
   deep_analysis: WorkbenchDeepAnalysis | null;
   deep_revision: number | null;
+  character_design_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  character_design_evidence: WorkbenchCharacterDesignEvidence | null;
   learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
@@ -915,6 +956,8 @@ export const api = {
     request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
   startDeepAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
+  startCharacterDesignEvidence: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/character-design/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startLearningReport: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

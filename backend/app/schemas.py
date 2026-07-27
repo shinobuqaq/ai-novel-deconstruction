@@ -782,6 +782,39 @@ class WorkbenchChapterRefRead(BaseModel):
     title: str
 
 
+class WorkbenchCharacterDesignFieldRead(BaseModel):
+    field: str
+    status: str
+    value: str = ""
+    first_display_chapter_ordinal: int | None = None
+    first_display_event_id: str | None = None
+    display_event: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    explanation: str
+
+
+class WorkbenchDesireConflictRead(BaseModel):
+    chapter_ordinal: int
+    event_id: str
+    surface_desire: str
+    deep_desire: str
+    choice: str
+    arc_change: str
+    evidence_ids: list[str]
+
+
+class WorkbenchCharacterDesignEvidenceRead(BaseModel):
+    question_id: str
+    revision: int
+    generated_at: datetime
+    is_current: bool
+    protagonist: str
+    fields: list[WorkbenchCharacterDesignFieldRead]
+    desire_conflicts: list[WorkbenchDesireConflictRead] = Field(default_factory=list)
+    arc_summary: str
+    coverage: dict[str, object]
+
+
 class WorkbenchRead(BaseModel):
     run_id: str
     source_version_id: str
@@ -803,6 +836,8 @@ class WorkbenchRead(BaseModel):
     deep_status: str = "NOT_GENERATED"
     deep_analysis: WorkbenchDeepAnalysisRead | None = None
     deep_revision: int | None = None
+    character_design_status: str = "NOT_GENERATED"
+    character_design_evidence: WorkbenchCharacterDesignEvidenceRead | None = None
     learning_report_status: str = "NOT_GENERATED"
     learning_report: WorkbenchLearningReportRead
     chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)

@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0014_learning_reports",)
+    assert revision == ("0015_learning_question_evidence",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -310,6 +310,18 @@ def test_migrated_schema_contains_task_attempt_constraints(
         learning_report_indexes = {
             row[1] for row in connection.execute("PRAGMA index_list(learning_reports)")
         }
+        learning_question_evidence_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(learning_question_evidence)"
+            )
+        }
+        learning_question_evidence_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(learning_question_evidence)"
+            )
+        }
 
     assert {
         "current_attempt_id",
@@ -464,6 +476,25 @@ def test_migrated_schema_contains_task_attempt_constraints(
         "ux_learning_report_task",
         "ix_learning_reports_source_version",
     }.issubset(learning_report_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "question_id",
+        "revision_no",
+        "source_fingerprint",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == learning_question_evidence_columns
+    assert {
+        "ux_learning_question_evidence_run_question_revision",
+        "ux_learning_question_evidence_task",
+        "ix_learning_question_evidence_source_version",
+    }.issubset(learning_question_evidence_indexes)
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -520,7 +551,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0014_learning_reports",)
+    assert revision_after == ("0015_learning_question_evidence",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"

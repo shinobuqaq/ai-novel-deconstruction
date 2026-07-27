@@ -40,15 +40,30 @@ def _projection(*, complete_specialized_ledgers: bool) -> dict:
     if complete_specialized_ledgers:
         projection.update({
             "character_design_evidence": {
-                key: {"value": key, "evidence_ids": [f"evd_{key}"]}
-                for key in (
-                    "surface_desire",
-                    "deep_desire",
-                    "motivation",
-                    "contrast",
-                    "boundary",
-                    "core_ability",
-                )
+                "is_current": True,
+                "fields": [
+                    {
+                        "field": key,
+                        "status": "SUPPORTED",
+                        "value": key,
+                        "first_display_chapter_ordinal": 1,
+                        "first_display_event_id": "evt_opening",
+                        "display_event": "林舟在密信出现后决定追查。",
+                        "evidence_ids": [f"evd_{key}"],
+                        "explanation": "主角通过行动展示该要素。",
+                    }
+                    for key in (
+                        "surface_desire",
+                        "deep_desire",
+                        "motivation",
+                        "contrast",
+                        "boundary",
+                        "core_ability",
+                    )
+                ],
+                "desire_conflicts": [],
+                "arc_summary": "林舟由被动发现线索转为主动追查。",
+                "coverage": {"event_coverage_complete": True},
             },
             "chapter_end_hooks": [
                 {
