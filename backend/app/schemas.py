@@ -700,6 +700,11 @@ class WorkbenchLearningQuestionRead(BaseModel):
     priority: str
     analysis_requirement: str
     evidence_view: str
+    output_contract: str
+    measurement_requirements: str
+    evidence_requirements: str
+    scope_requirement: str
+    external_data_policy: str
     recommended_rank: int | None = None
     status: str
     conclusion: str = ""
@@ -740,6 +745,24 @@ class WorkbenchMethodCandidateRead(BaseModel):
     verification_scope: str
 
 
+class WorkbenchLearningReadinessCheckRead(BaseModel):
+    question_id: str
+    question: str
+    ready: bool
+    observed: dict[str, object] = Field(default_factory=dict)
+    gaps: list[str] = Field(default_factory=list)
+    required_artifact: str
+
+
+class WorkbenchLearningReadinessRead(BaseModel):
+    ready: bool
+    policy: str
+    ready_question_count: int
+    total_question_count: int
+    checks: list[WorkbenchLearningReadinessCheckRead]
+    next_required_artifacts: list[str] = Field(default_factory=list)
+
+
 class WorkbenchLearningReportRead(BaseModel):
     catalog_version: str
     batch_label: str
@@ -749,6 +772,7 @@ class WorkbenchLearningReportRead(BaseModel):
     recommended_question_ids: list[str]
     questions: list[WorkbenchLearningQuestionRead]
     stages: list[WorkbenchLearningStageRead]
+    readiness: WorkbenchLearningReadinessRead
     author_decisions: list[WorkbenchAuthorDecisionRead] = Field(default_factory=list)
     method_candidates: list[WorkbenchMethodCandidateRead] = Field(default_factory=list)
 

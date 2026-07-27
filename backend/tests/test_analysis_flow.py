@@ -984,39 +984,24 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert latest_revision.json()["learning_report_status"] == "NOT_GENERATED"
     assert len(initial_learning["questions"]) == 42
     assert all(item["status"] == "NOT_GENERATED" for item in initial_learning["questions"])
+    assert initial_learning["readiness"]["ready"] is False
+    assert initial_learning["readiness"]["ready_question_count"] == 1
+    with client.app.state.session_factory() as session:
+        learning_task_count_before = session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
+        )
     learning_start = client.post(
         f"/api/analysis-runs/{run['id']}/learning-report/start"
     )
-    assert learning_start.status_code == 202
+    assert learning_start.status_code == 409
+    assert learning_start.json()["detail"]["code"] == "LEARNING_REPORT_DATA_NOT_READY"
+    assert "不会消耗 Token" in learning_start.json()["detail"]["message"]
+    assert learning_start.json()["detail"]["readiness"]["ready"] is False
     with client.app.state.session_factory() as session:
-        learning_claim = claim_next_task(
-            session,
-            worker_id="learning-report-test-worker",
-            lease_seconds=60,
+        learning_task_count_after = session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
-    assert learning_claim is not None
-    assert learning_claim.kind == "analysis.learning_report"
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        learning_claim,
-        registry,
-    )
-    learning_workbench = client.get(
-        f"/api/analysis-runs/{run['id']}/workbench"
-    ).json()
-    assert learning_workbench["learning_report_status"] == "READY"
-    learning_report = learning_workbench["learning_report"]
-    assert learning_report["batch_label"] == "核心起步批次（7/42）"
-    assert len(learning_report["questions"]) == 42
-    assert sum(item["status"] != "NOT_GENERATED" for item in learning_report["questions"]) == 7
-    assert sum(item["status"] == "NOT_GENERATED" for item in learning_report["questions"]) == 35
-    hook_answer = next(
-        item for item in learning_report["questions"] if item["question_id"] == "4.9"
-    )
-    assert hook_answer["status"] == "INSUFFICIENT_EVIDENCE"
-    assert len(learning_report["author_decisions"]) == 1
-    assert learning_report["method_candidates"][0]["verification_scope"] == "SINGLE_BOOK_PENDING"
+    assert learning_task_count_after == learning_task_count_before
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

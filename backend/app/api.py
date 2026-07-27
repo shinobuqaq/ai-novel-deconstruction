@@ -115,6 +115,7 @@ from .services.analysis import (
 )
 from .services.learning_report import (
     LEARNING_REPORT_TASK_KIND,
+    LearningReportNotReadyError,
     enqueue_learning_report,
 )
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
@@ -1688,7 +1689,24 @@ def learning_report_start(
                 "message": "事实状态和核心拆解仍在生成，请完成后再生成创作学习报告。",
             },
         )
-    task = enqueue_learning_report(session, request.app.state.settings, run)
+    try:
+        task = enqueue_learning_report(session, request.app.state.settings, run)
+    except LearningReportNotReadyError as exc:
+        readiness = exc.readiness
+        next_artifacts = readiness.get("next_required_artifacts", [])
+        next_text = "、".join(str(item) for item in next_artifacts[:3])
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "LEARNING_REPORT_DATA_NOT_READY",
+                "message": (
+                    f"当前拆书原料只支持 {readiness['ready_question_count']}/"
+                    f"{readiness['total_question_count']} 个候选问题。系统没有创建在线任务，"
+                    f"也不会消耗 Token（令牌）。下一步先补：{next_text}。"
+                ),
+                "readiness": readiness,
+            },
+        ) from exc
     if task is None:
         raise HTTPException(
             status_code=409,

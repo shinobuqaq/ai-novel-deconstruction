@@ -207,7 +207,7 @@ const LEARNING_ANSWER_STATUS_LABELS: Record<string, string> = {
 
 const LEARNING_REPORT_STATUS_LABELS: Record<string, string> = {
   READY: "首批答案已生成",
-  GENERATING: "正在生成首批答案",
+  GENERATING: "正在生成候选答案",
   OUTDATED: "需要基于最新拆解重做",
   FAILED: "上次生成失败",
   NOT_GENERATED: "尚未生成",
@@ -671,6 +671,7 @@ function FormalWorkbench({
   );
 
   const learningReport = viewData.learning_report;
+  const learningReadiness = learningReport.readiness;
   const learningQuestionById = new Map(
     learningReport.questions.map((question) => [question.question_id, question]),
   );
@@ -683,10 +684,6 @@ function FormalWorkbench({
   );
   const answeredLearningCount = learningReport.stages.reduce(
     (total, stage) => total + stage.answered_count,
-    0,
-  );
-  const insufficientLearningCount = learningReport.stages.reduce(
-    (total, stage) => total + stage.insufficient_count,
     0,
   );
   const evidenceTabs: Array<{ key: WorkbenchView; label: string; count?: number | string }> = [
@@ -823,21 +820,39 @@ function FormalWorkbench({
               <section className="learning-report-hero">
                 <span>北极星 42 问 · 默认学习入口</span>
                 <h3>先看这本书能教我什么</h3>
-                <p>系统按写书顺序替你回答问题。当前只生成“{learningReport.batch_label}”，其余问题会一直明确显示为未生成，不会用人物档案或故事摘要冒充答案。</p>
+                <p>系统按写书顺序替你回答问题。当前“{learningReport.batch_label}”只是待验证的内部批次，不是 Fable 固定的开发顺序；原料不满足逐问合同时不会调用模型。</p>
                 <div>
                   <strong>{generatedLearningCount}/42 已生成</strong>
                   <strong>{answeredLearningCount} 项已有可用答案</strong>
-                  <strong>{insufficientLearningCount} 项明确证据不足</strong>
+                  <strong>{learningReadiness.ready_question_count}/7 项原料已就绪</strong>
                 </div>
                 <div className="learning-report-action">
                   <span>{LEARNING_REPORT_STATUS_LABELS[viewData.learning_report_status] ?? "状态未知"}</span>
-                  {!isHistoricalRevision && viewData.deep_status === "READY" && viewData.learning_report_status !== "READY" && viewData.learning_report_status !== "GENERATING" && (
+                  {!isHistoricalRevision && learningReadiness.ready && viewData.deep_status === "READY" && viewData.learning_report_status !== "READY" && viewData.learning_report_status !== "GENERATING" && (
                     <button type="button" disabled={busy === "start-learning-report"} onClick={onStartLearningReport}>
-                      {busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成首批学习答案"}
+                      {busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成候选学习答案"}
                     </button>
                   )}
                 </div>
               </section>
+
+              {!learningReadiness.ready && (
+                <section className="learning-report-section">
+                  <header>
+                    <div><span>数据就绪检查</span><h3>先把拆书原料补到能回答问题</h3></div>
+                    <p>当前不会创建在线任务，也不会消耗 Token（令牌）。缺口按 Fable 的写书顺序排列。</p>
+                  </header>
+                  <div className="learning-question-list">
+                    {learningReadiness.checks.filter((item) => !item.ready).map((item) => (
+                      <article className="learning-question-card" key={`readiness-${item.question_id}`}>
+                        <header><span>{item.question_id}</span><i>原料未就绪</i></header>
+                        <h4>{item.required_artifact}</h4>
+                        <ul>{item.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section className="learning-coverage" aria-label="八个创作阶段覆盖概况">
                 {learningReport.stages.map((stage) => (
@@ -851,8 +866,8 @@ function FormalWorkbench({
 
               <section className="learning-report-section">
                 <header>
-                  <div><span>推荐阅读顺序</span><h3>先读最影响开书与长期连载的七个问题</h3></div>
-                  <p>每个答案都独立保存结论、计数、原文、限制、可参考方法和不可照搬内容。</p>
+                  <div><span>当前内部候选批次</span><h3>七个问题不代表 Fable 规定的固定批次</h3></div>
+                  <p>保留它们是为了复用现有原型；每问必须先满足自己的产出、计数、证据、范围和降级合同。</p>
                 </header>
                 <div className="learning-question-list">
                   {recommendedLearningQuestions.map((question) => (
@@ -1360,8 +1375,10 @@ function FormalWorkbench({
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
           <><div><strong>{viewData.deep_status === "OUTDATED" ? "故事结构已经更新" : "第一阶段结果可以确认"}</strong><span>{viewData.deep_status === "OUTDATED" ? "当前深层拆解仍对应上一版故事结构，请基于最新总览、人物、剧情和关系重新生成。" : "请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。"}</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : viewData.deep_status === "OUTDATED" ? "基于最新故事结构重新生成" : "确认故事结构并继续"}</button></>
+        ) : !learningReadiness.ready ? (
+          <div><strong>创作问题的证据原料还不够</strong><span>当前只就绪 {learningReadiness.ready_question_count}/7 项。下一步先补：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}；补齐前不会调用在线模型。</span></div>
         ) : viewData.learning_report_status !== "READY" ? (
-          <><div><strong>{viewData.learning_report_status === "GENERATING" ? "正在生成创作学习报告" : viewData.learning_report_status === "OUTDATED" ? "学习报告已经过期" : viewData.learning_report_status === "FAILED" ? "上次报告生成失败" : "核心拆解可以转成学习答案"}</strong><span>这一步会把现有人物、剧情和深层证据整理成首批 7 个北极星问题答案，其余 35 问继续明确标为未生成。</span></div><button type="button" disabled={viewData.learning_report_status === "GENERATING" || busy === "start-learning-report"} onClick={onStartLearningReport}>{viewData.learning_report_status === "GENERATING" ? "正在生成" : busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成首批学习答案"}</button></>
+          <><div><strong>{viewData.learning_report_status === "GENERATING" ? "正在生成创作学习报告" : viewData.learning_report_status === "OUTDATED" ? "学习报告已经过期" : viewData.learning_report_status === "FAILED" ? "上次报告生成失败" : "候选批次原料已经就绪"}</strong><span>此批次是内部原型，不代表 Fable 指定的固定顺序；其余 35 问继续明确标为未生成。</span></div><button type="button" disabled={viewData.learning_report_status === "GENERATING" || busy === "start-learning-report"} onClick={onStartLearningReport}>{viewData.learning_report_status === "GENERATING" ? "正在生成" : busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成候选学习答案"}</button></>
         ) : (
           <><div><strong>首批创作学习答案已经生成</strong><span>7 个起步问题已有正式状态、计数与证据；其余问题没有被伪装成已完成。</span></div>{analysisStatus === "REVIEW" && <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirmAnalysis}>{busy === "confirm-analysis" ? "正在保存确认" : "确认当前拆解结果"}</button>}</>
         )}
@@ -1751,7 +1768,12 @@ export default function ProductWorkbench() {
 
   async function handleStartLearningReport() {
     if (!analysisRun) return;
-    const confirmed = window.confirm("生成首批创作学习答案会发起一次新的在线 AI 请求，并计入令牌用量。系统只生成当前 7 个问题，不会把其余 35 问包装成已完成。是否继续？");
+    const readiness = workbench?.learning_report.readiness;
+    if (!readiness?.ready) {
+      setError("创作问题的证据原料尚未就绪，系统没有创建在线任务。请先查看学习报告里的数据就绪检查。");
+      return;
+    }
+    const confirmed = window.confirm("生成当前候选批次会发起一次新的在线 AI 请求，并计入 Token（令牌）用量。此批次不是 Fable 规定的固定顺序，其余 35 问不会被包装成已完成。是否继续？");
     if (!confirmed) return;
     try {
       setBusy("start-learning-report");

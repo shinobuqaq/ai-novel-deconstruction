@@ -573,6 +573,11 @@ export type WorkbenchLearningQuestion = {
   priority: "CORE";
   analysis_requirement: string;
   evidence_view: string;
+  output_contract: string;
+  measurement_requirements: string;
+  evidence_requirements: string;
+  scope_requirement: string;
+  external_data_policy: string;
   recommended_rank: number | null;
   status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "NOT_GENERATED";
   conclusion: string;
@@ -613,6 +618,24 @@ export type WorkbenchMethodCandidate = {
   verification_scope: "SINGLE_BOOK_PENDING";
 };
 
+export type WorkbenchLearningReadinessCheck = {
+  question_id: string;
+  question: string;
+  ready: boolean;
+  observed: Record<string, unknown>;
+  gaps: string[];
+  required_artifact: string;
+};
+
+export type WorkbenchLearningReadiness = {
+  ready: boolean;
+  policy: string;
+  ready_question_count: number;
+  total_question_count: number;
+  checks: WorkbenchLearningReadinessCheck[];
+  next_required_artifacts: string[];
+};
+
 export type WorkbenchLearningReport = {
   catalog_version: string;
   batch_label: string;
@@ -622,6 +645,7 @@ export type WorkbenchLearningReport = {
   recommended_question_ids: string[];
   questions: WorkbenchLearningQuestion[];
   stages: WorkbenchLearningStage[];
+  readiness: WorkbenchLearningReadiness;
   author_decisions: WorkbenchAuthorDecision[];
   method_candidates: WorkbenchMethodCandidate[];
 };
