@@ -67,6 +67,13 @@ from .chapter_end_hooks import (
     persist_chapter_end_hooks,
     provider_payload_for_chapter_end_hooks,
 )
+from .opening_hook_payoffs import (
+    OPENING_HOOK_PAYOFFS_TASK_KIND,
+    OpeningHookPayoffsValidationError,
+    parse_opening_hook_payoffs,
+    persist_opening_hook_payoffs,
+    provider_payload_for_opening_hook_payoffs,
+)
 
 
 ANALYSIS_TASK_KINDS = {
@@ -76,6 +83,7 @@ ANALYSIS_TASK_KINDS = {
     DEEP_ANALYSIS_TASK_KIND,
     CHARACTER_DESIGN_TASK_KIND,
     CHAPTER_END_HOOKS_TASK_KIND,
+    OPENING_HOOK_PAYOFFS_TASK_KIND,
     LEARNING_REPORT_TASK_KIND,
 }
 
@@ -452,6 +460,33 @@ async def execute_task(
                 message=message,
                 retryable=False,
             ) from exc
+    elif claim.kind == OPENING_HOOK_PAYOFFS_TASK_KIND:
+        try:
+            with session_factory() as session:
+                provider_payload = provider_payload_for_opening_hook_payoffs(
+                    session,
+                    settings,
+                    payload,
+                )
+        except ValueError as exc:
+            reason_code = str(exc)
+            message = (
+                "当前连续原文窗口超过15万 Token（令牌）软上限，需要缩小窗口后重试。"
+                if (
+                    reason_code.startswith("OPENING_HOOK_PAYOFFS_CONTEXT_TOO_LARGE")
+                    or reason_code.startswith(
+                        "OPENING_HOOK_PAYOFFS_SINGLE_CHAPTER_TOO_LARGE"
+                    )
+                )
+                else "正文或 4.9 章末钩账本已经更新，请基于最新结果重新生成 3.4。"
+                if reason_code == "OPENING_HOOK_PAYOFFS_SOURCE_OUTDATED"
+                else "当前 4.9 全书章末钩账本尚未就绪，暂时不能追踪前三章兑现。"
+            )
+            raise ProviderError(
+                code=reason_code.split(":", 1)[0],
+                message=message,
+                retryable=False,
+            ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_learning_report(
@@ -511,6 +546,7 @@ async def execute_task(
     persisted_deep = None
     persisted_character_design = None
     persisted_chapter_end_hooks = None
+    persisted_opening_hook_payoffs = None
     persisted_learning_report = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
@@ -834,6 +870,72 @@ async def execute_task(
                     model=response.model,
                     raw_text=response.raw_text,
                 ) from exc
+    elif claim.kind == OPENING_HOOK_PAYOFFS_TASK_KIND:
+        try:
+            opening_hook_payoffs_output = parse_opening_hook_payoffs(
+                response.parsed
+            )
+        except OpeningHookPayoffsValidationError as exc:
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message(
+                    "前三章章末钩兑现追踪表",
+                    exc.errors,
+                ),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=exc.errors,
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+                raw_text=response.raw_text,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_opening_hook_payoffs = persist_opening_hook_payoffs(
+                    session,
+                    task=task,
+                    attempt_id=claim.current_attempt_id,
+                    task_payload=payload,
+                    output=opening_hook_payoffs_output,
+                )
+            except ValueError as exc:
+                reason_code = str(exc)
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message=(
+                        "3.4 返回漏掉前三章钩子，或回应原文不在对应后续窗口内，请重新生成。"
+                        if reason_code
+                        != "OPENING_HOOK_PAYOFFS_SOURCE_OUTDATED"
+                        else "生成期间正文或 4.9 账本已经更新，请基于最新结果重新生成。"
+                    ),
+                    retryable=(
+                        reason_code
+                        != "OPENING_HOOK_PAYOFFS_SOURCE_OUTDATED"
+                    ),
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=reason_code,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         try:
             learning_output = parse_learning_report(
@@ -925,6 +1027,8 @@ async def execute_task(
             if claim.kind == CHARACTER_DESIGN_TASK_KIND
             else "analysis.chapter_end_hooks.result"
             if claim.kind == CHAPTER_END_HOOKS_TASK_KIND
+            else "analysis.opening_hook_payoffs.result"
+            if claim.kind == OPENING_HOOK_PAYOFFS_TASK_KIND
             else "analysis.learning_report.result"
             if claim.kind == LEARNING_REPORT_TASK_KIND
             else "fake.echo.result"
@@ -990,6 +1094,13 @@ async def execute_task(
             artifact_payload["accepted"] = {
                 "learning_question_evidence_id": persisted_chapter_end_hooks.id,
                 "question_id": persisted_chapter_end_hooks.question_id,
+            }
+        if persisted_opening_hook_payoffs is not None:
+            artifact_payload["accepted"] = {
+                "learning_question_evidence_id": (
+                    persisted_opening_hook_payoffs.id
+                ),
+                "question_id": persisted_opening_hook_payoffs.question_id,
             }
         if persisted_learning_report is not None:
             artifact_payload["accepted"] = {

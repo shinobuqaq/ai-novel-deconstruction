@@ -658,6 +658,36 @@ export type WorkbenchChapterEndHooksEvidence = {
   };
 };
 
+export type WorkbenchOpeningHookPayoff = {
+  chapter_ordinal: number;
+  chapter_title: string;
+  ending_evidence_id: string;
+  ending_evidence_ids: string[];
+  hook_type: WorkbenchChapterEndHook["hook_type"];
+  strength: WorkbenchChapterEndHook["strength"];
+  hook_question: string;
+  rationale: string;
+  retention_basis: string;
+  response_status: "COMPLETE" | "PARTIAL" | "UNRESOLVED" | "NOT_APPLICABLE";
+  response_evidence_id: string | null;
+  response_evidence_ids: string[];
+  response_summary: string;
+  response_rationale: string;
+  response_chapter_ordinal: number | null;
+  response_distance_chapters: number | null;
+  response_distance_chars: number | null;
+};
+
+export type WorkbenchOpeningHookPayoffsEvidence = {
+  question_id: "3.4";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  hooks: WorkbenchOpeningHookPayoff[];
+  summary: Record<string, number | null>;
+  coverage: Record<string, string | number | boolean>;
+};
+
 export type WorkbenchLearningQuestion = {
   question_id: string;
   stage_id: number;
@@ -684,12 +714,8 @@ export type WorkbenchLearningQuestion = {
     evidence_ids: string[];
     limitations: string[];
     classifications: Array<{
-      subject: string;
+      sequence_no: number;
       category: string;
-      first_action_chapter: number;
-      first_action_event_id: string;
-      explanation: string;
-      evidence_ids: string[];
     }>;
   }>;
   program_artifacts: {
@@ -703,7 +729,6 @@ export type WorkbenchLearningQuestion = {
         action_event_count_through_30: number;
         later_role_volume: string;
         first_scene_function: string;
-        first_scene_function_explanation: string;
         first_scene_function_evidence_ids: string[];
       }>;
       introduction_points: Array<{
@@ -866,6 +891,9 @@ export type Workbench = {
   chapter_end_hooks_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   chapter_end_hooks_evidence: WorkbenchChapterEndHooksEvidence | null;
   chapter_end_hooks: WorkbenchChapterEndHook[];
+  opening_hook_payoffs_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  opening_hook_payoffs_evidence: WorkbenchOpeningHookPayoffsEvidence | null;
+  opening_hook_payoffs: WorkbenchOpeningHookPayoff[];
   learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
@@ -1070,6 +1098,8 @@ export const api = {
     request<AnalysisRun>(`/api/analysis-runs/${runId}/character-design/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startChapterEndHooks: (runId: string, force = false) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/chapter-end-hooks/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startOpeningHookPayoffs: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/opening-hook-payoffs/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startLearningReport: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

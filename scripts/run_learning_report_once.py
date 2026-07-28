@@ -25,6 +25,12 @@ def main() -> int:
         description="为指定分析运行生成当前可答的创作学习问题，并等待本次任务完成。"
     )
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--question-id",
+        choices=("1.4", "2.1", "2.2", "3.4", "4.9"),
+        help="只生成这一问；省略时按当前就绪与过期状态生成全部需要更新的问题。",
+    )
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -37,7 +43,15 @@ def main() -> int:
             if run is None:
                 print("生成失败：找不到指定分析运行。", file=sys.stderr)
                 return 2
-            task = enqueue_learning_report(session, settings, run)
+            task = enqueue_learning_report(
+                session,
+                settings,
+                run,
+                force=args.force,
+                only_question_ids=(
+                    (args.question_id,) if args.question_id else None
+                ),
+            )
         if task is None:
             print("生成失败：深层拆解尚未就绪。", file=sys.stderr)
             return 2

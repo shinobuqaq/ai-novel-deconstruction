@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 
@@ -19,7 +18,6 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.config import get_settings  # noqa: E402
 from app.db import create_db_engine  # noqa: E402
-from app.models import EvidenceSpan  # noqa: E402
 from app.providers.json_output import parse_json_text  # noqa: E402
 from app.services.learning_report import (  # noqa: E402
     LEARNING_QUESTION_CATALOG_VERSION,
@@ -326,14 +324,6 @@ def main() -> int:
                 settings,
                 task_payload,
             )
-            valid_evidence_ids = set(
-                session.scalars(
-                    select(EvidenceSpan.id).where(
-                        EvidenceSpan.source_version_id
-                        == projection["source_version_id"]
-                    )
-                )
-            )
         current_input = json.loads(provider_payload["input"])
         old_input = json.loads(args.old_input.read_text(encoding="utf-8"))
         compact_input, long_input = _comparison_inputs(
@@ -376,11 +366,10 @@ def main() -> int:
         artifact, program_metrics = _validated_2_1_program_artifact(
             answer,
             projection,
-            valid_evidence_ids,
         )
         validation = {
             "schema_valid": True,
-            "contract_items_complete": len(answer.contract_items) == 8,
+            "contract_items_complete": len(answer.contract_items) == 1,
             "classified_character_count": len(artifact["roles"]),
             "character_classification_complete": artifact[
                 "contract_validation"

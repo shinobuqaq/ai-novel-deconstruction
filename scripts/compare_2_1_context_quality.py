@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 
@@ -18,7 +17,6 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.config import get_settings  # noqa: E402
 from app.db import create_db_engine  # noqa: E402
-from app.models import EvidenceSpan  # noqa: E402
 from app.providers import create_default_provider_registry  # noqa: E402
 from app.services.learning_report import (  # noqa: E402
     LEARNING_QUESTION_CATALOG_VERSION,
@@ -169,7 +167,6 @@ async def _call_arm(
     arm: str,
     model_input: str,
     projection: dict,
-    valid_evidence_ids: set[str],
 ) -> tuple[dict[str, object], dict[str, object]]:
     payload = {
         **provider_payload,
@@ -204,11 +201,10 @@ async def _call_arm(
     artifact, program_metrics = _validated_2_1_program_artifact(
         answer,
         projection,
-        valid_evidence_ids,
     )
     result.update({
         "schema_valid": True,
-        "contract_items_complete": len(answer.contract_items) == 8,
+        "contract_items_complete": len(answer.contract_items) == 1,
         "character_references_valid": artifact["contract_validation"][
             "character_classification_complete"
         ],
@@ -296,12 +292,6 @@ def main() -> int:
                 settings,
                 task_payload,
             )
-            valid_evidence_ids = set(session.scalars(
-                select(EvidenceSpan.id).where(
-                    EvidenceSpan.source_version_id
-                    == projection["source_version_id"]
-                )
-            ))
         current_input = json.loads(provider_payload["input"])
         old_input = json.loads(args.old_input.read_text(encoding="utf-8"))
         compact_input, long_input = _comparison_inputs(
@@ -347,7 +337,6 @@ def main() -> int:
                 arm=arm,
                 model_input=model_input,
                 projection=projection,
-                valid_evidence_ids=valid_evidence_ids,
             ))
             results.append(result)
             (output_dir / f"{arm.lower()}-response.json").write_text(

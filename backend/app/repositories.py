@@ -142,6 +142,7 @@ def claim_next_task(
 
         result = session.execute(
             update(Task)
+            .execution_options(synchronize_session=False)
             .where(
                 Task.id == candidate.id,
                 Task.attempts == candidate.attempts,

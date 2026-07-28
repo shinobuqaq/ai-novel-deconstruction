@@ -126,6 +126,10 @@ from .services.chapter_end_hooks import (
     CHAPTER_END_HOOKS_TASK_KIND,
     enqueue_chapter_end_hooks,
 )
+from .services.opening_hook_payoffs import (
+    OPENING_HOOK_PAYOFFS_TASK_KIND,
+    enqueue_opening_hook_payoffs,
+)
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
@@ -373,6 +377,7 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.deep_insights", "事实与核心分析"),
     (CHARACTER_DESIGN_TASK_KIND, "主角双层欲望与最小完整集证据"),
     (CHAPTER_END_HOOKS_TASK_KIND, "逐章章末钩类型与节律账本"),
+    (OPENING_HOOK_PAYOFFS_TASK_KIND, "前三章章末钩兑现追踪表"),
     (LEARNING_REPORT_TASK_KIND, "创作学习报告"),
 )
 
@@ -423,6 +428,7 @@ def _analysis_run_diagnostics(
             "analysis.hierarchical_digest",
             CHARACTER_DESIGN_TASK_KIND,
             CHAPTER_END_HOOKS_TASK_KIND,
+            OPENING_HOOK_PAYOFFS_TASK_KIND,
             LEARNING_REPORT_TASK_KIND,
         } and not stage_tasks:
             continue
@@ -446,6 +452,7 @@ def _analysis_run_diagnostics(
                 "analysis.deep_insights",
                 CHARACTER_DESIGN_TASK_KIND,
                 CHAPTER_END_HOOKS_TASK_KIND,
+                OPENING_HOOK_PAYOFFS_TASK_KIND,
                 LEARNING_REPORT_TASK_KIND,
             }
             and any(task.status == TaskStatus.SUCCEEDED.value for task in stage_tasks)
@@ -1793,6 +1800,46 @@ def chapter_end_hooks_start(
             detail={
                 "code": "CHAPTER_END_HOOKS_SOURCE_NOT_READY",
                 "message": "真实章节、故事结构或深层拆解尚未就绪，暂时不能生成 4.9 逐章账本。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/opening-hook-payoffs/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def opening_hook_payoffs_start(
+    run_id: str,
+    request: Request,
+    force: bool = False,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    task = enqueue_opening_hook_payoffs(
+        session,
+        request.app.state.settings,
+        run,
+        force=force,
+    )
+    if task is None:
+        projection = build_workbench_projection(session, run_id)
+        if projection.get("opening_hook_payoffs_status") == "READY":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "OPENING_HOOK_PAYOFFS_ALREADY_CURRENT",
+                    "message": "当前 3.4 兑现追踪已经基于最新正文和 4.9 账本生成；需要重做时请明确使用重新分析。",
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "OPENING_HOOK_PAYOFFS_SOURCE_NOT_READY",
+                "message": "需要先完成最新版 4.9 全书章末钩账本，才能追踪前三章钩子的后续兑现。",
             },
         )
     return _analysis_run_read(session, run)

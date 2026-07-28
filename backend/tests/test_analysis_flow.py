@@ -373,40 +373,18 @@ class StaticAnalysisProvider:
                     answer["contract_items"] = [
                         {
                             "item_id": item["item_id"],
-                            "status": (
-                                "INSUFFICIENT_EVIDENCE"
-                                if item["item_id"] == "cross_book_comparison"
-                                else "SUPPORTED"
-                            ),
-                            "finding": (
-                                "当前没有同口径多书数据。"
-                                if item["item_id"] == "cross_book_comparison"
-                                else f"{item['label']}已由专项原料逐项覆盖。"
-                            ),
+                            "status": "SUPPORTED",
+                            "finding": f"{item['label']}已由专项原料逐项覆盖。",
                             "metrics": [],
                             "evidence_ids": [],
                             "limitations": [],
-                            "classifications": (
-                                [
-                                    {
-                                        "subject": role["character_name"],
-                                        "category": "主角锚点",
-                                        "first_action_chapter": role[
-                                            "first_action_chapter"
-                                        ],
-                                        "first_action_event_id": role[
-                                            "first_action_event_id"
-                                        ],
-                                        "explanation": "通过首次行动启动或参与开篇任务。",
-                                        "evidence_ids": [
-                                            role["first_action_evidence_ids"][0]
-                                        ],
-                                    }
-                                    for role in roles
-                                ]
-                                if item["item_id"] == "first_scene_functions"
-                                else []
-                            ),
+                            "classifications": [
+                                {
+                                    "sequence_no": role["sequence_no"],
+                                    "category": "主角锚点",
+                                }
+                                for role in roles
+                            ],
                         }
                         for item in question["required_contract_items"]
                     ]

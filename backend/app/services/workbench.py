@@ -24,6 +24,7 @@ from ..models import (
 from .analysis import REQUIRED_CHARACTER_ROSTER_SIZE, narrative_phase_id
 from .character_design import build_character_design_projection
 from .chapter_end_hooks import build_chapter_end_hooks_projection
+from .opening_hook_payoffs import build_opening_hook_payoffs_projection
 from .learning_report import assess_learning_report_readiness, build_learning_report_projection
 
 
@@ -1301,6 +1302,27 @@ def build_workbench_projection(
     projection["chapter_end_hooks"] = (
         chapter_end_hooks_evidence.get("chapters", [])
         if chapter_end_hooks_evidence
+        else []
+    )
+    if include_question_evidence:
+        opening_hook_payoffs_status, opening_hook_payoffs_evidence = (
+            build_opening_hook_payoffs_projection(
+                session,
+                run_id,
+                projection,
+                hook_evidence=chapter_end_hooks_evidence,
+            )
+        )
+    else:
+        opening_hook_payoffs_status, opening_hook_payoffs_evidence = (
+            "NOT_GENERATED",
+            None,
+        )
+    projection["opening_hook_payoffs_status"] = opening_hook_payoffs_status
+    projection["opening_hook_payoffs_evidence"] = opening_hook_payoffs_evidence
+    projection["opening_hook_payoffs"] = (
+        opening_hook_payoffs_evidence.get("hooks", [])
+        if opening_hook_payoffs_evidence
         else []
     )
     learning_readiness = assess_learning_report_readiness(projection)

@@ -1,14 +1,44 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.learning_report import (
+    LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS,
     LEARNING_QUESTION_CATALOG,
     LEARNING_QUESTION_CONTRACTS,
     LearningReportValidationError,
+    _request_budget,
     assess_learning_report_readiness,
     parse_learning_report,
 )
+
+
+def test_all_learning_answers_share_one_default_soft_input_cap() -> None:
+    unknown_context = _request_budget(SimpleNamespace(
+        max_output_tokens=16_000,
+        context_window_tokens=None,
+    ))
+    large_context = _request_budget(SimpleNamespace(
+        max_output_tokens=16_000,
+        context_window_tokens=1_000_000,
+    ))
+
+    assert LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS == 150_000
+    assert unknown_context["input_token_budget"] == 150_000
+    assert large_context["input_token_budget"] == 150_000
+    assert "default_soft_input_cap_tokens" in unknown_context
+
+
+def test_learning_answer_cap_clamps_to_smaller_reported_context() -> None:
+    budget = _request_budget(SimpleNamespace(
+        max_output_tokens=16_000,
+        context_window_tokens=128_000,
+    ))
+
+    assert budget["input_token_budget"] == 107_904
+    assert budget["budget_source"] == "MODEL_CONTEXT_WITH_DEFAULT_SOFT_CAP"
 
 
 def _projection(*, complete_specialized_ledgers: bool) -> dict:
@@ -156,6 +186,45 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
     ]
 
 
+def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
+    projection = _projection(complete_specialized_ledgers=True)
+    projection["opening_hook_payoffs_evidence"] = {
+        "is_current": True,
+        "hooks": [
+            {
+                "chapter_ordinal": ordinal,
+                "hook_type": "NONE",
+                "hook_question": "",
+                "response_status": "NOT_APPLICABLE",
+                "ending_evidence_ids": [f"evd_end_{ordinal}"],
+                "response_evidence_ids": [],
+            }
+            for ordinal in range(1, 4)
+        ],
+        "coverage": {
+            "required_hook_count": 3,
+            "tracked_hook_count": 3,
+            "search_policy": "ALL_LATER_CHAPTERS_WINDOWED",
+            "all_windows_completed": False,
+            "all_required_hooks_resolved": True,
+            "ending_evidence_complete": True,
+            "response_position_program_validated": True,
+        },
+    }
+
+    readiness = assess_learning_report_readiness(projection)
+
+    assert readiness["ready_question_count"] == 5
+    assert readiness["complete_question_count"] == 3
+    assert readiness["generation_ready_question_ids"] == [
+        "1.4",
+        "2.1",
+        "2.2",
+        "3.4",
+        "4.9",
+    ]
+
+
 def _answer(question_id: str) -> dict:
     answer = {
         "question_id": question_id,
@@ -169,46 +238,19 @@ def _answer(question_id: str) -> dict:
         "do_not_copy": ["不能照搬原作设定。"],
     }
     if question_id == "2.1":
-        item_ids = (
-            "opening_character_counts",
-            "character_appearance_sequence",
-            "first_scene_functions",
-            "later_role_volume",
-            "new_character_intervals",
-            "first_function_distribution",
-            "identity_duplicate_risks",
-            "cross_book_comparison",
-        )
         answer["contract_items"] = [
             {
-                "item_id": item_id,
-                "status": (
-                    "INSUFFICIENT_EVIDENCE"
-                    if item_id == "cross_book_comparison"
-                    else "SUPPORTED"
-                ),
-                "finding": (
-                    "当前没有同口径跨书数据。"
-                    if item_id == "cross_book_comparison"
-                    else "当前程序原料支持这一项。"
-                ),
+                "item_id": "first_scene_functions",
+                "status": "SUPPORTED",
+                "finding": "逐人首场功能已经完成分类。",
                 "metrics": [],
                 "evidence_ids": [],
                 "limitations": [],
-                "classifications": (
-                    [{
-                        "subject": "林舟",
-                        "category": "主角锚点",
-                        "first_action_chapter": 1,
-                        "first_action_event_id": "evt_opening",
-                        "explanation": "以主角行动启动开篇任务。",
-                        "evidence_ids": ["evd_event"],
-                    }]
-                    if item_id == "first_scene_functions"
-                    else []
-                ),
+                "classifications": [{
+                    "sequence_no": 1,
+                    "category": "主角锚点",
+                }],
             }
-            for item_id in item_ids
         ]
     return answer
 
@@ -242,7 +284,7 @@ def test_parser_rejects_missing_incremental_question() -> None:
 
 def test_parser_rejects_2_1_that_only_returns_counts() -> None:
     counts_only = _answer("2.1")
-    counts_only["contract_items"] = counts_only["contract_items"][:1]
+    counts_only["contract_items"][0]["item_id"] = "opening_character_counts"
 
     with pytest.raises(LearningReportValidationError) as error:
         parse_learning_report(
@@ -277,3 +319,63 @@ def test_parser_rejects_2_1_without_per_character_first_functions() -> None:
         )
 
     assert error.value.code == "LEARNING_REPORT_2_1_FIRST_FUNCTIONS_MISSING"
+
+
+def test_parser_rejects_unsupported_external_reader_causality() -> None:
+    answer = _answer("1.4")
+    answer["do_not_copy"] = ["这种写法极易导致早期读者流失。"]
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["1.4"],
+        )
+
+    assert (
+        error.value.code
+        == "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED"
+    )
+
+
+def test_parser_allows_external_effect_only_as_unverified_boundary() -> None:
+    answer = _answer("1.4")
+    answer["limitations"] = [
+        "是否造成读者流失需要平台追读数据验证。"
+    ]
+
+    output = parse_learning_report(
+        {
+            "answers": [answer],
+            "author_decisions": [],
+            "method_candidates": [],
+        },
+        expected_question_ids=["1.4"],
+    )
+
+    assert output.answers[0].question_id == "1.4"
+
+
+def test_parser_rejects_invented_external_effect_magnitude() -> None:
+    answer = _answer("1.4")
+    answer["do_not_copy"] = [
+        "这种写法存在较大概率的弃书风险，需待市场数据验证。"
+    ]
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["1.4"],
+        )
+
+    assert (
+        error.value.code
+        == "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED"
+    )

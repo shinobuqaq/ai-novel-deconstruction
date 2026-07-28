@@ -249,9 +249,9 @@ const CHAPTER_END_HOOK_STRENGTH_LABELS: Record<string, string> = {
 };
 
 const CHAPTER_END_HOOK_RESPONSE_LABELS: Record<string, string> = {
-  RESOLVED: "已回应",
+  COMPLETE: "已完整回应",
   PARTIAL: "部分回应",
-  UNRESOLVED: "当前证据未找到回应",
+  UNRESOLVED: "全书未找到回应",
   NOT_APPLICABLE: "无需回应",
 };
 
@@ -353,6 +353,7 @@ type FormalWorkbenchProps = {
   onStartDeepAnalysis: () => void;
   onStartCharacterDesign: (force: boolean) => void;
   onStartChapterEndHooks: (force: boolean) => void;
+  onStartOpeningHookPayoffs: (force: boolean) => void;
   onStartLearningReport: () => void;
   onConfirmAnalysis: () => void;
 }
@@ -376,6 +377,7 @@ function FormalWorkbench({
   onStartDeepAnalysis,
   onStartCharacterDesign,
   onStartChapterEndHooks,
+  onStartOpeningHookPayoffs,
   onStartLearningReport,
   onConfirmAnalysis,
 }: FormalWorkbenchProps) {
@@ -723,6 +725,8 @@ function FormalWorkbench({
   const characterDesignReadiness = learningReadiness.checks.find((item) => item.question_id === "2.2");
   const chapterEndHooks = viewData.chapter_end_hooks_evidence;
   const chapterEndHooksReadiness = learningReadiness.checks.find((item) => item.question_id === "4.9");
+  const openingHookPayoffs = viewData.opening_hook_payoffs_evidence;
+  const openingHookPayoffsReadiness = learningReadiness.checks.find((item) => item.question_id === "3.4");
   const learningQuestionById = new Map(
     learningReport.questions.map((question) => [question.question_id, question]),
   );
@@ -1028,7 +1032,7 @@ function FormalWorkbench({
                       <div><strong>{chapterEndHooks.coverage.sampled_chapter_count}/{chapterEndHooks.coverage.required_sample_count}</strong><span>真实章末已覆盖</span></div>
                       <div><strong>{chapterEndHooks.summary.max_consecutive_strong} 章</strong><span>最长连续强钩</span></div>
                       <div><strong>{chapterEndHooks.summary.no_hook_count} 章</strong><span>无钩章节</span></div>
-                      <div><strong>{chapterEndHooks.summary.response_distance?.average ?? "-"} 章</strong><span>平均回应距离</span></div>
+                      <div><strong>{chapterEndHooks.coverage.window_count ?? 1}</strong><span>连续分析窗口</span></div>
                     </div>
                     <div className="hook-type-summary">
                       {chapterEndHooks.summary.type_distribution.filter((item) => item.count > 0).map((item) => (
@@ -1045,11 +1049,45 @@ function FormalWorkbench({
                           <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
                           <p>{item.rationale}</p>
                           {item.retention_basis && <small>无钩依据：{item.retention_basis}</small>}
-                          <div className="chapter-hook-response">
-                            <strong>{CHAPTER_END_HOOK_RESPONSE_LABELS[item.response_status]}</strong>
-                            <span>{item.response_chapter_ordinal ? `第 ${item.response_chapter_ordinal} 章 · 间隔 ${item.response_distance} 章` : item.response_summary || "没有回应距离"}</span>
-                            {item.response_summary && <p>{item.response_summary}</p>}
+                          <div className="chapter-hook-evidence-actions">
+                            {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
                           </div>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </section>}
+
+              {view !== "learn" && <section className="learning-report-section chapter-end-hooks-ledger">
+                <header>
+                  <div><span>{openingHookPayoffsReadiness?.ready ? "已完成专项 · 北极星 3.4" : "当前专项 · 北极星 3.4"}</span><h3>前三章章末钩与首次回应</h3></div>
+                  <p>这里只追踪前三章各自留下的追读问题及其最早回应。程序连续覆盖后续正文并计算章数与字数距离，页面只展示三条结论。</p>
+                </header>
+                <div className={`character-design-state ${viewData.opening_hook_payoffs_status.toLowerCase()}`}>
+                  <div>
+                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.opening_hook_payoffs_status] ?? "状态未知"}</strong>
+                    <span>{viewData.opening_hook_payoffs_status === "GENERATING" ? "后台正在连续检查前三章之后的正文，寻找每个钩子的最早真实回应。" : openingHookPayoffsReadiness?.ready ? "前三章钩子、回应位置和距离已经通过程序校验。" : openingHookPayoffsReadiness?.gaps.join("；") || "需要先完成当前版 4.9 章末钩类型账本。"}</span>
+                  </div>
+                  {!isHistoricalRevision && chapterEndHooksReadiness?.ready && viewData.opening_hook_payoffs_status !== "GENERATING" && (
+                    <button type="button" disabled={busy === "start-opening-hook-payoffs"} onClick={() => onStartOpeningHookPayoffs(viewData.opening_hook_payoffs_status === "READY")}>
+                      {busy === "start-opening-hook-payoffs" ? "正在准备回应核对" : viewData.opening_hook_payoffs_status === "READY" ? "重新分析 3.4" : viewData.opening_hook_payoffs_status === "OUTDATED" ? "基于最新章末钩重新生成" : "生成 3.4 回应账本"}
+                    </button>
+                  )}
+                </div>
+                {openingHookPayoffs && (
+                  <>
+                    {!openingHookPayoffs.is_current && <div className="character-design-warning">当前显示的是旧版结果，只供回看；最新正文或章末钩账本已经变化。</div>}
+                    <div className="chapter-hook-list">
+                      {openingHookPayoffs.hooks.map((item) => (
+                        <article key={`opening-payoff-${item.chapter_ordinal}`} className={item.hook_type === "NONE" ? "none" : item.strength.toLowerCase()}>
+                          <header>
+                            <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{CHAPTER_END_HOOK_RESPONSE_LABELS[item.response_status]}</span></div>
+                            <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
+                          </header>
+                          <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
+                          <p>{item.response_summary || item.response_rationale || "当前证据没有形成可靠回应结论。"}</p>
+                          <small>{item.response_chapter_ordinal ? `首次回应：第 ${item.response_chapter_ordinal} 章 · 间隔 ${item.response_distance_chapters} 章 · 约 ${formatNumber(item.response_distance_chars ?? 0)} 字` : item.response_status === "NOT_APPLICABLE" ? "本章无钩，不计算回应距离。" : "已连续检查全书，未找到可由原文证明的回应。"}</small>
                           <div className="chapter-hook-evidence-actions">
                             {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
                             {evidenceButtons(item.response_evidence_ids, "查看回应原文")}
@@ -1140,7 +1178,7 @@ function FormalWorkbench({
                                   <strong>{item.sequence_no}. {item.character_name}</strong>
                                   <i>第 {item.first_action_chapter} 章 · {item.later_role_volume}</i>
                                 </header>
-                                <p>{item.first_scene_function}：{item.first_scene_function_explanation}</p>
+                                <p>{item.first_scene_function}</p>
                                 <small>前 30 章参与有效行动事件 {item.action_event_count_through_30} 个 · 首次事件：{item.first_action_event_title}</small>
                                 {evidenceButtons(item.first_scene_function_evidence_ids, "查看首次行动原文")}
                               </article>
@@ -1673,12 +1711,6 @@ function FormalWorkbench({
                             <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
                             <p>{item.rationale}</p>
                             {item.retention_basis && <small>追读依据：{item.retention_basis}</small>}
-                            {item.response_status !== "NOT_APPLICABLE" && (
-                              <div className="chapter-hook-response">
-                                <strong>历史合同中的回应记录</strong>
-                                <span>{item.response_chapter_ordinal ? `第 ${item.response_chapter_ordinal} 章 · 间隔 ${item.response_distance} 章` : item.response_summary || "没有回应距离"}</span>
-                              </div>
-                            )}
                             <div className="chapter-hook-evidence-actions">
                               {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
                             </div>
@@ -1747,7 +1779,9 @@ function FormalWorkbench({
         ) : !learningReadiness.ready && !characterDesignReadiness?.ready ? (
           <><div><strong>{viewData.character_design_status === "GENERATING" ? "正在生成 2.2 主角证据账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.character_design_status === "GENERATING" ? "完成后会独立保存，2.2 就绪后即可单独形成答案。" : "系统会从已有拆书数据中核对主角六项要素及其首次行动证据。"}</span></div>{viewData.character_design_status !== "GENERATING" && <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>{busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}</button>}</>
         ) : !learningReadiness.ready && !chapterEndHooksReadiness?.ready ? (
-          <><div><strong>{viewData.chapter_end_hooks_status === "GENERATING" ? "正在生成 4.9 逐章章末钩账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.chapter_end_hooks_status === "GENERATING" ? "程序已经固定真实章末，正在判断类型和后续回应。" : chapterEndHooksReadiness?.gaps.join("；") || "需要逐章补齐真实结尾和回应证据。"}</span></div>{viewData.chapter_end_hooks_status !== "GENERATING" && <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>{busy === "start-chapter-end-hooks" ? "正在准备" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : "生成 4.9 逐章账本"}</button>}</>
+          <><div><strong>{viewData.chapter_end_hooks_status === "GENERATING" ? "正在生成 4.9 逐章章末钩账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.chapter_end_hooks_status === "GENERATING" ? "程序已经固定真实章末，正在判断每章钩子类型与全书节律。" : chapterEndHooksReadiness?.gaps.join("；") || "需要逐章补齐真实结尾和钩子类型证据。"}</span></div>{viewData.chapter_end_hooks_status !== "GENERATING" && <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>{busy === "start-chapter-end-hooks" ? "正在准备" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : "生成 4.9 逐章账本"}</button>}</>
+        ) : !learningReadiness.ready && !openingHookPayoffsReadiness?.ready ? (
+          <><div><strong>{viewData.opening_hook_payoffs_status === "GENERATING" ? "正在生成 3.4 前三章回应账本" : "3.4 的回应证据尚未完成"}</strong><span>{viewData.opening_hook_payoffs_status === "GENERATING" ? "程序正在连续检查后续正文，查找前三章钩子的最早真实回应。" : openingHookPayoffsReadiness?.gaps.join("；") || "需要基于当前 4.9 结果独立追踪前三章的回应。"}</span></div>{viewData.opening_hook_payoffs_status !== "GENERATING" && <button type="button" disabled={busy === "start-opening-hook-payoffs"} onClick={() => onStartOpeningHookPayoffs(viewData.opening_hook_payoffs_status === "READY")}>{busy === "start-opening-hook-payoffs" ? "正在准备" : viewData.opening_hook_payoffs_status === "READY" ? "重新分析 3.4" : "生成 3.4 回应账本"}</button>}</>
         ) : !learningReadiness.ready ? (
           <div><strong>当前还没有可生成的学习答案</strong><span>系统不会创建在线任务，也不会消耗 Token（令牌）。下一项原料缺口：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}。</span></div>
         ) : viewData.learning_report_status !== "READY" ? (
@@ -2156,12 +2190,27 @@ export default function ProductWorkbench() {
 
   async function handleStartChapterEndHooks(force = false) {
     if (!analysisRun) return;
-    const confirmed = window.confirm("这一步会从现有拆书数据中固定真实章末原文，并发起一次在线 AI 请求，用于生成独立的 4.9 逐章钩子与回应账本，会计入 Token（令牌）用量。完成后 3.4 和 4.9 可以按各自合同形成答案，但不会写入新书开书包。是否继续？");
+    const confirmed = window.confirm("这一步会从现有拆书数据中固定真实章末原文，并发起在线 AI 请求，用于生成独立的 4.9 逐章钩子类型与全书节律账本，会计入 Token（令牌）用量；不会追踪回应，也不会写入新书开书包。是否继续？");
     if (!confirmed) return;
     try {
       setBusy("start-chapter-end-hooks");
       setError("");
       await loadAnalysisResults(await api.startChapterEndHooks(analysisRun.id, force));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleStartOpeningHookPayoffs(force = false) {
+    if (!analysisRun) return;
+    const confirmed = window.confirm("这一步会基于当前 4.9 账本，连续检查前三章之后的正文，发起在线 AI 请求来寻找每个开篇钩子的最早真实回应，并由程序计算章数与字数距离，会计入 Token（令牌）用量；只形成独立的 3.4 证据账本，不会写入新书开书包。是否继续？");
+    if (!confirmed) return;
+    try {
+      setBusy("start-opening-hook-payoffs");
+      setError("");
+      await loadAnalysisResults(await api.startOpeningHookPayoffs(analysisRun.id, force));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2835,6 +2884,7 @@ export default function ProductWorkbench() {
                             onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
                             onStartCharacterDesign={(force) => void handleStartCharacterDesign(force)}
                             onStartChapterEndHooks={(force) => void handleStartChapterEndHooks(force)}
+                            onStartOpeningHookPayoffs={(force) => void handleStartOpeningHookPayoffs(force)}
                             onStartLearningReport={() => void handleStartLearningReport()}
                             onConfirmAnalysis={() => void handleConfirmAnalysis()}
                           />

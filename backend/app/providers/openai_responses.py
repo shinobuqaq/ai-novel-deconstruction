@@ -52,7 +52,10 @@ class OpenAIResponsesProvider:
 
     async def complete(self, *, task_kind: str, payload: dict[str, Any]) -> ProviderResponse:
         service, profile = self._configuration(payload)
-        force_streaming = task_kind == "analysis.learning_report"
+        force_streaming = task_kind in {
+            "analysis.learning_report",
+            "analysis.opening_hook_payoffs",
+        }
         schema = payload.get("output_schema")
         instructions = payload.get("instructions")
         model_input = payload.get("input")
@@ -82,6 +85,7 @@ class OpenAIResponsesProvider:
                 "analysis.deep_insights",
                 "analysis.character_design_evidence",
                 "analysis.chapter_end_hooks",
+                "analysis.opening_hook_payoffs",
                 "analysis.learning_report",
             }
         ):
