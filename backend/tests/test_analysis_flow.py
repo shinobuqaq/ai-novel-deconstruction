@@ -26,6 +26,7 @@ from app.providers.base import ProviderError, ProviderResponse
 from app.providers.openai_responses import OpenAIResponsesProvider
 from app.providers.registry import ProviderRegistry
 from app.repositories import claim_next_task, fail_task_attempt
+from app.services import chapter_end_hooks as chapter_end_hooks_service
 from app.services.analysis import parse_provider_output, persist_analysis_output
 from app.services.provider_config import (
     ENTITIES_EVENTS_PROFILE_ID,
@@ -310,11 +311,6 @@ class StaticAnalysisProvider:
             }
         elif task_kind == "analysis.chapter_end_hooks":
             hook_input = json.loads(payload["input"])
-            response = next(
-                item
-                for item in hook_input["response_evidence_catalog"]
-                if item["chapter_ordinal"] == 2
-            )
             output = {
                 "chapters": [
                     {
@@ -324,10 +320,14 @@ class StaticAnalysisProvider:
                         "strength": "STRONG" if ending["chapter_ordinal"] == 1 else "NONE",
                         "hook_question": "寄信人是谁？" if ending["chapter_ordinal"] == 1 else "",
                         "rationale": "密信在章末抛出新的身份问题。" if ending["chapter_ordinal"] == 1 else "主角作出决定后完整收束。",
-                        "retention_basis": "" if ending["chapter_ordinal"] == 1 else "依靠已经建立的追查主线维持阅读。",
-                        "response_status": "RESOLVED" if ending["chapter_ordinal"] == 1 else "NOT_APPLICABLE",
-                        "response_evidence_id": response["id"] if ending["chapter_ordinal"] == 1 else None,
-                        "response_summary": "下一章主角决定寻找寄信人。" if ending["chapter_ordinal"] == 1 else "",
+                        "retention_basis": (
+                            "具体身份缺口会推动读者继续追查。"
+                            if ending["chapter_ordinal"] == 1
+                            else "依靠已经建立的追查主线维持阅读。"
+                        ),
+                        "response_status": "NOT_APPLICABLE",
+                        "response_evidence_id": None,
+                        "response_summary": "",
                     }
                     for ending in hook_input["chapter_endings"]
                 ]
@@ -758,7 +758,10 @@ def test_provider_config_never_returns_plain_api_key(client) -> None:
     assert json.loads(config_path.read_text(encoding="utf-8"))["api_key"] == "sk-test-secret-value"
 
 
-def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(client) -> None:
+def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
+    client,
+    monkeypatch,
+) -> None:
     imported = _import_confirmed_novel(client)
     client.put("/api/settings/openai", json={"api_key": "sk-test"})
     version_id = imported["version"]["id"]
@@ -1008,24 +1011,38 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert already_current.status_code == 409
     assert already_current.json()["detail"]["code"] == "CHARACTER_DESIGN_ALREADY_CURRENT"
 
+    monkeypatch.setattr(
+        chapter_end_hooks_service,
+        "CHAPTER_END_HOOK_MAX_WINDOW_CHAPTERS",
+        1,
+    )
     hooks_start = client.post(
         f"/api/analysis-runs/{run['id']}/chapter-end-hooks/start"
     )
     assert hooks_start.status_code == 202
-    with client.app.state.session_factory() as session:
-        hooks_claim = claim_next_task(
-            session,
-            worker_id="chapter-end-hooks-test-worker",
-            lease_seconds=60,
+    hooks_claim = None
+    for index in range(2):
+        with client.app.state.session_factory() as session:
+            hooks_claim = claim_next_task(
+                session,
+                worker_id=f"chapter-end-hooks-test-worker-{index}",
+                lease_seconds=60,
+            )
+        assert hooks_claim is not None
+        assert hooks_claim.kind == "analysis.chapter_end_hooks"
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            hooks_claim,
+            registry,
         )
+        if index == 0:
+            partial_hooks_projection = client.get(
+                f"/api/analysis-runs/{run['id']}/workbench"
+            ).json()
+            assert partial_hooks_projection["chapter_end_hooks_status"] == "GENERATING"
+            assert partial_hooks_projection["chapter_end_hooks_evidence"] is None
     assert hooks_claim is not None
-    assert hooks_claim.kind == "analysis.chapter_end_hooks"
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        hooks_claim,
-        registry,
-    )
     hooks_projection = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()
@@ -1034,7 +1051,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert hooks_projection["chapter_end_hooks_evidence"]["is_current"] is True
     assert hooks_projection["chapter_end_hooks_evidence"]["coverage"]["sampled_chapter_count"] == 2
     assert len(hooks_projection["chapter_end_hooks"]) == 2
-    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 5
+    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 4
     hooks_diagnostics = client.get(
         f"/api/analysis-runs/{run['id']}/diagnostics"
     ).json()
@@ -1060,27 +1077,30 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     with client.app.state.session_factory() as session:
         assert session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
-        ) == learning_task_count_before_character_revision + 1
-        first_learning_claim = claim_next_task(
-            session,
-            worker_id="first-incremental-learning-worker",
-            lease_seconds=60,
+        ) == learning_task_count_before_character_revision + 4
+    first_learning_claim = None
+    first_question_ids = []
+    for index in range(4):
+        with client.app.state.session_factory() as session:
+            current_claim = claim_next_task(
+                session,
+                worker_id=f"first-incremental-learning-worker-{index}",
+                lease_seconds=60,
+            )
+        assert current_claim is not None
+        assert current_claim.kind == "analysis.learning_report"
+        question_ids = json.loads(current_claim.payload_json)["question_ids"]
+        assert len(question_ids) == 1
+        first_question_ids.extend(question_ids)
+        first_learning_claim = current_claim
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            current_claim,
+            registry,
         )
+    assert first_question_ids == ["1.4", "2.1", "2.2", "4.9"]
     assert first_learning_claim is not None
-    assert first_learning_claim.kind == "analysis.learning_report"
-    assert json.loads(first_learning_claim.payload_json)["question_ids"] == [
-        "1.4",
-        "2.1",
-        "2.2",
-        "3.4",
-        "4.9",
-    ]
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        first_learning_claim,
-        registry,
-    )
     first_learning_projection = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()
@@ -1094,7 +1114,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert sum(
         item["generated_count"]
         for item in first_learning_projection["learning_report"]["stages"]
-    ) == 5
+    ) == 4
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",
@@ -1206,7 +1226,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     initial_learning = current_revision.json()["learning_report"]
     assert current_revision.json()["learning_report_status"] == "OUTDATED"
     assert len(initial_learning["questions"]) == 42
-    assert sum(item["status"] == "OUTDATED" for item in initial_learning["questions"]) == 5
+    assert sum(item["status"] == "OUTDATED" for item in initial_learning["questions"]) == 4
     assert initial_learning["readiness"]["ready"] is True
     assert initial_learning["readiness"]["ready_question_count"] == 3
     with client.app.state.session_factory() as session:
@@ -1221,24 +1241,26 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         learning_task_count_after = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
-        refreshed_learning_claim = claim_next_task(
-            session,
-            worker_id="refreshed-incremental-learning-worker",
-            lease_seconds=60,
+    assert learning_task_count_after == learning_task_count_before + 3
+    refreshed_question_ids = []
+    for index in range(3):
+        with client.app.state.session_factory() as session:
+            refreshed_learning_claim = claim_next_task(
+                session,
+                worker_id=f"refreshed-incremental-learning-worker-{index}",
+                lease_seconds=60,
+            )
+        assert refreshed_learning_claim is not None
+        question_ids = json.loads(refreshed_learning_claim.payload_json)["question_ids"]
+        assert len(question_ids) == 1
+        refreshed_question_ids.extend(question_ids)
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            refreshed_learning_claim,
+            registry,
         )
-    assert learning_task_count_after == learning_task_count_before + 1
-    assert refreshed_learning_claim is not None
-    assert json.loads(refreshed_learning_claim.payload_json)["question_ids"] == [
-        "1.4",
-        "2.1",
-        "2.2",
-    ]
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        refreshed_learning_claim,
-        registry,
-    )
+    assert refreshed_question_ids == ["1.4", "2.1", "2.2"]
     partial_refresh = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()
@@ -1252,24 +1274,27 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         f"/api/analysis-runs/{run['id']}/chapter-end-hooks/start"
     )
     assert refreshed_hooks_start.status_code == 202
-    with client.app.state.session_factory() as session:
-        refreshed_hooks_claim = claim_next_task(
-            session,
-            worker_id="chapter-end-hooks-refresh-worker",
-            lease_seconds=60,
+    refreshed_hooks_claim = None
+    for index in range(2):
+        with client.app.state.session_factory() as session:
+            refreshed_hooks_claim = claim_next_task(
+                session,
+                worker_id=f"chapter-end-hooks-refresh-worker-{index}",
+                lease_seconds=60,
+            )
+        assert refreshed_hooks_claim is not None
+        assert execute_task_sync(
+            client.app.state.session_factory,
+            client.app.state.settings,
+            refreshed_hooks_claim,
+            registry,
         )
     assert refreshed_hooks_claim is not None
-    assert execute_task_sync(
-        client.app.state.session_factory,
-        client.app.state.settings,
-        refreshed_hooks_claim,
-        registry,
-    )
     hooks_refresh_projection = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()
     assert hooks_refresh_projection["learning_report_status"] == "OUTDATED"
-    assert hooks_refresh_projection["learning_report"]["readiness"]["ready_question_count"] == 5
+    assert hooks_refresh_projection["learning_report"]["readiness"]["ready_question_count"] == 4
 
     hook_answers_start = client.post(
         f"/api/analysis-runs/{run['id']}/learning-report/start"
@@ -1282,7 +1307,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
             lease_seconds=60,
         )
     assert hook_answers_claim is not None
-    assert json.loads(hook_answers_claim.payload_json)["question_ids"] == ["3.4", "4.9"]
+    assert json.loads(hook_answers_claim.payload_json)["question_ids"] == ["4.9"]
     assert execute_task_sync(
         client.app.state.session_factory,
         client.app.state.settings,
@@ -1296,7 +1321,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert sum(
         item["generated_count"]
         for item in merged_learning["learning_report"]["stages"]
-    ) == 5
+    ) == 4
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

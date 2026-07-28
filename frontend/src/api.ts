@@ -638,18 +638,22 @@ export type WorkbenchChapterEndHooksEvidence = {
     max_consecutive_same_type: number;
     no_hook_count: number;
     no_hook_ratio: number;
-    resolved_or_partial_count: number;
-    unresolved_count: number;
-    response_distance: { average: number | null; median: number | null; maximum: number | null };
+    resolved_or_partial_count?: number;
+    unresolved_count?: number;
+    response_distance?: { average: number | null; median: number | null; maximum: number | null };
   };
   coverage: {
     source_chapter_count: number;
     required_sample_count: number;
     sampled_chapter_count: number;
-    sample_policy: "ALL_CHAPTERS" | "BALANCED_50";
+    sample_policy: "ALL_CHAPTERS" | "BALANCED_50" | "ALL_CHAPTERS_WINDOWED";
     sampled_chapter_ordinals: number[];
     ending_evidence_complete: boolean;
-    response_reference_complete: boolean;
+    response_reference_complete?: boolean;
+    sequence_metrics_exact?: boolean;
+    window_count?: number;
+    completed_window_count?: number;
+    response_tracking_scope?: "OUT_OF_SCOPE_FOR_4.9";
     ignored_trailing_boilerplate_count: number;
   };
 };

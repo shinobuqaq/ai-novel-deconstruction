@@ -441,7 +441,7 @@ async def execute_task(
         except ValueError as exc:
             reason_code = str(exc)
             message = (
-                "逐章章末原文和回应候选超过当前模型可安全读取的范围，需要调整专项取样。"
+                "当前章末连续窗口超过模型的任务软预算，需要缩小单个窗口后重试。"
                 if reason_code.startswith("CHAPTER_END_HOOKS_CONTEXT_TOO_LARGE")
                 else "正文、故事结构或深层拆解已经更新，请基于最新结果重新生成章末钩账本。"
                 if reason_code == "CHAPTER_END_HOOKS_SOURCE_OUTDATED"
@@ -783,7 +783,7 @@ async def execute_task(
         except ChapterEndHooksValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message=_validation_message("逐章章末钩与回应账本", exc.errors),
+                message=_validation_message("逐章章末钩类型与节律账本", exc.errors),
                 retryable=True,
                 diagnostics=_attempt_diagnostics(
                     provider_payload,
@@ -811,20 +811,13 @@ async def execute_task(
                     attempt_id=claim.current_attempt_id,
                     task_payload=payload,
                     output=chapter_end_hooks_output,
-                    valid_response_evidence_ids={
-                        str(item.get("id"))
-                        for item in json.loads(
-                            str(provider_payload.get("input") or "{}")
-                        ).get("response_evidence_catalog", [])
-                        if item.get("id")
-                    },
                 )
             except ValueError as exc:
                 reason_code = str(exc)
                 raise ProviderError(
                     code="PROVIDER_INVALID_OUTPUT",
                     message=(
-                        "章末钩账本漏章，或引用的章末/回应原文与实际章节对应不上，请重新生成。"
+                        "章末钩窗口漏章，或引用的章末原文与实际章节对应不上，请重新生成。"
                         if reason_code != "CHAPTER_END_HOOKS_SOURCE_OUTDATED"
                         else "生成期间正文或拆解结果已经更新，请基于最新结果重新生成。"
                     ),

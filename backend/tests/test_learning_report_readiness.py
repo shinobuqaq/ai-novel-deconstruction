@@ -77,16 +77,18 @@ def _projection(*, complete_specialized_ledgers: bool) -> dict:
                     "response_status": "NOT_APPLICABLE",
                     "ending_evidence_ids": [f"evd_end_{ordinal}"],
                 }
-                for ordinal in range(1, 51)
+                for ordinal in range(1, 61)
             ],
             "chapter_end_hooks_evidence": {
                 "is_current": True,
                 "coverage": {
-                    "sample_policy": "BALANCED_50",
+                    "sample_policy": "ALL_CHAPTERS_WINDOWED",
                     "ending_evidence_complete": True,
-                    "response_reference_complete": True,
+                    "sequence_metrics_exact": True,
+                    "window_count": 2,
+                    "response_tracking_scope": "OUT_OF_SCOPE_FOR_4.9",
                 },
-                "summary": {"resolved_or_partial_count": 0},
+                "summary": {"type_transition_count": 0},
             },
             "foreshadowing_ledger": {
                 "covered_chapter_count": 60,
@@ -134,23 +136,24 @@ def test_sparse_deep_analysis_only_unlocks_independently_supported_questions() -
     assert readiness["next_required_artifacts"][0] == "主角双层欲望与最小完整集证据表"
 
 
-def test_specialized_ledgers_unlock_first_incremental_group() -> None:
+def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() -> None:
     readiness = assess_learning_report_readiness(
         _projection(complete_specialized_ledgers=True)
     )
 
     assert readiness["ready"] is True
-    assert readiness["ready_question_count"] == 5
-    assert readiness["complete_question_count"] == 3
+    assert readiness["ready_question_count"] == 4
+    assert readiness["complete_question_count"] == 2
     assert readiness["partial_question_count"] == 2
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
         "2.1",
         "2.2",
-        "3.4",
         "4.9",
     ]
-    assert readiness["next_required_artifacts"] == []
+    assert readiness["next_required_artifacts"] == [
+        "前三章章末钩兑现追踪表（独立于 4.9）"
+    ]
 
 
 def _answer(question_id: str) -> dict:

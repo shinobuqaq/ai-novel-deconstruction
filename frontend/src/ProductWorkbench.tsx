@@ -399,6 +399,7 @@ function FormalWorkbench({
   const [identityBusy, setIdentityBusy] = useState("");
   const [identityError, setIdentityError] = useState("");
   const [focusTarget, setFocusTarget] = useState<{ view: WorkbenchView; id: string } | null>(null);
+  const [activeLearningQuestionId, setActiveLearningQuestionId] = useState("");
   const viewData = revisionData ?? data;
   const unclassifiedCharacters = viewData.characters.filter((item) => item.role_required && item.role === "UNCLASSIFIED");
   const blockingIdentityCandidates = viewData.person_identity_candidates.filter((item) => item.review_priority === "BLOCKING");
@@ -728,6 +729,27 @@ function FormalWorkbench({
   const recommendedLearningQuestions = learningReport.recommended_question_ids
     .map((questionId) => learningQuestionById.get(questionId))
     .filter((question) => question !== undefined);
+  const learningRouteQuestions = learningReport.questions.filter(
+    (question) => question.has_current_answer
+      || learningReport.recommended_question_ids.includes(question.question_id),
+  );
+  const activeLearningQuestionIndex = Math.max(
+    0,
+    learningRouteQuestions.findIndex(
+      (question) => question.question_id === activeLearningQuestionId,
+    ),
+  );
+  const activeLearningQuestion = learningRouteQuestions[activeLearningQuestionIndex];
+  useEffect(() => {
+    if (
+      learningRouteQuestions.length
+      && !learningRouteQuestions.some(
+        (question) => question.question_id === activeLearningQuestionId,
+      )
+    ) {
+      setActiveLearningQuestionId(learningRouteQuestions[0].question_id);
+    }
+  }, [activeLearningQuestionId, learningRouteQuestions]);
   const generatedLearningCount = learningReport.stages.reduce(
     (total, stage) => total + stage.generated_count,
     0,
@@ -905,17 +927,28 @@ function FormalWorkbench({
                 </section>
               )}
 
-              <section className="learning-coverage" aria-label="八个创作阶段覆盖概况">
+              <section className="learning-coverage" aria-label="八个创作阶段目录">
                 {learningReport.stages.map((stage) => (
-                  <div key={stage.stage_id}>
+                  <button
+                    type="button"
+                    className={activeLearningQuestion?.stage_id === stage.stage_id ? "active" : ""}
+                    disabled={!learningRouteQuestions.some((question) => question.stage_id === stage.stage_id)}
+                    onClick={() => {
+                      const firstQuestion = learningRouteQuestions.find(
+                        (question) => question.stage_id === stage.stage_id,
+                      );
+                      if (firstQuestion) setActiveLearningQuestionId(firstQuestion.question_id);
+                    }}
+                    key={stage.stage_id}
+                  >
                     <span>{stage.stage_id}</span>
                     <strong>{stage.stage_name}</strong>
                     <small>{stage.generated_count}/{stage.total_count} 已生成</small>
-                  </div>
+                  </button>
                 ))}
               </section>
 
-              <section className="learning-report-section character-design-ledger">
+              {view !== "learn" && <section className="learning-report-section character-design-ledger">
                 <header>
                   <div><span>{characterDesignReadiness?.ready ? "已完成专项 · 北极星 2.2" : "当前专项 · 北极星 2.2"}</span><h3>主角双层欲望与最小完整集证据表</h3></div>
                   <p>从已经拆出的全书主角事件中定位六项人物要素的首次行动证据；这是供 2.2 独立编译答案的证据账本，不是新书人设。</p>
@@ -969,17 +1002,17 @@ function FormalWorkbench({
                     </div>
                   </>
                 )}
-              </section>
+              </section>}
 
-              <section className="learning-report-section chapter-end-hooks-ledger">
+              {view !== "learn" && <section className="learning-report-section chapter-end-hooks-ledger">
                 <header>
-                  <div><span>{chapterEndHooksReadiness?.ready ? "已完成专项 · 北极星 4.9" : "当前专项 · 北极星 4.9"}</span><h3>逐章章末钩与回应账本</h3></div>
-                  <p>程序固定真实章末原文和回应章节，模型只提议分类；无钩章节同样保留证据并计入覆盖。</p>
+                  <div><span>{chapterEndHooksReadiness?.ready ? "已完成专项 · 北极星 4.9" : "当前专项 · 北极星 4.9"}</span><h3>逐章章末钩类型与节律账本</h3></div>
+                  <p>程序固定真实章末原文，模型只提议类型与强度；全书按连续窗口覆盖，无钩章节同样保留证据并计入覆盖。</p>
                 </header>
                 <div className={`character-design-state ${viewData.chapter_end_hooks_status.toLowerCase()}`}>
                   <div>
                     <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.chapter_end_hooks_status] ?? "状态未知"}</strong>
-                    <span>{viewData.chapter_end_hooks_status === "GENERATING" ? "后台正在逐章核对结尾、类型和后续回应，完成后会由程序统一计数。" : chapterEndHooksReadiness?.ready ? "逐章结尾证据、分类和回应关系已通过程序校验。" : chapterEndHooksReadiness?.gaps.join("；") || "需要先完成故事结构和深层拆解。"}</span>
+                    <span>{viewData.chapter_end_hooks_status === "GENERATING" ? "后台正在按连续窗口核对章末类型和强度，全部窗口完成后由程序统一计数。" : chapterEndHooksReadiness?.ready ? "逐章结尾证据、全书覆盖和顺序指标已通过程序校验。" : chapterEndHooksReadiness?.gaps.join("；") || "需要先完成故事结构和深层拆解。"}</span>
                   </div>
                   {!isHistoricalRevision && characterDesignReadiness?.ready && viewData.deep_status === "READY" && viewData.chapter_end_hooks_status !== "GENERATING" && (
                     <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>
@@ -995,7 +1028,7 @@ function FormalWorkbench({
                       <div><strong>{chapterEndHooks.coverage.sampled_chapter_count}/{chapterEndHooks.coverage.required_sample_count}</strong><span>真实章末已覆盖</span></div>
                       <div><strong>{chapterEndHooks.summary.max_consecutive_strong} 章</strong><span>最长连续强钩</span></div>
                       <div><strong>{chapterEndHooks.summary.no_hook_count} 章</strong><span>无钩章节</span></div>
-                      <div><strong>{chapterEndHooks.summary.response_distance.average ?? "-"} 章</strong><span>平均回应距离</span></div>
+                      <div><strong>{chapterEndHooks.summary.response_distance?.average ?? "-"} 章</strong><span>平均回应距离</span></div>
                     </div>
                     <div className="hook-type-summary">
                       {chapterEndHooks.summary.type_distribution.filter((item) => item.count > 0).map((item) => (
@@ -1026,25 +1059,46 @@ function FormalWorkbench({
                     </div>
                   </>
                 )}
-              </section>
+              </section>}
 
-              <section className="learning-report-section">
+              <section className="learning-report-section learning-question-reader">
                 <header>
-                  <div><span>第一次内容判断 · 首组五问</span><h3>先看实际答案有没有用、有没有抓住重点</h3></div>
-                  <p>1.4、2.1 允许带明确缺口的部分答案；2.2、3.4、4.9 通过各自证据合同后生成完整答案。五问互不借用就绪状态。</p>
+                  <div><span>按写书顺序阅读 · 一次只看一问</span><h3>先判断当前答案有没有用、有没有抓住重点</h3></div>
+                  <p>42 问是系统内部的完整主尺，不会一次铺满页面。你只需要顺着阶段目录阅读当前问题，需要核实时再打开证据资料。</p>
                 </header>
-                <div className="learning-question-list">
-                  {recommendedLearningQuestions.map((question) => (
-                    <article className="learning-question-card" key={question.question_id}>
+                {activeLearningQuestion ? (
+                  <>
+                    <nav className="learning-question-pager" aria-label="问题切换">
+                      <button
+                        type="button"
+                        disabled={activeLearningQuestionIndex === 0}
+                        onClick={() => setActiveLearningQuestionId(
+                          learningRouteQuestions[activeLearningQuestionIndex - 1].question_id,
+                        )}
+                      >
+                        上一问
+                      </button>
+                      <span>当前路线第 {activeLearningQuestionIndex + 1}/{learningRouteQuestions.length} 问</span>
+                      <button
+                        type="button"
+                        disabled={activeLearningQuestionIndex >= learningRouteQuestions.length - 1}
+                        onClick={() => setActiveLearningQuestionId(
+                          learningRouteQuestions[activeLearningQuestionIndex + 1].question_id,
+                        )}
+                      >
+                        下一问
+                      </button>
+                    </nav>
+                    <article className="learning-question-card active-question" key={activeLearningQuestion.question_id}>
                       <header>
-                        <span>{question.question_id} · {question.stage_name}</span>
-                        <i>{LEARNING_ANSWER_STATUS_LABELS[question.status] ?? "状态未知"}</i>
+                        <span>{activeLearningQuestion.question_id} · {activeLearningQuestion.stage_name}</span>
+                        <i>{LEARNING_ANSWER_STATUS_LABELS[activeLearningQuestion.status] ?? "状态未知"}</i>
                       </header>
-                      <h4>{question.question}</h4>
-                      <p>{question.conclusion || (viewData.learning_report_status === "GENERATING" ? "系统正在根据拆解证据生成这项答案。" : "这项专项答案尚未生成。")}</p>
-                      {question.metrics.length > 0 && (
+                      <h4>{activeLearningQuestion.question}</h4>
+                      <p>{activeLearningQuestion.conclusion || (viewData.learning_report_status === "GENERATING" ? "系统正在根据拆解证据生成这项答案。" : "这项专项答案尚未生成。")}</p>
+                      {activeLearningQuestion.metrics.length > 0 && (
                         <div className="learning-metric-row">
-                          {question.metrics.map((metric, index) => (
+                          {activeLearningQuestion.metrics.map((metric, index) => (
                             <div key={`${metric.label}-${index}`} title={metric.method}>
                               <strong>{metric.value}{metric.unit ? ` ${metric.unit}` : ""}</strong>
                               <span>{metric.label}</span>
@@ -1052,27 +1106,27 @@ function FormalWorkbench({
                           ))}
                         </div>
                       )}
-                      {question.reusable_lessons.length > 0 && (
+                      {activeLearningQuestion.reusable_lessons.length > 0 && (
                         <div className="learning-answer-block">
                           <strong>可以参考</strong>
-                          <ul>{question.reusable_lessons.map((item) => <li key={item}>{item}</li>)}</ul>
+                          <ul>{activeLearningQuestion.reusable_lessons.map((item) => <li key={item}>{item}</li>)}</ul>
                         </div>
                       )}
-                      {question.do_not_copy.length > 0 && (
+                      {activeLearningQuestion.do_not_copy.length > 0 && (
                         <div className="learning-answer-block warning">
                           <strong>不能照搬</strong>
-                          <ul>{question.do_not_copy.map((item) => <li key={item}>{item}</li>)}</ul>
+                          <ul>{activeLearningQuestion.do_not_copy.map((item) => <li key={item}>{item}</li>)}</ul>
                         </div>
                       )}
-                      {question.limitations.length > 0 && <small>限制：{question.limitations.join("；")}</small>}
+                      {activeLearningQuestion.limitations.length > 0 && <small>限制：{activeLearningQuestion.limitations.join("；")}</small>}
                       <div className="learning-card-actions">
-                        <button type="button" className="text-action" onClick={() => onViewChange(LEARNING_EVIDENCE_VIEWS[question.evidence_view] ?? "overview")}>打开相关证据资料</button>
-                        {evidenceButtons(question.evidence_ids.slice(0, 4), "查看关键原文")}
-                        {evidenceButtons(question.counter_evidence_ids.slice(0, 3), "查看反证或限制")}
+                        <button type="button" className="text-action" onClick={() => onViewChange(LEARNING_EVIDENCE_VIEWS[activeLearningQuestion.evidence_view] ?? "overview")}>打开相关证据资料</button>
+                        {evidenceButtons(activeLearningQuestion.evidence_ids.slice(0, 4), "查看关键原文")}
+                        {evidenceButtons(activeLearningQuestion.counter_evidence_ids.slice(0, 3), "查看反证或限制")}
                       </div>
                     </article>
-                  ))}
-                </div>
+                  </>
+                ) : <p className="result-empty">当前还没有进入学习路线的问题；先完成可回答问题的原料检查。</p>}
               </section>
 
               <section className="learning-report-section learning-settlement">
@@ -1285,7 +1339,58 @@ function FormalWorkbench({
                 </section>
               ))}
               {!viewData.characters.length && <p className="result-empty">当前没有整理出人物档案。</p>}
-              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={name}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化摘要：{relation.changes.join("；")}</small>}{relation.change_history.length > 0 && <div className="relation-change-history">{relation.change_history.map((change, changeIndex) => <div key={`${change.chapter_ordinal}-${changeIndex}`}><b>第 {change.chapter_ordinal} 章</b><span>{change.before ? `${change.before} → ` : ""}{change.after}</span>{change.trigger_event_id && (() => { const event = viewData.events.find((item) => item.id === change.trigger_event_id); return event ? <button type="button" onClick={() => openWorkbenchItem("events", event.id)}>触发事件：{event.title}</button> : null; })()}{evidenceButtons(change.evidence_ids, "查看变化依据")}</div>)}</div>}{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_name}与${relation.target_name}的关系`)}</article>)}</section>}
+              {viewData.character_relations.length > 0 && <section className="relation-section"><header><h3>人物关系</h3><span>{viewData.character_relations.length} 条</span></header>{viewData.character_relations.map((relation, index) => <article key={`${relation.source_name}-${relation.target_name}-${index}`}><div className="relation-object-links">{[relation.source_name, relation.target_name].map((name, nameIndex) => { const character = characterForName(name); return character ? <button type="button" key={`${name}-${nameIndex}`} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <strong key={`${name}-${nameIndex}`}>{name}</strong>; })}</div><span>{relation.relation}</span><p>{relation.current_state || "关系状态待补充"}</p>{relation.changes.length > 0 && <small>变化摘要：{relation.changes.join("；")}</small>}{relation.change_history.length > 0 && <div className="relation-change-history">{relation.change_history.map((change, changeIndex) => <div key={`${change.chapter_ordinal}-${changeIndex}`}><b>第 {change.chapter_ordinal} 章</b><span>{change.before ? `${change.before} → ` : ""}{change.after}</span>{change.trigger_event_id && (() => { const event = viewData.events.find((item) => item.id === change.trigger_event_id); return event ? <button type="button" onClick={() => openWorkbenchItem("events", event.id)}>触发事件：{event.title}</button> : null; })()}{evidenceButtons(change.evidence_ids, "查看变化依据")}</div>)}</div>}{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_name}与${relation.target_name}的关系`)}</article>)}</section>}
+              <section className="evidence-ledger-section character-design-ledger">
+                <header>
+                  <div><span>北极星 2.2 · 专项证据</span><h3>主角双层欲望与最小完整集</h3></div>
+                  <p>学习答案页只显示结论；六项人物要素的逐项依据集中保存在这里。</p>
+                </header>
+                <div className={`character-design-state ${viewData.character_design_status.toLowerCase()}`}>
+                  <div>
+                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.character_design_status] ?? "状态未知"}</strong>
+                    <span>{characterDesignReadiness?.gaps.join("；") || "人物专项证据已经通过当前合同检查。"}</span>
+                  </div>
+                  {!isHistoricalRevision && viewData.deep_status === "READY" && viewData.character_design_status !== "GENERATING" && (
+                    <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>
+                      {busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}
+                    </button>
+                  )}
+                </div>
+                {characterDesign && (
+                  <>
+                    <div className="character-design-coverage">
+                      <div><strong>{characterDesign.coverage.covered_event_count}/{characterDesign.coverage.protagonist_event_count}</strong><span>主角事件已纳入</span></div>
+                      <div><strong>{characterDesign.coverage.source_chapter_count}</strong><span>全书章节</span></div>
+                      <div><strong>{characterDesign.coverage.first_30_chapter_event_count}</strong><span>前 30 章主角事件</span></div>
+                      <div><strong>第 {characterDesign.revision} 版</strong><span>{characterDesign.is_current ? "对应当前拆解" : "旧版结果"}</span></div>
+                    </div>
+                    <div className="character-design-fields">
+                      {characterDesign.fields.map((item) => (
+                        <article className={item.status === "SUPPORTED" ? "supported" : "insufficient"} key={`evidence-${item.field}`}>
+                          <header><strong>{CHARACTER_DESIGN_FIELD_LABELS[item.field] ?? item.field}</strong><span>{item.status === "SUPPORTED" ? `第 ${item.first_display_chapter_ordinal} 章首次展示` : "证据不足"}</span></header>
+                          <h4>{item.value || "当前材料无法形成可靠判断"}</h4>
+                          {item.display_event && <p>{item.display_event}</p>}
+                          <small>{item.explanation}</small>
+                          {evidenceButtons(item.evidence_ids, "查看首次展示原文")}
+                        </article>
+                      ))}
+                    </div>
+                    <details className="ledger-detail">
+                      <summary>查看人物弧光与 {characterDesign.desire_conflicts.length} 个双层欲望冲突节点</summary>
+                      <p>{characterDesign.arc_summary}</p>
+                      {characterDesign.desire_conflicts.map((item, index) => (
+                        <article key={`evidence-conflict-${item.event_id}-${index}`}>
+                          <strong>第 {item.chapter_ordinal} 章</strong>
+                          <p>表层：{item.surface_desire}</p>
+                          <p>深层：{item.deep_desire}</p>
+                          <p>选择与变化：{item.choice}；{item.arc_change}</p>
+                          {evidenceButtons(item.evidence_ids, "查看冲突原文")}
+                        </article>
+                      ))}
+                    </details>
+                  </>
+                )}
+              </section>
             </div>
           )}
 
@@ -1321,7 +1426,7 @@ function FormalWorkbench({
                   <header><div><span>{EVENT_LABELS[event.event_type] ?? "事件"}</span><h3>{event.title}</h3></div><i className={event.status === "UNCERTAIN" ? "needs-review" : ""}>{event.status === "UNCERTAIN" ? "待抽查" : event.chapter_titles.join("、") || "章节待定"}</i></header>
                   <p>{event.summary}</p>
                   <div className="event-nature"><strong>{NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</strong><span>{event.boundary_note}</span></div>
-                  {event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={name}>{name}</span>; })}</div>}
+                  {event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name, nameIndex) => { const character = characterForName(name); return character ? <button type="button" key={`${name}-${nameIndex}`} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={`${name}-${nameIndex}`}>{name}</span>; })}</div>}
                   {event.related_entities.length > 0 && <small>相关地点、组织或事物：{event.related_entities.join("、")}</small>}
                   {event.location && <small>发生地点：{event.location}</small>}
                   <dl className="event-detail-grid">
@@ -1343,7 +1448,7 @@ function FormalWorkbench({
             <div className="deep-analysis-view">
               <div className="workbench-callout"><strong>按原文推进顺序查看</strong><span>事件会标明真实发生、回忆、传闻、谎言、误解、推测或重复提及；多段依据不会被错误拼成一段连续正文。</span></div>
               <div className="event-timeline">
-                {viewData.events.map((event, index) => <article className={focusClass(event.id).trim()} data-workbench-id={event.id} key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name) => { const character = characterForName(name); return character ? <button type="button" key={name} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={name}>{name}</span>; })}</div>}{evidenceButtons(event.evidence_ids)}{markProblemButton("EVENT", event.id, event.title)}</div></article>)}
+                {viewData.events.map((event, index) => <article className={focusClass(event.id).trim()} data-workbench-id={event.id} key={event.id}><span>{index + 1}</span><div><small>{event.chapter_titles.join("、") || "章节待定"} · {EVENT_LABELS[event.event_type] ?? "事件"} · {NARRATIVE_MODE_LABELS[event.narrative_mode] ?? "性质待确认"}</small><h3>{event.title}</h3><p>{event.summary}</p>{event.trigger && <small>起因：{event.trigger}</small>}{event.outcome && <small>结果：{event.outcome}</small>}{event.impact && <small>影响：{event.impact}</small>}{event.people.length > 0 && <div className="association-links"><strong>参与人物</strong>{event.people.map((name, nameIndex) => { const character = characterForName(name); return character ? <button type="button" key={`${name}-${nameIndex}`} onClick={() => openWorkbenchItem("characters", character.id)}>{name}</button> : <span key={`${name}-${nameIndex}`}>{name}</span>; })}</div>}{evidenceButtons(event.evidence_ids)}{markProblemButton("EVENT", event.id, event.title)}</div></article>)}
                 {!viewData.events.length && <p className="result-empty">当前没有整理出事件时间线。</p>}
               </div>
               {viewData.event_relations.length > 0 && <section className="relation-section"><header><h3>前因与后果</h3><span>{viewData.event_relations.length} 条</span></header>{viewData.event_relations.map((relation) => <article key={`${relation.source_event_id}-${relation.target_event_id}`}><div className="relation-object-links"><button type="button" onClick={() => openWorkbenchItem("events", relation.source_event_id)}>{relation.source_title}</button><span>→</span><button type="button" onClick={() => openWorkbenchItem("events", relation.target_event_id)}>{relation.target_title}</button></div><span>{EVENT_RELATION_LABELS[relation.relation] ?? "关联方式待核对"}</span><p>{relation.explanation}</p>{evidenceButtons(relation.evidence_ids)}{markProblemButton("RELATION", null, `${relation.source_title}与${relation.target_title}的因果关系`)}</article>)}</section>}
@@ -1484,6 +1589,64 @@ function FormalWorkbench({
           {!searchQuery.trim() && view === "pacing" && (
             <div className="deep-analysis-view">
               {!viewData.deep_analysis ? <div className="workbench-callout"><strong>节奏分析仍在整理</strong><span>系统会按章节说明场景作用、信息释放和节奏变化。</span></div> : <section className="insight-group"><header><div><span>章节如何发挥作用</span><h3>场景与节奏</h3></div><b>{viewData.deep_analysis.scene_analysis.length}</b></header><div className="scene-analysis-list">{viewData.deep_analysis.scene_analysis.map((scene) => <article key={scene.id}><div><span>第 {scene.chapter_ordinal} 章</span><b>{scene.function === "SETUP" ? "铺垫" : scene.function === "TRANSITION" ? "过渡" : scene.function === "REVELATION" ? "揭示" : scene.function === "CONFLICT" ? "冲突" : scene.function === "DECISION" ? "决定" : scene.function === "AFTERMATH" ? "余波" : "其他功能"}</b></div><h4>{scene.summary}</h4><p>节奏：{scene.pace === "SLOW" ? "较慢" : scene.pace === "STEADY" ? "平稳" : scene.pace === "FAST" ? "较快" : scene.pace === "ACCELERATING" ? "正在加速" : scene.pace === "BRAKING" ? "明显放缓" : "尚不确定"}</p>{scene.information_released.length > 0 && <small>释放信息：{scene.information_released.join("；")}</small>}{scene.action_dialogue_balance && <small>动作与对话：{ACTION_DIALOGUE_LABELS[scene.action_dialogue_balance] ?? "暂时无法判断"}</small>}{evidenceButtons(scene.evidence_ids)}{markProblemButton("SCENE", scene.id, `第 ${scene.chapter_ordinal} 章：${scene.summary}`)}</article>)}{!viewData.deep_analysis.scene_analysis.length && <p className="result-empty">当前没有完成场景与节奏分析。</p>}</div></section>}
+              <section className="evidence-ledger-section chapter-end-hooks-ledger">
+                <header>
+                  <div><span>北极星 4.9 · 专项证据</span><h3>全书章末钩类型与节律账本</h3></div>
+                  <p>模型按连续章节窗口逐章分类，程序在全书窗口完成后精确计算类型比例、相邻轮换与连续记录；这里不混入 3.4 的前三章兑现或 4.10 的悬念回收。</p>
+                </header>
+                <div className={`character-design-state ${viewData.chapter_end_hooks_status.toLowerCase()}`}>
+                  <div>
+                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.chapter_end_hooks_status] ?? "状态未知"}</strong>
+                    <span>{viewData.chapter_end_hooks_status === "GENERATING" ? "后台正在按连续窗口覆盖全书，全部窗口完成后才形成精确全书账本。" : chapterEndHooksReadiness?.gaps.join("；") || "全书连续覆盖与顺序指标已经通过程序校验。"}</span>
+                  </div>
+                  {!isHistoricalRevision && viewData.deep_status === "READY" && viewData.chapter_end_hooks_status !== "GENERATING" && (
+                    <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>
+                      {busy === "start-chapter-end-hooks" ? "正在准备" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : "生成 4.9 全书账本"}
+                    </button>
+                  )}
+                </div>
+                {chapterEndHooks && (
+                  <>
+                    {!chapterEndHooks.is_current && <div className="character-design-warning">当前显示的是旧版结果，只供回看；最新正文、拆解合同或深层分析已经变化。</div>}
+                    <div className="character-design-coverage">
+                      <div><strong>{chapterEndHooks.coverage.sampled_chapter_count}/{chapterEndHooks.coverage.required_sample_count}</strong><span>真实章末已覆盖</span></div>
+                      <div><strong>{chapterEndHooks.coverage.window_count ?? 1}</strong><span>连续分析窗口</span></div>
+                      <div><strong>{chapterEndHooks.summary.max_consecutive_strong} 章</strong><span>最长连续强钩</span></div>
+                      <div><strong>{chapterEndHooks.summary.no_hook_count} 章</strong><span>无钩章节</span></div>
+                    </div>
+                    <div className="hook-type-summary">
+                      {chapterEndHooks.summary.type_distribution.filter((item) => item.count > 0).map((item) => (
+                        <div key={`pacing-${item.hook_type}`}><strong>{item.count}</strong><span>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</span><small>{Math.round(item.ratio * 100)}%</small></div>
+                      ))}
+                    </div>
+                    <details className="ledger-detail chapter-hook-details">
+                      <summary>查看 {chapterEndHooks.chapters.length} 章逐章分类与原文依据</summary>
+                      <div className="chapter-hook-list">
+                        {chapterEndHooks.chapters.map((item) => (
+                          <article key={`pacing-hook-${item.chapter_ordinal}`} className={item.hook_type === "NONE" ? "none" : item.strength.toLowerCase()}>
+                            <header>
+                              <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{item.phase_title || "未归入剧情阶段"}</span></div>
+                              <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
+                            </header>
+                            <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
+                            <p>{item.rationale}</p>
+                            {item.retention_basis && <small>追读依据：{item.retention_basis}</small>}
+                            {item.response_status !== "NOT_APPLICABLE" && (
+                              <div className="chapter-hook-response">
+                                <strong>历史合同中的回应记录</strong>
+                                <span>{item.response_chapter_ordinal ? `第 ${item.response_chapter_ordinal} 章 · 间隔 ${item.response_distance} 章` : item.response_summary || "没有回应距离"}</span>
+                              </div>
+                            )}
+                            <div className="chapter-hook-evidence-actions">
+                              {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  </>
+                )}
+              </section>
             </div>
           )}
 

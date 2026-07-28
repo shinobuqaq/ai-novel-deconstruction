@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import re
+import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
-from statistics import median
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -36,8 +35,12 @@ from .provider_config import (
 CHAPTER_END_HOOKS_TASK_KIND = "analysis.chapter_end_hooks"
 CHAPTER_END_HOOKS_QUESTION_ID = "4.9"
 CHAPTER_END_HOOKS_PROMPT_ID = "chapter_end_hooks"
-CHAPTER_END_HOOKS_PROMPT_VERSION = "1.0.0"
-CHAPTER_END_HOOK_SAMPLE_LIMIT = 50
+CHAPTER_END_HOOKS_PROMPT_VERSION = "2.0.0"
+CHAPTER_END_HOOK_TARGET_INPUT_TOKENS = 24_000
+CHAPTER_END_HOOK_SOFT_INPUT_TOKENS = 32_000
+CHAPTER_END_HOOK_ESTIMATED_CHARS_PER_TOKEN = 2
+CHAPTER_END_HOOK_WINDOW_OVERHEAD_CHARS = 12_000
+CHAPTER_END_HOOK_MAX_WINDOW_CHAPTERS = 80
 
 HOOK_TYPES = (
     "CRISIS_SUSPENSION",
@@ -71,7 +74,7 @@ class ChapterEndHookProposal(BaseModel):
     hook_question: str = Field(default="", max_length=1000)
     rationale: str = Field(min_length=1, max_length=1600)
     retention_basis: str = Field(default="", max_length=1200)
-    response_status: Literal["RESOLVED", "PARTIAL", "UNRESOLVED", "NOT_APPLICABLE"]
+    response_status: Literal["NOT_APPLICABLE"] = "NOT_APPLICABLE"
     response_evidence_id: str | None = Field(default=None, max_length=64)
     response_summary: str = Field(default="", max_length=1200)
 
@@ -84,28 +87,20 @@ class ChapterEndHookProposal(BaseModel):
                 raise ValueError("无钩章节不能虚构追读问题")
             if not self.retention_basis.strip():
                 raise ValueError("无钩章节必须说明靠什么维持阅读或为何属于非叙事内容")
-            if self.response_status != "NOT_APPLICABLE":
-                raise ValueError("无钩章节的回应状态必须为 NOT_APPLICABLE")
-            if self.response_evidence_id or self.response_summary.strip():
-                raise ValueError("无钩章节不能保留回应证据或回应说明")
-            return self
-
-        if self.strength == "NONE":
+        elif self.strength == "NONE":
             raise ValueError("有钩章节必须标注实际强度")
-        if not self.hook_question.strip():
+        elif not self.hook_question.strip():
             raise ValueError("有钩章节必须写出章末形成的具体追读问题")
-        if self.response_status == "NOT_APPLICABLE":
-            raise ValueError("有钩章节不能使用 NOT_APPLICABLE 回应状态")
-        if self.response_status in {"RESOLVED", "PARTIAL"}:
-            if not self.response_evidence_id or not self.response_summary.strip():
-                raise ValueError("已回应或部分回应必须同时提供后续原文和回应说明")
-        elif self.response_evidence_id or self.response_summary.strip():
-            raise ValueError("未回应结论不能挂接未经证明的回应原文")
+        if self.response_evidence_id or self.response_summary.strip():
+            raise ValueError("4.9 不追踪逐章回应，不能挂接回应证据")
         return self
 
 
 class ChapterEndHooksOutput(BaseModel):
-    chapters: list[ChapterEndHookProposal] = Field(min_length=1, max_length=50)
+    chapters: list[ChapterEndHookProposal] = Field(
+        min_length=1,
+        max_length=CHAPTER_END_HOOK_MAX_WINDOW_CHAPTERS,
+    )
 
 
 class ChapterEndHooksValidationError(ValueError):
@@ -173,12 +168,29 @@ def _prompt() -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _request_budget_chars(profile: Any) -> int:
+def _request_budget(profile: Any) -> dict[str, int | str]:
     output_reserve = max(1, int(getattr(profile, "max_output_tokens", 16_000)))
     context_window = getattr(profile, "context_window_tokens", None)
     if context_window is not None:
-        return min(160_000, max(24_000, int(context_window) - output_reserve - 4_096))
-    return max(48_000, min(160_000, output_reserve * 3))
+        available_tokens = max(
+            8_000,
+            int(context_window) - output_reserve - 4_096,
+        )
+        input_tokens = min(CHAPTER_END_HOOK_SOFT_INPUT_TOKENS, available_tokens)
+        source = "MODEL_CONTEXT_WITH_TASK_SOFT_CAP"
+    else:
+        input_tokens = CHAPTER_END_HOOK_TARGET_INPUT_TOKENS
+        source = "TASK_TARGET_WITHOUT_REPORTED_CONTEXT"
+    return {
+        "target_input_tokens": CHAPTER_END_HOOK_TARGET_INPUT_TOKENS,
+        "soft_input_tokens": CHAPTER_END_HOOK_SOFT_INPUT_TOKENS,
+        "input_token_budget": input_tokens,
+        "input_char_budget": (
+            input_tokens * CHAPTER_END_HOOK_ESTIMATED_CHARS_PER_TOKEN
+        ),
+        "estimated_chars_per_token": CHAPTER_END_HOOK_ESTIMATED_CHARS_PER_TOKEN,
+        "budget_source": source,
+    }
 
 
 def _base_projection(session: Session, run_id: str) -> dict:
@@ -200,16 +212,6 @@ def _chapter_units(session: Session, source_version_id: str) -> list[SourceUnit]
         )
         .order_by(SourceUnit.ordinal)
     ))
-
-
-def _sample_indexes(chapter_count: int) -> list[int]:
-    if chapter_count <= CHAPTER_END_HOOK_SAMPLE_LIMIT:
-        return list(range(chapter_count))
-    last = chapter_count - 1
-    return sorted({
-        round(index * last / (CHAPTER_END_HOOK_SAMPLE_LIMIT - 1))
-        for index in range(CHAPTER_END_HOOK_SAMPLE_LIMIT)
-    })
 
 
 def _is_heading(span: EvidenceSpan, unit: SourceUnit) -> bool:
@@ -264,101 +266,44 @@ def _ending_evidence_catalog(
     return selected, by_chapter, ignored_total
 
 
-def _nested_evidence_ids(value: object) -> set[str]:
-    found: set[str] = set()
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key.endswith("evidence_ids") and isinstance(item, list):
-                found.update(str(entry) for entry in item if entry)
-            else:
-                found.update(_nested_evidence_ids(item))
-    elif isinstance(value, list):
-        for item in value:
-            found.update(_nested_evidence_ids(item))
-    return found
-
-
-def _balanced_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
-    ordered = sorted(
-        records,
-        key=lambda item: (
-            int(item.get("chapter_ordinal") or 0),
-            str(item.get("id") or ""),
-        ),
+def _window_specs(
+    endings: list[dict[str, object]],
+    *,
+    input_char_budget: int,
+) -> list[dict[str, int]]:
+    material_budget = max(
+        8_000,
+        input_char_budget - CHAPTER_END_HOOK_WINDOW_OVERHEAD_CHARS,
     )
-    if len(ordered) <= 2:
-        return ordered
-    selected_indexes = [0, len(ordered) - 1]
-    intervals = [(-(len(ordered) - 1), 0, len(ordered) - 1)]
-    while intervals:
-        _negative_width, left, right = heapq.heappop(intervals)
-        if right - left <= 1:
-            continue
-        chosen = (left + right) // 2
-        selected_indexes.append(chosen)
-        if chosen - left > 1:
-            heapq.heappush(intervals, (-(chosen - left), left, chosen))
-        if right - chosen > 1:
-            heapq.heappush(intervals, (-(right - chosen), chosen, right))
-    return [ordered[index] for index in selected_indexes]
-
-
-def _response_evidence_catalog(
-    session: Session,
-    projection: dict,
-    units: list[SourceUnit],
-    sample_indexes: list[int],
-    ending_by_chapter: dict[int, EvidenceSpan],
-) -> list[dict[str, object]]:
-    unit_position = {unit.id: index + 1 for index, unit in enumerate(units)}
-    priority_by_id: dict[str, int] = {
-        evidence_id: 80 for evidence_id in _nested_evidence_ids(projection)
-    }
-    for index in sample_indexes:
-        for following_index in range(index + 1, min(len(units), index + 3)):
-            unit = units[following_index]
-            openings = list(session.scalars(
-                select(EvidenceSpan)
-                .where(EvidenceSpan.source_unit_id == unit.id)
-                .order_by(EvidenceSpan.paragraph_index, EvidenceSpan.start_char)
-            ))
-            openings = [
-                span
-                for span in openings
-                if not _is_heading(span, unit) and not _is_boilerplate(span)
-            ][:3]
-            for span in openings:
-                priority_by_id[span.id] = max(priority_by_id.get(span.id, 0), 100)
-    for span in ending_by_chapter.values():
-        priority_by_id[span.id] = max(priority_by_id.get(span.id, 0), 70)
-
-    if not priority_by_id:
-        return []
-    spans = list(session.scalars(
-        select(EvidenceSpan).where(EvidenceSpan.id.in_(priority_by_id))
-    ))
-    records = []
-    for span in spans:
-        chapter_ordinal = unit_position.get(span.source_unit_id)
-        if chapter_ordinal is None:
-            continue
-        text = span.text_snapshot
-        records.append({
-            "id": span.id,
-            "chapter_ordinal": chapter_ordinal,
-            "chapter_title": units[chapter_ordinal - 1].title,
-            "text": text[:1200],
-            "text_truncated": len(text) > 1200,
-            "priority": priority_by_id[span.id],
+    windows: list[dict[str, int]] = []
+    current: list[dict[str, object]] = []
+    current_chars = 0
+    for item in endings:
+        item_chars = len(json.dumps(
+            item,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )) + 1
+        if current and (
+            current_chars + item_chars > material_budget
+            or len(current) >= CHAPTER_END_HOOK_MAX_WINDOW_CHAPTERS
+        ):
+            windows.append({
+                "chapter_start": int(current[0]["chapter_ordinal"]),
+                "chapter_end": int(current[-1]["chapter_ordinal"]),
+                "estimated_material_chars": current_chars,
+            })
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        windows.append({
+            "chapter_start": int(current[0]["chapter_ordinal"]),
+            "chapter_end": int(current[-1]["chapter_ordinal"]),
+            "estimated_material_chars": current_chars,
         })
-    ordered: list[dict[str, object]] = []
-    for priority in sorted({int(item["priority"]) for item in records}, reverse=True):
-        ordered.extend(_balanced_records([
-            item for item in records if int(item["priority"]) == priority
-        ]))
-    for item in ordered:
-        item.pop("priority", None)
-    return ordered
+    return windows
 
 
 def chapter_end_hooks_source_fingerprint(
@@ -417,29 +362,35 @@ def provider_payload_for_chapter_end_hooks(
         settings,
         str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
     )
-    sample_indexes = _sample_indexes(len(units))
-    endings, ending_by_chapter, ignored_total = _ending_evidence_catalog(
-        session, units, sample_indexes
-    )
-    response_records = _response_evidence_catalog(
-        session,
-        projection,
-        units,
-        sample_indexes,
-        ending_by_chapter,
+    chapter_start = int(task_payload.get("chapter_start") or 0)
+    chapter_end = int(task_payload.get("chapter_end") or 0)
+    if (
+        chapter_start < 1
+        or chapter_end < chapter_start
+        or chapter_end > len(units)
+    ):
+        raise ValueError("CHAPTER_END_HOOKS_WINDOW_INVALID")
+    window_indexes = list(range(chapter_start - 1, chapter_end))
+    endings, _ending_by_chapter, ignored_total = _ending_evidence_catalog(
+        session, units, window_indexes
     )
     input_payload = {
         "question_id": CHAPTER_END_HOOKS_QUESTION_ID,
         "contract": {
             "types": list(HOOK_TYPES),
-            "measurement": "逐章类型占比、轮换、连续强钩、同类连续上限、无钩比例和回应距离",
-            "evidence": "每章只能使用程序指定的真实章末原文；已回应结论必须引用后续章节候选原文",
-            "scope": "50 章以内全量覆盖，超过 50 章按全书均衡抽样 50 章",
+            "measurement": "逐章类型、强弱、追读问题和无钩维持依据；全书统计由程序在全部连续窗口完成后合并",
+            "evidence": "每章只能使用程序指定的真实章末原文；4.9 不判断后续回应",
+            "scope": "正式模式按连续窗口覆盖全书全部章节，本请求只负责一个连续窗口",
         },
         "source_chapter_count": len(units),
-        "sample_policy": (
-            "ALL_CHAPTERS" if len(units) <= CHAPTER_END_HOOK_SAMPLE_LIMIT else "BALANCED_50"
-        ),
+        "coverage_policy": "ALL_CHAPTERS_WINDOWED",
+        "window": {
+            "group_id": task_payload.get("window_group_id"),
+            "index": task_payload.get("window_index"),
+            "count": task_payload.get("window_count"),
+            "chapter_start": chapter_start,
+            "chapter_end": chapter_end,
+        },
         "chapter_endings": endings,
         "narrative_phases": [
             {
@@ -455,18 +406,14 @@ def provider_payload_for_chapter_end_hooks(
                 )
             }
             for phase in projection.get("phases", [])
+            if any(
+                chapter_start <= int(ordinal) <= chapter_end
+                for ordinal in phase.get("chapter_ordinals", [])
+            )
         ],
-        "response_evidence_catalog": [],
     }
-    request_budget = _request_budget_chars(profile)
-    input_budget = max(24_000, request_budget - 12_000)
-    base_size = len(json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")))
-    for record in response_records:
-        record_size = len(json.dumps(record, ensure_ascii=False, separators=(",", ":"))) + 1
-        if base_size + record_size > input_budget:
-            continue
-        input_payload["response_evidence_catalog"].append(record)
-        base_size += record_size
+    request_budget = _request_budget(profile)
+    input_budget = int(request_budget["input_char_budget"])
     input_text = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
     if len(input_text) > input_budget:
         raise ValueError(
@@ -486,14 +433,18 @@ def provider_payload_for_chapter_end_hooks(
         "source_char_end": version.total_chars,
         "context_manifest": {
             "source_chapter_count": len(units),
-            "sampled_chapter_count": len(endings),
-            "sample_policy": input_payload["sample_policy"],
+            "window_group_id": task_payload.get("window_group_id"),
+            "window_index": task_payload.get("window_index"),
+            "window_count": task_payload.get("window_count"),
+            "chapter_start": chapter_start,
+            "chapter_end": chapter_end,
+            "window_chapter_count": len(endings),
+            "coverage_policy": input_payload["coverage_policy"],
             "ending_evidence_count": len(endings),
-            "response_candidate_count": len(input_payload["response_evidence_catalog"]),
             "ignored_trailing_boilerplate_count": ignored_total,
             "input_chars": len(input_text),
             "input_budget_chars": input_budget,
-            "request_budget_chars": request_budget,
+            **request_budget,
         },
     }
 
@@ -501,7 +452,6 @@ def provider_payload_for_chapter_end_hooks(
 def _raise_for_references(
     output: ChapterEndHooksOutput,
     ending_by_chapter: dict[int, EvidenceSpan],
-    response_chapter_by_evidence_id: dict[str, int],
 ) -> None:
     if set(item.chapter_ordinal for item in output.chapters) != set(ending_by_chapter):
         raise ValueError("CHAPTER_END_HOOKS_CHAPTER_COVERAGE_INVALID")
@@ -509,15 +459,6 @@ def _raise_for_references(
         ending = ending_by_chapter[item.chapter_ordinal]
         if item.ending_evidence_id != ending.id:
             raise ValueError("CHAPTER_END_HOOKS_ENDING_REFERENCE_INVALID")
-        if item.response_status not in {"RESOLVED", "PARTIAL"}:
-            continue
-        response_chapter = response_chapter_by_evidence_id.get(
-            str(item.response_evidence_id)
-        )
-        if response_chapter is None:
-            raise ValueError("CHAPTER_END_HOOKS_RESPONSE_REFERENCE_INVALID")
-        if response_chapter <= item.chapter_ordinal:
-            raise ValueError("CHAPTER_END_HOOKS_RESPONSE_ORDER_INVALID")
 
 
 def _phase_for_chapter(projection: dict, chapter_ordinal: int) -> dict | None:
@@ -556,11 +497,6 @@ def _summary(chapters: list[dict[str, object]]) -> dict[str, object]:
     total = len(ordered)
     type_counts = Counter(str(item["hook_type"]) for item in ordered)
     strength_counts = Counter(str(item["strength"]) for item in ordered)
-    distances = [
-        int(item["response_distance"])
-        for item in ordered
-        if item.get("response_distance") is not None
-    ]
     phase_counts: dict[str, Counter[str]] = defaultdict(Counter)
     for item in ordered:
         phase_counts[str(item.get("phase_title") or "未归入剧情阶段")][
@@ -613,15 +549,6 @@ def _summary(chapters: list[dict[str, object]]) -> dict[str, object]:
         ),
         "no_hook_count": type_counts["NONE"],
         "no_hook_ratio": round(type_counts["NONE"] / total, 4),
-        "resolved_or_partial_count": len(distances),
-        "unresolved_count": sum(
-            item["response_status"] == "UNRESOLVED" for item in ordered
-        ),
-        "response_distance": {
-            "average": round(sum(distances) / len(distances), 2) if distances else None,
-            "median": float(median(distances)) if distances else None,
-            "maximum": max(distances) if distances else None,
-        },
         "phase_type_distribution": [
             {
                 "phase_title": phase_title,
@@ -633,6 +560,102 @@ def _summary(chapters: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+def _finalize_window_group(
+    session: Session,
+    *,
+    run: AnalysisRun,
+    units: list[SourceUnit],
+    fingerprint: str,
+    window_group_id: str,
+    window_count: int,
+) -> LearningQuestionEvidence | None:
+    final_ledger = session.scalar(
+        select(LearningQuestionEvidence)
+        .where(
+            LearningQuestionEvidence.run_id == run.id,
+            LearningQuestionEvidence.question_id == CHAPTER_END_HOOKS_QUESTION_ID,
+            LearningQuestionEvidence.source_fingerprint == fingerprint,
+            LearningQuestionEvidence.prompt_version == CHAPTER_END_HOOKS_PROMPT_VERSION,
+        )
+        .order_by(LearningQuestionEvidence.revision_no.desc())
+    )
+    if final_ledger is not None:
+        return final_ledger
+
+    window_prefix = f"4.9w-{window_group_id}-"
+    window_ledgers = list(session.scalars(
+        select(LearningQuestionEvidence)
+        .where(
+            LearningQuestionEvidence.run_id == run.id,
+            LearningQuestionEvidence.source_fingerprint == fingerprint,
+            LearningQuestionEvidence.prompt_version == CHAPTER_END_HOOKS_PROMPT_VERSION,
+            LearningQuestionEvidence.question_id.like(f"{window_prefix}%"),
+        )
+        .order_by(LearningQuestionEvidence.question_id)
+    ))
+    if len(window_ledgers) < window_count:
+        return None
+    if len(window_ledgers) != window_count:
+        raise ValueError("CHAPTER_END_HOOKS_WINDOW_COUNT_INVALID")
+
+    window_payloads = [json.loads(item.payload_json) for item in window_ledgers]
+    if sorted(
+        int(item.get("window_index") or 0) for item in window_payloads
+    ) != list(range(1, window_count + 1)):
+        raise ValueError("CHAPTER_END_HOOKS_WINDOW_COVERAGE_INVALID")
+    merged_chapters = sorted(
+        [
+            chapter
+            for payload in window_payloads
+            for chapter in payload.get("chapters", [])
+        ],
+        key=lambda item: int(item["chapter_ordinal"]),
+    )
+    if [int(item["chapter_ordinal"]) for item in merged_chapters] != list(
+        range(1, len(units) + 1)
+    ):
+        raise ValueError("CHAPTER_END_HOOKS_FULL_COVERAGE_INVALID")
+    ignored_total = sum(
+        int(item.get("ignored_trailing_boilerplate_count") or 0)
+        for item in window_payloads
+    )
+    payload = {
+        "chapters": merged_chapters,
+        "summary": _summary(merged_chapters),
+        "coverage": {
+            "source_chapter_count": len(units),
+            "required_sample_count": len(units),
+            "sampled_chapter_count": len(merged_chapters),
+            "sample_policy": "ALL_CHAPTERS_WINDOWED",
+            "sampled_chapter_ordinals": [
+                item["chapter_ordinal"] for item in merged_chapters
+            ],
+            "window_count": window_count,
+            "completed_window_count": window_count,
+            "ending_evidence_complete": True,
+            "sequence_metrics_exact": True,
+            "response_tracking_scope": "OUT_OF_SCOPE_FOR_4.9",
+            "ignored_trailing_boilerplate_count": ignored_total,
+        },
+    }
+    finalizer = next(
+        ledger
+        for ledger, window_payload in zip(window_ledgers, window_payloads)
+        if int(window_payload.get("window_index") or 0) == window_count
+    )
+    finalizer.question_id = CHAPTER_END_HOOKS_QUESTION_ID
+    finalizer.revision_no = int(session.scalar(
+        select(func.max(LearningQuestionEvidence.revision_no)).where(
+            LearningQuestionEvidence.run_id == run.id,
+            LearningQuestionEvidence.question_id == CHAPTER_END_HOOKS_QUESTION_ID,
+        )
+    ) or 0) + 1
+    finalizer.payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    session.commit()
+    session.refresh(finalizer)
+    return finalizer
+
+
 def persist_chapter_end_hooks(
     session: Session,
     *,
@@ -640,14 +663,16 @@ def persist_chapter_end_hooks(
     attempt_id: str,
     task_payload: dict,
     output: ChapterEndHooksOutput,
-    valid_response_evidence_ids: set[str] | None = None,
 ) -> LearningQuestionEvidence:
     existing = session.scalar(
         select(LearningQuestionEvidence).where(
             LearningQuestionEvidence.created_by_task_id == task.id
         )
     )
-    if existing is not None:
+    if (
+        existing is not None
+        and existing.question_id == CHAPTER_END_HOOKS_QUESTION_ID
+    ):
         return existing
     run = session.get(AnalysisRun, task_payload.get("run_id"))
     version = session.get(SourceVersion, task_payload.get("source_version_id"))
@@ -658,94 +683,79 @@ def persist_chapter_end_hooks(
     fingerprint = chapter_end_hooks_source_fingerprint(projection, units)
     if fingerprint != task_payload.get("source_fingerprint"):
         raise ValueError("CHAPTER_END_HOOKS_SOURCE_OUTDATED")
-    sample_indexes = _sample_indexes(len(units))
+    window_group_id = str(task_payload.get("window_group_id") or "")
+    window_index = int(task_payload.get("window_index") or 0)
+    window_count = int(task_payload.get("window_count") or 0)
+    chapter_start = int(task_payload.get("chapter_start") or 0)
+    chapter_end = int(task_payload.get("chapter_end") or 0)
+    if (
+        not re.fullmatch(r"[a-f0-9]{8}", window_group_id)
+        or window_index < 1
+        or window_count < 1
+        or window_index > window_count
+        or chapter_start < 1
+        or chapter_end < chapter_start
+        or chapter_end > len(units)
+    ):
+        raise ValueError("CHAPTER_END_HOOKS_WINDOW_INVALID")
+    window_indexes = list(range(chapter_start - 1, chapter_end))
     _ending_records, ending_by_chapter, ignored_total = _ending_evidence_catalog(
-        session, units, sample_indexes
+        session, units, window_indexes
     )
-    response_records = _response_evidence_catalog(
-        session,
-        projection,
-        units,
-        sample_indexes,
-        ending_by_chapter,
-    )
-    response_chapter_by_evidence_id = {
-        str(item["id"]): int(item["chapter_ordinal"])
-        for item in response_records
-        if valid_response_evidence_ids is None
-        or str(item["id"]) in valid_response_evidence_ids
-    }
-    _raise_for_references(
-        output,
-        ending_by_chapter,
-        response_chapter_by_evidence_id,
-    )
+    _raise_for_references(output, ending_by_chapter)
 
     chapters: list[dict[str, object]] = []
     for proposal in sorted(output.chapters, key=lambda item: item.chapter_ordinal):
         item = proposal.model_dump(mode="json")
-        response_chapter = response_chapter_by_evidence_id.get(
-            str(proposal.response_evidence_id)
-        )
         phase = _phase_for_chapter(projection, proposal.chapter_ordinal)
         item.update({
             "chapter_title": units[proposal.chapter_ordinal - 1].title,
             "ending_evidence_ids": [proposal.ending_evidence_id],
-            "response_evidence_ids": (
-                [proposal.response_evidence_id] if proposal.response_evidence_id else []
-            ),
-            "response_chapter_ordinal": response_chapter,
-            "response_distance": (
-                response_chapter - proposal.chapter_ordinal
-                if response_chapter is not None
-                else None
-            ),
+            "response_evidence_ids": [],
+            "response_chapter_ordinal": None,
+            "response_distance": None,
             "phase_id": phase.get("id") if phase else None,
             "phase_title": phase.get("title") if phase else None,
         })
         chapters.append(item)
 
-    required_sample = min(len(units), CHAPTER_END_HOOK_SAMPLE_LIMIT)
-    payload = {
-        "chapters": chapters,
-        "summary": _summary(chapters),
-        "coverage": {
-            "source_chapter_count": len(units),
-            "required_sample_count": required_sample,
-            "sampled_chapter_count": len(chapters),
-            "sample_policy": (
-                "ALL_CHAPTERS"
-                if len(units) <= CHAPTER_END_HOOK_SAMPLE_LIMIT
-                else "BALANCED_50"
-            ),
-            "sampled_chapter_ordinals": [item["chapter_ordinal"] for item in chapters],
-            "ending_evidence_complete": len(chapters) == required_sample,
-            "response_reference_complete": True,
+    if existing is None:
+        payload = {
+            "window_group_id": window_group_id,
+            "window_index": window_index,
+            "window_count": window_count,
+            "chapter_start": chapter_start,
+            "chapter_end": chapter_end,
+            "chapters": chapters,
             "ignored_trailing_boilerplate_count": ignored_total,
-        },
-    }
-    revision_no = int(session.scalar(
-        select(func.max(LearningQuestionEvidence.revision_no)).where(
-            LearningQuestionEvidence.run_id == run.id,
-            LearningQuestionEvidence.question_id == CHAPTER_END_HOOKS_QUESTION_ID,
+        }
+        question_id = f"4.9w-{window_group_id}-{window_index:03d}"
+        ledger = LearningQuestionEvidence(
+            run_id=run.id,
+            source_version_id=version.id,
+            question_id=question_id,
+            revision_no=1,
+            source_fingerprint=fingerprint,
+            payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            prompt_id=CHAPTER_END_HOOKS_PROMPT_ID,
+            prompt_version=CHAPTER_END_HOOKS_PROMPT_VERSION,
+            created_by_task_id=task.id,
+            created_by_attempt_id=attempt_id,
         )
-    ) or 0) + 1
-    ledger = LearningQuestionEvidence(
-        run_id=run.id,
-        source_version_id=version.id,
-        question_id=CHAPTER_END_HOOKS_QUESTION_ID,
-        revision_no=revision_no,
-        source_fingerprint=fingerprint,
-        payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        prompt_id=CHAPTER_END_HOOKS_PROMPT_ID,
-        prompt_version=CHAPTER_END_HOOKS_PROMPT_VERSION,
-        created_by_task_id=task.id,
-        created_by_attempt_id=attempt_id,
+        session.add(ledger)
+        session.commit()
+        session.refresh(ledger)
+    else:
+        ledger = existing
+    final_ledger = _finalize_window_group(
+        session,
+        run=run,
+        units=units,
+        fingerprint=fingerprint,
+        window_group_id=window_group_id,
+        window_count=window_count,
     )
-    session.add(ledger)
-    session.commit()
-    session.refresh(ledger)
-    return ledger
+    return final_ledger or ledger
 
 
 def build_chapter_end_hooks_projection(
@@ -770,6 +780,21 @@ def build_chapter_end_hooks_projection(
         )
         .order_by(AnalysisRunTask.batch_index.desc())
     )
+    active_task = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == CHAPTER_END_HOOKS_TASK_KIND,
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+        .order_by(AnalysisRunTask.batch_index)
+    )
     run = session.get(AnalysisRun, run_id)
     units = _chapter_units(session, run.source_version_id) if run is not None else []
     current_fingerprint = chapter_end_hooks_source_fingerprint(projection, units)
@@ -778,13 +803,7 @@ def build_chapter_end_hooks_projection(
         and ledger.source_fingerprint == current_fingerprint
         and ledger.prompt_version == CHAPTER_END_HOOKS_PROMPT_VERSION
     )
-    active_statuses = {
-        TaskStatus.PENDING.value,
-        TaskStatus.RUNNING.value,
-        TaskStatus.RETRY_WAIT.value,
-        TaskStatus.WAITING_CONFIRMATION.value,
-    }
-    if latest_task is not None and latest_task.status in active_statuses:
+    if active_task is not None:
         status = "GENERATING"
     elif is_current:
         status = "READY"
@@ -802,6 +821,8 @@ def build_chapter_end_hooks_projection(
         "revision": ledger.revision_no,
         "generated_at": ledger.created_at,
         "is_current": is_current,
+        "prompt_id": ledger.prompt_id,
+        "prompt_version": ledger.prompt_version,
     })
     return status, payload
 
@@ -818,22 +839,23 @@ def enqueue_chapter_end_hooks(
     if not _chapter_end_sources_ready(projection, units):
         return None
     fingerprint = chapter_end_hooks_source_fingerprint(projection, units)
-    latest_task = session.scalar(
+    active_task = session.scalar(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
         .where(
             AnalysisRunTask.run_id == run.id,
             Task.kind == CHAPTER_END_HOOKS_TASK_KIND,
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
         )
-        .order_by(AnalysisRunTask.batch_index.desc())
+        .order_by(AnalysisRunTask.batch_index)
     )
-    if latest_task is not None and latest_task.status in {
-        TaskStatus.PENDING.value,
-        TaskStatus.RUNNING.value,
-        TaskStatus.RETRY_WAIT.value,
-        TaskStatus.WAITING_CONFIRMATION.value,
-    }:
-        return latest_task
+    if active_task is not None:
+        return active_task
     latest_ledger = session.scalar(
         select(LearningQuestionEvidence)
         .where(
@@ -856,37 +878,61 @@ def enqueue_chapter_end_hooks(
         )
     except ModelSettingsError:
         return None
-    task_payload, max_attempts = prepare_task_provider_routes(
-        settings,
-        {
-            "run_id": run.id,
-            "source_version_id": run.source_version_id,
-            "source_fingerprint": fingerprint,
-            "question_id": CHAPTER_END_HOOKS_QUESTION_ID,
-            "provider_name": "openai",
-            "model_profile_id": profile.id,
-        },
-        profile.max_retries + 1,
+    endings, _ending_by_chapter, _ignored_total = _ending_evidence_catalog(
+        session,
+        units,
+        list(range(len(units))),
     )
-    task = Task(
-        project_id=run.source_version.document.project_id,
-        kind=CHAPTER_END_HOOKS_TASK_KIND,
-        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
-        max_attempts=max_attempts,
+    request_budget = _request_budget(profile)
+    windows = _window_specs(
+        endings,
+        input_char_budget=int(request_budget["input_char_budget"]),
     )
-    session.add(task)
-    session.flush()
+    if not windows:
+        return None
+    window_group_id = uuid.uuid4().hex[:8]
     next_index = max(
         (link.batch_index for link in run.task_links),
         default=run.total_batches,
     ) + 1
-    session.add(AnalysisRunTask(
-        run_id=run.id,
-        task_id=task.id,
-        batch_index=next_index,
-    ))
-    run.total_batches = next_index
+    created_tasks: list[Task] = []
+    for offset, window in enumerate(windows):
+        task_payload, max_attempts = prepare_task_provider_routes(
+            settings,
+            {
+                "run_id": run.id,
+                "source_version_id": run.source_version_id,
+                "source_fingerprint": fingerprint,
+                "question_id": CHAPTER_END_HOOKS_QUESTION_ID,
+                "provider_name": "openai",
+                "model_profile_id": profile.id,
+                "window_group_id": window_group_id,
+                "window_index": offset + 1,
+                "window_count": len(windows),
+                "chapter_start": window["chapter_start"],
+                "chapter_end": window["chapter_end"],
+                "estimated_material_chars": window["estimated_material_chars"],
+                "analysis_policy": "ALL_CHAPTERS_WINDOWED",
+                "task_input_budget": request_budget,
+            },
+            profile.max_retries + 1,
+        )
+        task = Task(
+            project_id=run.source_version.document.project_id,
+            kind=CHAPTER_END_HOOKS_TASK_KIND,
+            payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+            max_attempts=max_attempts,
+        )
+        session.add(task)
+        session.flush()
+        session.add(AnalysisRunTask(
+            run_id=run.id,
+            task_id=task.id,
+            batch_index=next_index + offset,
+        ))
+        created_tasks.append(task)
+    run.total_batches = next_index + len(created_tasks) - 1
     run.status = AnalysisRunStatus.PENDING.value
     session.commit()
-    session.refresh(task)
-    return task
+    session.refresh(created_tasks[0])
+    return created_tasks[0]

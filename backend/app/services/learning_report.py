@@ -34,9 +34,12 @@ from .provider_config import (
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.2.1"
+LEARNING_REPORT_PROMPT_VERSION = "1.3.0"
 LEARNING_QUESTION_CATALOG_VERSION = "1.2.0"
 LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
+LEARNING_ANSWER_TARGET_INPUT_TOKENS = 32_000
+LEARNING_ANSWER_SOFT_INPUT_TOKENS = 48_000
+LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,13 +569,29 @@ def _balanced_items(items: list[dict], chapter_key: str) -> list[dict]:
     return [ordered[index] for index in selected_indexes]
 
 
-def _request_budget_chars(profile: Any) -> int:
+def _request_budget(profile: Any) -> dict[str, int | str]:
     output_reserve = max(1, int(getattr(profile, "max_output_tokens", 16_000)))
     context_window = getattr(profile, "context_window_tokens", None)
     if context_window is not None:
-        remaining_tokens = max(24_000, int(context_window) - output_reserve - 4_096)
-        return min(360_000, max(100_000, remaining_tokens * 2))
-    return max(80_000, min(180_000, output_reserve * 5))
+        available_tokens = max(
+            8_000,
+            int(context_window) - output_reserve - 4_096,
+        )
+        input_tokens = min(LEARNING_ANSWER_SOFT_INPUT_TOKENS, available_tokens)
+        source = "MODEL_CONTEXT_WITH_TASK_SOFT_CAP"
+    else:
+        input_tokens = LEARNING_ANSWER_TARGET_INPUT_TOKENS
+        source = "TASK_TARGET_WITHOUT_REPORTED_CONTEXT"
+    return {
+        "target_input_tokens": LEARNING_ANSWER_TARGET_INPUT_TOKENS,
+        "soft_input_tokens": LEARNING_ANSWER_SOFT_INPUT_TOKENS,
+        "input_token_budget": input_tokens,
+        "input_char_budget": (
+            input_tokens * LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN
+        ),
+        "estimated_chars_per_token": LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN,
+        "budget_source": source,
+    }
 
 
 def _evidence_records(
@@ -929,32 +948,19 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
 
     chapter_end_hooks_evidence = projection.get("chapter_end_hooks_evidence") or {}
     chapter_end_hooks = projection.get("chapter_end_hooks") or []
-    required_hook_sample = chapter_count if chapter_count <= 50 else 50
     valid_hook_samples = [
         item
         for item in chapter_end_hooks
         if item.get("ending_evidence_ids")
         and item.get("hook_type")
         and item.get("strength")
-        and (
-            item.get("hook_type") == "NONE"
-            or item.get("response_status") in {"RESOLVED", "PARTIAL", "UNRESOLVED"}
-        )
-        and (
-            item.get("response_status") not in {"RESOLVED", "PARTIAL"}
-            or (
-                item.get("response_evidence_ids")
-                and item.get("response_chapter_ordinal")
-                and item.get("response_distance") is not None
-            )
-        )
     ]
     hook_gaps: list[str] = []
     if chapter_end_hooks_evidence and chapter_end_hooks_evidence.get("is_current") is False:
         hook_gaps.append("章末钩账本对应旧版拆解或旧版正文，需要重新生成。")
-    if len(valid_hook_samples) < required_hook_sample:
+    if len(valid_hook_samples) < chapter_count:
         hook_gaps.append(
-            f"需要 {required_hook_sample} 章真实章末证据与分类，当前只有 {len(valid_hook_samples)} 章。"
+            f"需要连续覆盖全书 {chapter_count} 章，当前只有 {len(valid_hook_samples)} 章有效分类。"
         )
     coverage = (
         chapter_end_hooks_evidence.get("coverage", {})
@@ -963,27 +969,25 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
     )
     if chapter_end_hooks and coverage.get("ending_evidence_complete") is not True:
         hook_gaps.append("章末钩账本没有通过程序的逐章结尾证据覆盖检查。")
-    if chapter_end_hooks and coverage.get("response_reference_complete") is not True:
-        hook_gaps.append("章末钩账本存在未核准的回应章节或回应原文。")
+    if chapter_end_hooks and coverage.get("sample_policy") != "ALL_CHAPTERS_WINDOWED":
+        hook_gaps.append("章末钩账本不是按连续窗口覆盖全书，不能精确计算相邻轮换与连续记录。")
+    if chapter_end_hooks and coverage.get("sequence_metrics_exact") is not True:
+        hook_gaps.append("全书相邻轮换与连续强钩指标尚未通过精确合并检查。")
     checks["4.9"] = _readiness_check(
         "4.9",
         ready=not hook_gaps,
         observed={
             "chapter_count": chapter_count,
-            "required_sample_count": required_hook_sample,
+            "required_sample_count": chapter_count,
             "valid_chapter_end_sample_count": len(valid_hook_samples),
             "sample_policy": coverage.get("sample_policy"),
-            "resolved_or_partial_count": (
-                chapter_end_hooks_evidence.get("summary", {}).get(
-                    "resolved_or_partial_count", 0
-                )
-                if isinstance(chapter_end_hooks_evidence, dict)
-                else 0
-            ),
+            "window_count": coverage.get("window_count"),
+            "sequence_metrics_exact": coverage.get("sequence_metrics_exact"),
+            "response_tracking_scope": coverage.get("response_tracking_scope"),
             "generic_scene_analysis_count": len(deep.get("scene_analysis", [])),
         },
         gaps=hook_gaps,
-        required_artifact="逐章章末钩与回应账本",
+        required_artifact="全书连续覆盖的章末钩类型与节律账本",
         source_material=chapter_end_hooks_evidence,
     )
 
@@ -992,60 +996,32 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         for item in chapter_end_hooks
         if 1 <= int(item.get("chapter_ordinal") or 0) <= 3
     ]
-    valid_opening_hook_samples = [
-        item
-        for item in opening_hook_samples
-        if item.get("ending_evidence_ids")
-        and item.get("hook_type")
-        and item.get("strength")
-        and (
-            item.get("hook_type") == "NONE"
-            or item.get("response_status") in {"RESOLVED", "PARTIAL", "UNRESOLVED"}
-        )
-        and (
-            item.get("response_status") not in {"RESOLVED", "PARTIAL"}
-            or (
-                item.get("response_evidence_ids")
-                and item.get("response_chapter_ordinal")
-                and item.get("response_distance") is not None
-            )
-        )
+    valid_opening_hook_samples = []
+    opening_hook_gaps: list[str] = [
+        "3.4 需要独立的前三章章末钩兑现追踪；4.9 只负责全书类型与节律，不能再拿它代替。"
     ]
-    opening_hook_gaps: list[str] = []
     required_opening_hook_count = min(3, chapter_count)
-    if (
-        isinstance(chapter_end_hooks_evidence, dict)
-        and chapter_end_hooks_evidence.get("is_current") is False
-    ):
-        opening_hook_gaps.append("前三章章末钩记录对应旧版拆解，需要重新生成。")
-    if len(valid_opening_hook_samples) < required_opening_hook_count:
+    if len(opening_hook_samples) < required_opening_hook_count:
         opening_hook_gaps.append(
-            f"前三章需要 {required_opening_hook_count} 章真实章末与回应记录，"
-            f"当前有效 {len(valid_opening_hook_samples)} 章。"
+            f"前三章需要 {required_opening_hook_count} 章真实章末分类，"
+            f"当前只有 {len(opening_hook_samples)} 章。"
         )
-    opening_hook_ready = required_opening_hook_count > 0 and not opening_hook_gaps
-    opening_hook_scope: Literal["COMPLETE", "PARTIAL", "NOT_READY"] = (
-        "COMPLETE"
-        if opening_hook_ready and chapter_count >= 3
-        else "PARTIAL"
-        if opening_hook_ready
-        else "NOT_READY"
-    )
-    if opening_hook_ready and chapter_count < 3:
+    if chapter_count < 3:
         opening_hook_gaps.append(
             f"作品当前只有 {chapter_count} 章，无法形成完整三章口径。"
         )
     checks["3.4"] = _readiness_check(
         "3.4",
-        ready=opening_hook_ready,
+        ready=False,
         observed={
             "required_chapter_count": required_opening_hook_count,
-            "valid_chapter_end_sample_count": len(valid_opening_hook_samples),
+            "classified_opening_chapter_count": len(opening_hook_samples),
+            "valid_payoff_tracking_count": 0,
         },
         gaps=opening_hook_gaps,
-        required_artifact="前三章章末钩与回应明细",
-        answer_scope=opening_hook_scope,
-        source_material=valid_opening_hook_samples,
+        required_artifact="前三章章末钩兑现追踪表（独立于 4.9）",
+        answer_scope="NOT_READY",
+        source_material={},
     )
 
     foreshadowing_ledger = projection.get("foreshadowing_ledger") or {}
@@ -1191,7 +1167,7 @@ def provider_payload_for_learning_report(
         str(question_id) for question_id in task_payload.get("question_ids", [])
     )
     if (
-        not requested_question_ids
+        len(requested_question_ids) != 1
         or len(set(requested_question_ids)) != len(requested_question_ids)
         or not set(requested_question_ids).issubset(INITIAL_INCREMENTAL_QUESTION_IDS)
     ):
@@ -1286,24 +1262,35 @@ def provider_payload_for_learning_report(
         }
         for item in _opening_action_counts(projection)
     ]
-    fixed_input = {
+    question_id = requested_question_ids[0]
+    include_chapter_catalog = question_id in {"1.4", "2.1", "3.4", "4.9"}
+    fixed_input: dict[str, object] = {
         "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
         "batch_label": LEARNING_REPORT_BATCH_LABEL,
-        "generation_policy": "每问独立生成；PARTIAL 必须保留已知缺口。",
+        "generation_policy": (
+            "本次只回答 question_catalog 中唯一一问；"
+            "PARTIAL 必须保留已知缺口，不得借用其他问题的就绪状态。"
+        ),
         "question_catalog": question_catalog,
-        "chapter_catalog": [
+    }
+    if include_chapter_catalog:
+        fixed_input["chapter_catalog"] = [
             {"ordinal": ordinal, "title": unit.title}
             for ordinal, unit in enumerate(chapter_units, start=1)
-        ],
-        "character_index": character_index,
-        "program_metrics": {
+        ]
+    if question_id == "2.1":
+        fixed_input["character_index"] = character_index
+        fixed_input["program_metrics"] = {
             "opening_action_character_counts": compact_action_counts,
-        },
-    }
+        }
     fixed_chars = len(
         json.dumps(fixed_input, ensure_ascii=False, separators=(",", ":"), default=str)
     )
-    material_budget = max(0, _request_budget_chars(profile) - fixed_chars - 4_000)
+    request_budget = _request_budget(profile)
+    material_budget = max(
+        0,
+        int(request_budget["input_char_budget"]) - fixed_chars - 4_000,
+    )
     ranked_bundles: list[tuple[int, int, str, dict]] = []
     for order, (priority, kind, item) in enumerate(source_materials):
         bundle = _material_bundle(kind, item, evidence_by_id, chapter_by_unit_id)
@@ -1327,6 +1314,8 @@ def provider_payload_for_learning_report(
         **fixed_input,
         "materials": selected,
         "coverage_manifest": {
+            "question_id": question_id,
+            **request_budget,
             "material_budget_chars": material_budget,
             "selected_count": len(selected),
             "selected_chars": used_chars,
@@ -1551,22 +1540,23 @@ def enqueue_learning_report(
         .where(LearningReport.run_id == run.id)
         .order_by(LearningReport.revision_no.desc())
     )
-    latest_task = session.scalar(
+    active_task = session.scalar(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
         .where(
             AnalysisRunTask.run_id == run.id,
             Task.kind == LEARNING_REPORT_TASK_KIND,
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
         )
-        .order_by(AnalysisRunTask.batch_index.desc())
+        .order_by(AnalysisRunTask.batch_index)
     )
-    if latest_task is not None and latest_task.status in {
-        TaskStatus.PENDING.value,
-        TaskStatus.RUNNING.value,
-        TaskStatus.RETRY_WAIT.value,
-        TaskStatus.WAITING_CONFIRMATION.value,
-    }:
-        return latest_task
+    if active_task is not None:
+        return active_task
     current_fingerprints = {
         question_id: str(checks_by_id[question_id]["source_fingerprint"])
         for question_id in INITIAL_INCREMENTAL_QUESTION_IDS
@@ -1598,48 +1588,57 @@ def enqueue_learning_report(
         ]
     )
     if not selected_question_ids:
-        return latest_task
+        return None
     try:
         _service, profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
     except ModelSettingsError:
         return None
-    task_payload, max_attempts = prepare_task_provider_routes(
-        settings,
-        {
-            "run_id": run.id,
-            "source_version_id": run.source_version_id,
-            "source_deep_revision": deep.revision_no,
-            "provider_name": "openai",
-            "model_profile_id": profile.id,
-            "question_ids": selected_question_ids,
-            "question_answer_scopes": {
-                question_id: checks_by_id[question_id]["answer_scope"]
-                for question_id in selected_question_ids
-            },
-            "question_source_fingerprints": {
-                question_id: current_fingerprints[question_id]
-                for question_id in selected_question_ids
-            },
-            "current_question_source_fingerprints": current_fingerprints,
-            "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
-        },
-        profile.max_retries + 1,
+    next_index = (
+        max((link.batch_index for link in run.task_links), default=run.total_batches)
+        + 1
     )
-    task = Task(
-        project_id=run.source_version.document.project_id,
-        kind=LEARNING_REPORT_TASK_KIND,
-        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
-        max_attempts=max_attempts,
-    )
-    session.add(task)
-    session.flush()
-    next_index = max((link.batch_index for link in run.task_links), default=run.total_batches) + 1
-    session.add(AnalysisRunTask(run_id=run.id, task_id=task.id, batch_index=next_index))
-    run.total_batches = next_index
+    created_tasks: list[Task] = []
+    for offset, question_id in enumerate(selected_question_ids):
+        task_payload, max_attempts = prepare_task_provider_routes(
+            settings,
+            {
+                "run_id": run.id,
+                "source_version_id": run.source_version_id,
+                "source_deep_revision": deep.revision_no,
+                "provider_name": "openai",
+                "model_profile_id": profile.id,
+                "question_ids": [question_id],
+                "question_answer_scopes": {
+                    question_id: checks_by_id[question_id]["answer_scope"],
+                },
+                "question_source_fingerprints": {
+                    question_id: current_fingerprints[question_id],
+                },
+                "current_question_source_fingerprints": current_fingerprints,
+                "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
+                "answer_task_policy": "ONE_QUESTION_PER_MODEL_REQUEST",
+            },
+            profile.max_retries + 1,
+        )
+        task = Task(
+            project_id=run.source_version.document.project_id,
+            kind=LEARNING_REPORT_TASK_KIND,
+            payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
+            max_attempts=max_attempts,
+        )
+        session.add(task)
+        session.flush()
+        session.add(AnalysisRunTask(
+            run_id=run.id,
+            task_id=task.id,
+            batch_index=next_index + offset,
+        ))
+        created_tasks.append(task)
+    run.total_batches = next_index + len(created_tasks) - 1
     run.status = AnalysisRunStatus.PENDING.value
     session.commit()
-    session.refresh(task)
-    return task
+    session.refresh(created_tasks[0])
+    return created_tasks[0]
 
 
 def build_learning_report_projection(
@@ -1663,12 +1662,21 @@ def build_learning_report_projection(
         )
         .order_by(AnalysisRunTask.batch_index.desc())
     )
-    active_statuses = {
-        TaskStatus.PENDING.value,
-        TaskStatus.RUNNING.value,
-        TaskStatus.RETRY_WAIT.value,
-        TaskStatus.WAITING_CONFIRMATION.value,
-    }
+    active_task = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == LEARNING_REPORT_TASK_KIND,
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+        .order_by(AnalysisRunTask.batch_index)
+    )
     payload = json.loads(report.payload_json) if report is not None else {}
     report_base_is_current = bool(
         report is not None
@@ -1697,7 +1705,7 @@ def build_learning_report_projection(
         for question_id, item in readiness_by_id.items()
         if item.get("ready") and question_id not in current_answer_ids
     }
-    if latest_task is not None and latest_task.status in active_statuses:
+    if active_task is not None:
         status = "GENERATING"
     elif current_answer_ids and not pending_question_ids:
         status = "READY"

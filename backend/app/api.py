@@ -372,7 +372,7 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.narrative_synthesis", "故事结构整理"),
     ("analysis.deep_insights", "事实与核心分析"),
     (CHARACTER_DESIGN_TASK_KIND, "主角双层欲望与最小完整集证据"),
-    (CHAPTER_END_HOOKS_TASK_KIND, "逐章章末钩与回应账本"),
+    (CHAPTER_END_HOOKS_TASK_KIND, "逐章章末钩类型与节律账本"),
     (LEARNING_REPORT_TASK_KIND, "创作学习报告"),
 )
 
