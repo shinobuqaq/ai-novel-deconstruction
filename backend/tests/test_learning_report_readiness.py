@@ -157,7 +157,7 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
 
 
 def _answer(question_id: str) -> dict:
-    return {
+    answer = {
         "question_id": question_id,
         "status": "PARTIAL",
         "conclusion": "当前材料支持部分回答。",
@@ -168,6 +168,49 @@ def _answer(question_id: str) -> dict:
         "reusable_lessons": [],
         "do_not_copy": ["不能照搬原作设定。"],
     }
+    if question_id == "2.1":
+        item_ids = (
+            "opening_character_counts",
+            "character_appearance_sequence",
+            "first_scene_functions",
+            "later_role_volume",
+            "new_character_intervals",
+            "first_function_distribution",
+            "identity_duplicate_risks",
+            "cross_book_comparison",
+        )
+        answer["contract_items"] = [
+            {
+                "item_id": item_id,
+                "status": (
+                    "INSUFFICIENT_EVIDENCE"
+                    if item_id == "cross_book_comparison"
+                    else "SUPPORTED"
+                ),
+                "finding": (
+                    "当前没有同口径跨书数据。"
+                    if item_id == "cross_book_comparison"
+                    else "当前程序原料支持这一项。"
+                ),
+                "metrics": [],
+                "evidence_ids": [],
+                "limitations": [],
+                "classifications": (
+                    [{
+                        "subject": "林舟",
+                        "category": "主角锚点",
+                        "first_action_chapter": 1,
+                        "first_action_event_id": "evt_opening",
+                        "explanation": "以主角行动启动开篇任务。",
+                        "evidence_ids": ["evd_event"],
+                    }]
+                    if item_id == "first_scene_functions"
+                    else []
+                ),
+            }
+            for item_id in item_ids
+        ]
+    return answer
 
 
 def test_parser_accepts_exact_incremental_question_selection() -> None:
@@ -195,3 +238,42 @@ def test_parser_rejects_missing_incremental_question() -> None:
         )
 
     assert error.value.code == "LEARNING_REPORT_QUESTION_COVERAGE_INVALID"
+
+
+def test_parser_rejects_2_1_that_only_returns_counts() -> None:
+    counts_only = _answer("2.1")
+    counts_only["contract_items"] = counts_only["contract_items"][:1]
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [counts_only],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["2.1"],
+        )
+
+    assert error.value.code == "LEARNING_REPORT_CONTRACT_ITEM_COVERAGE_INVALID"
+
+
+def test_parser_rejects_2_1_without_per_character_first_functions() -> None:
+    answer = _answer("2.1")
+    first_functions = next(
+        item
+        for item in answer["contract_items"]
+        if item["item_id"] == "first_scene_functions"
+    )
+    first_functions["classifications"] = []
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["2.1"],
+        )
+
+    assert error.value.code == "LEARNING_REPORT_2_1_FIRST_FUNCTIONS_MISSING"

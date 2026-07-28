@@ -34,12 +34,11 @@ from .provider_config import (
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.3.0"
-LEARNING_QUESTION_CATALOG_VERSION = "1.2.0"
+LEARNING_REPORT_PROMPT_VERSION = "1.4.2"
+LEARNING_QUESTION_CATALOG_VERSION = "1.3.0"
 LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
-LEARNING_ANSWER_TARGET_INPUT_TOKENS = 32_000
-LEARNING_ANSWER_SOFT_INPUT_TOKENS = 48_000
-LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 2
+LEARNING_ANSWER_VALIDATED_SOFT_INPUT_CAP_TOKENS = 150_000
+LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +429,64 @@ if set(LEARNING_QUESTION_CONTRACTS) != set(_QUESTION_BY_ID):
     raise RuntimeError("EVERY_LEARNING_QUESTION_MUST_HAVE_ONE_FABLE_OUTPUT_CONTRACT")
 
 
+@dataclass(frozen=True, slots=True)
+class LearningContractItemDefinition:
+    item_id: str
+    label: str
+    requirement: str
+
+
+# 每一问在进入正式实现时，都要把 Fable 的自然语言合同拆成可逐项验收的
+# 结果项目。2.1 是首个完成该闭环的问题；其余问题不能因为尚未拆项而冒充
+# 已通过同等级验收。
+LEARNING_QUESTION_ITEM_CONTRACTS: dict[
+    str, tuple[LearningContractItemDefinition, ...]
+] = {
+    "2.1": (
+        LearningContractItemDefinition(
+            "opening_character_counts",
+            "前 3/10/30 章有效行动人物数",
+            "使用程序计数，不得由模型重新数人物名单。",
+        ),
+        LearningContractItemDefinition(
+            "character_appearance_sequence",
+            "角色首行动出场序",
+            "覆盖前 30 章每位有效行动人物的首次行动章节与事件。",
+        ),
+        LearningContractItemDefinition(
+            "first_scene_functions",
+            "人物首场功能",
+            "逐人判断首次行动场景承担的叙事功能，并引用该事件原文。",
+        ),
+        LearningContractItemDefinition(
+            "later_role_volume",
+            "后续戏份量级",
+            "按前 30 章参与有效行动事件数，由程序分档。",
+        ),
+        LearningContractItemDefinition(
+            "new_character_intervals",
+            "新增人物间隔",
+            "按首次行动章节计算相邻引入批次的章节间隔。",
+        ),
+        LearningContractItemDefinition(
+            "first_function_distribution",
+            "首场功能分布",
+            "由逐人首场功能分类汇总，不得凭印象估算。",
+        ),
+        LearningContractItemDefinition(
+            "identity_duplicate_risks",
+            "身份重复计数风险",
+            "单列仍未裁定是否同一人的名字候选；没有候选也要明确记零。",
+        ),
+        LearningContractItemDefinition(
+            "cross_book_comparison",
+            "同品类开篇阵容对比",
+            "只有同品类、同商业模式多书使用同一口径后才能回答。",
+        ),
+    ),
+}
+
+
 class LearningMetricProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -438,6 +495,45 @@ class LearningMetricProposal(BaseModel):
     unit: str = Field(default="", max_length=60)
     method: str = Field(min_length=1, max_length=500)
     evidence_ids: list[str] = Field(default_factory=list, max_length=16)
+
+
+class LearningContractClassificationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=160)
+    category: Literal[
+        "主角锚点",
+        "关系锚点",
+        "引路或导师",
+        "盟友或协作者",
+        "对手或竞争者",
+        "威胁或施压者",
+        "权威或规则执行者",
+        "信息提供者",
+        "世界展示载体",
+        "调剂或喜剧功能",
+        "背景行动者",
+        "其他",
+    ]
+    first_action_chapter: int = Field(ge=1, le=30)
+    first_action_event_id: str = Field(min_length=1, max_length=80)
+    explanation: str = Field(min_length=1, max_length=160)
+    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+
+
+class LearningContractItemProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(min_length=1, max_length=80)
+    status: Literal["SUPPORTED", "INSUFFICIENT_EVIDENCE"]
+    finding: str = Field(min_length=1, max_length=800)
+    metrics: list[LearningMetricProposal] = Field(default_factory=list, max_length=20)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=32)
+    limitations: list[str] = Field(default_factory=list, max_length=8)
+    classifications: list[LearningContractClassificationProposal] = Field(
+        default_factory=list,
+        max_length=200,
+    )
 
 
 class LearningAnswerProposal(BaseModel):
@@ -452,6 +548,10 @@ class LearningAnswerProposal(BaseModel):
     limitations: list[str] = Field(min_length=1, max_length=10)
     reusable_lessons: list[str] = Field(default_factory=list, max_length=8)
     do_not_copy: list[str] = Field(min_length=1, max_length=8)
+    contract_items: list[LearningContractItemProposal] = Field(
+        default_factory=list,
+        max_length=16,
+    )
 
 
 class AuthorDecisionProposal(BaseModel):
@@ -569,7 +669,7 @@ def _balanced_items(items: list[dict], chapter_key: str) -> list[dict]:
     return [ordered[index] for index in selected_indexes]
 
 
-def _request_budget(profile: Any) -> dict[str, int | str]:
+def _request_budget(profile: Any) -> dict[str, int | float | str]:
     output_reserve = max(1, int(getattr(profile, "max_output_tokens", 16_000)))
     context_window = getattr(profile, "context_window_tokens", None)
     if context_window is not None:
@@ -577,16 +677,20 @@ def _request_budget(profile: Any) -> dict[str, int | str]:
             8_000,
             int(context_window) - output_reserve - 4_096,
         )
-        input_tokens = min(LEARNING_ANSWER_SOFT_INPUT_TOKENS, available_tokens)
-        source = "MODEL_CONTEXT_WITH_TASK_SOFT_CAP"
+        input_tokens = min(
+            LEARNING_ANSWER_VALIDATED_SOFT_INPUT_CAP_TOKENS,
+            available_tokens,
+        )
+        source = "MODEL_CONTEXT_WITH_VALIDATED_SOFT_CAP"
     else:
-        input_tokens = LEARNING_ANSWER_TARGET_INPUT_TOKENS
-        source = "TASK_TARGET_WITHOUT_REPORTED_CONTEXT"
+        input_tokens = LEARNING_ANSWER_VALIDATED_SOFT_INPUT_CAP_TOKENS
+        source = "VALIDATED_SOFT_CAP_WITHOUT_REPORTED_CONTEXT"
     return {
-        "target_input_tokens": LEARNING_ANSWER_TARGET_INPUT_TOKENS,
-        "soft_input_tokens": LEARNING_ANSWER_SOFT_INPUT_TOKENS,
+        "validated_soft_input_cap_tokens": (
+            LEARNING_ANSWER_VALIDATED_SOFT_INPUT_CAP_TOKENS
+        ),
         "input_token_budget": input_tokens,
-        "input_char_budget": (
+        "input_char_budget": int(
             input_tokens * LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN
         ),
         "estimated_chars_per_token": LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN,
@@ -701,6 +805,29 @@ def _source_materials(
                         "evidence_ids",
                     )
                 }))
+    if "2.1" in question_ids:
+        opening_artifact = _opening_character_program_artifact(projection)
+        first_event_ids = {
+            str(item.get("first_action_event_id") or "")
+            for item in opening_artifact["roles"]
+            if isinstance(item, dict)
+        }
+        for item in projection.get("events", []):
+            if str(item.get("id") or "") not in first_event_ids:
+                continue
+            materials.append((125, "opening_first_action_event", {
+                key: item.get(key)
+                for key in (
+                    "id",
+                    "title",
+                    "chapter_ordinals",
+                    "people",
+                    "trigger",
+                    "process",
+                    "outcome",
+                    "evidence_ids",
+                )
+            }))
     protagonist = str((overview or {}).get("protagonist") or "").strip()
     for item in projection.get("characters", []):
         if item.get("role") == "PROTAGONIST" or item.get("name") == protagonist:
@@ -757,6 +884,176 @@ def _opening_action_counts(projection: dict) -> list[dict[str, object]]:
             "method": "按前 N 章事件中实际参与行动的具名人物去重；仅在人物名单中出现的不计入。",
         })
     return result
+
+
+def _normalized_person_name(value: object) -> str:
+    return "".join(str(value or "").split()).casefold()
+
+
+def _opening_character_program_artifact(projection: dict) -> dict[str, object]:
+    """Build the deterministic half of question 2.1 from canonical events.
+
+    The model only proposes each first scene's narrative function. Sequence,
+    counts, intervals and later activity volume remain program-owned facts.
+    """
+
+    opening_events: list[tuple[int, int, dict]] = []
+    for event_order, event in enumerate(projection.get("events", [])):
+        chapter_ordinals = sorted({
+            int(chapter)
+            for chapter in event.get("chapter_ordinals", [])
+            if 0 < int(chapter) <= 30
+        })
+        if not chapter_ordinals:
+            continue
+        opening_events.append((chapter_ordinals[0], event_order, event))
+    opening_events.sort(key=lambda item: (item[0], item[1], str(item[2].get("id") or "")))
+
+    people: dict[str, dict[str, object]] = {}
+    canonical_labels: dict[str, str] = {}
+    for first_chapter, event_order, event in opening_events:
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            continue
+        event_evidence_ids = sorted({
+            str(evidence_id)
+            for evidence_id in event.get("evidence_ids", [])
+            if evidence_id
+        })
+        for raw_name in event.get("people", []):
+            name = str(raw_name or "").strip()
+            normalized = _normalized_person_name(name)
+            if not normalized:
+                continue
+            canonical_labels.setdefault(normalized, name)
+            item = people.setdefault(normalized, {
+                "character_name": canonical_labels[normalized],
+                "first_action_chapter": first_chapter,
+                "first_action_event_id": event_id,
+                "first_action_event_title": str(event.get("title") or ""),
+                "first_action_event_order": event_order,
+                "first_action_evidence_ids": event_evidence_ids,
+                "action_event_ids_through_30": [],
+            })
+            action_event_ids = item["action_event_ids_through_30"]
+            if isinstance(action_event_ids, list) and event_id not in action_event_ids:
+                action_event_ids.append(event_id)
+
+    roles: list[dict[str, object]] = []
+    for item in people.values():
+        event_count = len(item["action_event_ids_through_30"])
+        if event_count <= 1:
+            volume = "单次行动"
+        elif event_count <= 4:
+            volume = "持续参与"
+        else:
+            volume = "高频参与"
+        roles.append({
+            **item,
+            "action_event_count_through_30": event_count,
+            "later_role_volume": volume,
+        })
+    roles.sort(key=lambda item: (
+        int(item["first_action_chapter"]),
+        int(item["first_action_event_order"]),
+        str(item["character_name"]),
+    ))
+    for sequence_no, item in enumerate(roles, start=1):
+        item["sequence_no"] = sequence_no
+
+    introductions_by_chapter: dict[int, list[str]] = {}
+    for item in roles:
+        introductions_by_chapter.setdefault(
+            int(item["first_action_chapter"]),
+            [],
+        ).append(str(item["character_name"]))
+    introduction_points: list[dict[str, object]] = []
+    previous_chapter: int | None = None
+    for chapter in sorted(introductions_by_chapter):
+        introduction_points.append({
+            "chapter_ordinal": chapter,
+            "new_character_count": len(introductions_by_chapter[chapter]),
+            "new_characters": introductions_by_chapter[chapter],
+            "chapters_since_previous_introduction": (
+                None if previous_chapter is None else chapter - previous_chapter
+            ),
+        })
+        previous_chapter = chapter
+
+    active_names = {
+        _normalized_person_name(item["character_name"]) for item in roles
+    }
+    identity_candidates = [
+        {
+            key: candidate.get(key)
+            for key in (
+                "candidate_key",
+                "left_name",
+                "right_name",
+                "reason",
+                "evidence_ids",
+            )
+        }
+        for candidate in projection.get("person_identity_candidates", [])
+        if (
+            _normalized_person_name(candidate.get("left_name")) in active_names
+            or _normalized_person_name(candidate.get("right_name")) in active_names
+        )
+    ]
+    return {
+        "scope": "前 30 章内事件中实际参与行动的具名人物",
+        "roles": roles,
+        "introduction_points": introduction_points,
+        "program_counts": _opening_action_counts(projection),
+        "identity_duplicate_candidates": identity_candidates,
+    }
+
+
+def _compact_opening_character_model_artifact(
+    artifact: dict[str, object],
+) -> dict[str, object]:
+    """Keep only fields needed for the model's 2.1 function proposal."""
+
+    return {
+        "scope": artifact["scope"],
+        "roles": [
+            {
+                key: item.get(key)
+                for key in (
+                    "sequence_no",
+                    "character_name",
+                    "first_action_chapter",
+                    "first_action_event_id",
+                    "first_action_event_title",
+                    "first_action_evidence_ids",
+                    "action_event_count_through_30",
+                    "later_role_volume",
+                )
+            }
+            for item in artifact["roles"]
+            if isinstance(item, dict)
+        ],
+        "introduction_points": [
+            {
+                key: item.get(key)
+                for key in (
+                    "chapter_ordinal",
+                    "new_character_count",
+                    "chapters_since_previous_introduction",
+                )
+            }
+            for item in artifact["introduction_points"]
+            if isinstance(item, dict)
+        ],
+        "identity_duplicate_candidates": [
+            {
+                key: item.get(key)
+                for key in ("candidate_key", "left_name", "right_name", "reason")
+            }
+            for item in artifact["identity_duplicate_candidates"]
+            if isinstance(item, dict)
+        ],
+    }
 
 
 def _readiness_check(
@@ -840,39 +1137,60 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         },
     )
 
+    opening_character_artifact = _opening_character_program_artifact(projection)
+    opening_character_roles = opening_character_artifact["roles"]
     action_gaps: list[str] = []
     for item in action_counts:
         if min(int(item["through_chapter"]), chapter_count) > 0 and int(item["active_character_count"]) == 0:
             action_gaps.append(
                 f"前 {item['through_chapter']} 章没有可由事件证据确认的有效行动人物。"
             )
-    action_ready = any(int(item["active_character_count"]) > 0 for item in action_counts)
+    roles_without_first_evidence = [
+        str(item["character_name"])
+        for item in opening_character_roles
+        if not item.get("first_action_evidence_ids")
+    ]
+    action_ready = bool(opening_character_roles) and not roles_without_first_evidence
     if not action_ready:
         action_gaps.append("现有章节没有可由事件原文确认的有效行动人物。")
+    if roles_without_first_evidence:
+        action_gaps.append(
+            f"有 {len(roles_without_first_evidence)} 位人物的首次行动事件缺少原文，"
+            "不能判断首场功能。"
+        )
     action_limitations = list(action_gaps)
     if chapter_count < 30:
         action_limitations.append(
             f"当前只有 {chapter_count} 章，只能按实际篇幅回答，不能完成前 30 章口径。"
         )
+    identity_candidate_count = len(
+        opening_character_artifact["identity_duplicate_candidates"]
+    )
+    if identity_candidate_count:
+        action_limitations.append(
+            f"仍有 {identity_candidate_count} 组涉及开篇人物的身份候选未裁定，"
+            "程序会单列风险，不把它们静默合并。"
+        )
     action_limitations.append("缺少同品类同商业模式作品的开篇阵容对照。")
     checks["2.1"] = _readiness_check(
         "2.1",
         ready=action_ready,
-        observed={"program_counts": action_counts},
-        gaps=action_limitations,
-        required_artifact="前 3/10/30 章有效行动人物程序计数表",
-        answer_scope="PARTIAL" if action_ready else "NOT_READY",
-        source_material={
+        observed={
             "program_counts": action_counts,
-            "opening_events": [
-                event
-                for event in events
-                if any(
-                    0 < int(chapter) <= 30
-                    for chapter in event.get("chapter_ordinals", [])
-                )
-            ],
+            "opening_character_role_count": len(opening_character_roles),
+            "introduction_point_count": len(
+                opening_character_artifact["introduction_points"]
+            ),
+            "identity_duplicate_candidate_count": identity_candidate_count,
+            "roles_without_first_evidence_count": len(roles_without_first_evidence),
         },
+        gaps=action_limitations,
+        required_artifact=(
+            "2.1 角色首行动序、首场功能、后续量级、新增间隔、"
+            "功能分布与身份风险完整账本"
+        ),
+        answer_scope="PARTIAL" if action_ready else "NOT_READY",
+        source_material=opening_character_artifact,
     )
 
     protagonist_name = str(overview.get("protagonist") or "").strip()
@@ -1234,28 +1552,23 @@ def provider_payload_for_learning_report(
     for item in question_catalog:
         item["answer_scope"] = readiness_by_id[item["question_id"]]["answer_scope"]
         item["known_gaps"] = readiness_by_id[item["question_id"]]["gaps"]
-    character_index = [
-        {
-            key: character.get(key)
-            for key in (
-                "id",
-                "name",
-                "aliases",
-                "role",
-                "first_chapter_ordinal",
-                "last_chapter_ordinal",
-                "appearance_count",
+        item["required_contract_items"] = [
+            {
+                "item_id": definition.item_id,
+                "label": definition.label,
+                "requirement": definition.requirement,
+            }
+            for definition in LEARNING_QUESTION_ITEM_CONTRACTS.get(
+                item["question_id"],
+                (),
             )
-        }
-        for character in projection.get("characters", [])
-    ]
+        ]
     compact_action_counts = [
         {
             key: item[key]
             for key in (
                 "through_chapter",
                 "active_character_count",
-                "active_characters",
                 "event_count",
                 "method",
             )
@@ -1279,9 +1592,14 @@ def provider_payload_for_learning_report(
             for ordinal, unit in enumerate(chapter_units, start=1)
         ]
     if question_id == "2.1":
-        fixed_input["character_index"] = character_index
+        opening_character_artifact = _opening_character_program_artifact(projection)
         fixed_input["program_metrics"] = {
             "opening_action_character_counts": compact_action_counts,
+        }
+        fixed_input["program_artifacts"] = {
+            "opening_character_ledger": _compact_opening_character_model_artifact(
+                opening_character_artifact
+            ),
         }
     fixed_chars = len(
         json.dumps(fixed_input, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -1382,7 +1700,294 @@ def parse_learning_report(
                 "message": "首组逐问答案不得提前生成作者决策或方法候选汇总",
             }],
         )
+    for answer in output.answers:
+        definitions = LEARNING_QUESTION_ITEM_CONTRACTS.get(answer.question_id)
+        if not definitions:
+            continue
+        expected_item_ids = [item.item_id for item in definitions]
+        actual_item_ids = [item.item_id for item in answer.contract_items]
+        if (
+            actual_item_ids != expected_item_ids
+            or len(set(actual_item_ids)) != len(actual_item_ids)
+        ):
+            raise LearningReportValidationError(
+                "LEARNING_REPORT_CONTRACT_ITEM_COVERAGE_INVALID",
+                [{
+                    "path": ["answers", answer.question_id, "contract_items"],
+                    "type": "value_error",
+                    "message": (
+                        "必须按规定顺序逐项返回问题合同："
+                        f"{'、'.join(expected_item_ids)}"
+                    ),
+                }],
+            )
+        insufficient_items = [
+            item.item_id
+            for item in answer.contract_items
+            if item.status == "INSUFFICIENT_EVIDENCE"
+        ]
+        if insufficient_items and answer.status == "ANSWERED":
+            raise LearningReportValidationError(
+                "LEARNING_REPORT_CONTRACT_STATUS_INCONSISTENT",
+                [{
+                    "path": ["answers", answer.question_id, "status"],
+                    "type": "value_error",
+                    "message": (
+                        "仍有合同项目证据不足时，整问不能标为已完整回答："
+                        f"{'、'.join(insufficient_items)}"
+                    ),
+                }],
+            )
+        if answer.question_id == "2.1":
+            item_by_id = {
+                item.item_id: item for item in answer.contract_items
+            }
+            function_item = item_by_id["first_scene_functions"]
+            if (
+                function_item.status != "SUPPORTED"
+                or not function_item.classifications
+            ):
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_2_1_FIRST_FUNCTIONS_MISSING",
+                    [{
+                        "path": [
+                            "answers",
+                            answer.question_id,
+                            "contract_items",
+                            "first_scene_functions",
+                        ],
+                        "type": "value_error",
+                        "message": "2.1 必须逐人返回首场功能分类，不能只给人数。",
+                    }],
+                )
+            if item_by_id["cross_book_comparison"].status != "INSUFFICIENT_EVIDENCE":
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_2_1_CROSS_BOOK_SCOPE_INVALID",
+                    [{
+                        "path": [
+                            "answers",
+                            answer.question_id,
+                            "contract_items",
+                            "cross_book_comparison",
+                        ],
+                        "type": "value_error",
+                        "message": "当前没有同口径多书数据，跨书阵容对比必须明确标为证据不足。",
+                    }],
+                )
     return output
+
+
+def _validated_2_1_program_artifact(
+    answer: LearningAnswerProposal,
+    projection: dict,
+    valid_evidence_ids: set[str],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    program_artifact = _opening_character_program_artifact(projection)
+    roles = [
+        item
+        for item in program_artifact["roles"]
+        if isinstance(item, dict)
+    ]
+    roles_by_name = {
+        _normalized_person_name(item["character_name"]): item
+        for item in roles
+    }
+    function_item = next(
+        (
+            item
+            for item in answer.contract_items
+            if item.item_id == "first_scene_functions"
+        ),
+        None,
+    )
+    if function_item is None:
+        raise ValueError("LEARNING_REPORT_2_1_FIRST_FUNCTIONS_MISSING")
+    classifications_by_name: dict[
+        str, LearningContractClassificationProposal
+    ] = {}
+    for classification in function_item.classifications:
+        normalized_name = _normalized_person_name(classification.subject)
+        if normalized_name in classifications_by_name:
+            raise ValueError("LEARNING_REPORT_2_1_CHARACTER_DUPLICATED")
+        role = roles_by_name.get(normalized_name)
+        if role is None:
+            raise ValueError("LEARNING_REPORT_2_1_CHARACTER_REFERENCE_INVALID")
+        if (
+            classification.first_action_chapter
+            != int(role["first_action_chapter"])
+            or classification.first_action_event_id
+            != str(role["first_action_event_id"])
+        ):
+            raise ValueError("LEARNING_REPORT_2_1_FIRST_ACTION_REFERENCE_INVALID")
+        evidence_ids = set(classification.evidence_ids)
+        if (
+            not evidence_ids
+            or not evidence_ids.issubset(
+                set(role["first_action_evidence_ids"])
+            )
+            or not evidence_ids.issubset(valid_evidence_ids)
+        ):
+            raise ValueError("LEARNING_REPORT_2_1_FIRST_ACTION_EVIDENCE_MISMATCH")
+        classifications_by_name[normalized_name] = classification
+    if set(classifications_by_name) != set(roles_by_name):
+        missing = sorted(
+            str(roles_by_name[name]["character_name"])
+            for name in set(roles_by_name) - set(classifications_by_name)
+        )
+        raise ValueError(
+            "LEARNING_REPORT_2_1_CHARACTER_COVERAGE_INVALID:"
+            + "、".join(missing[:20])
+        )
+
+    function_distribution: dict[str, int] = {}
+    completed_roles: list[dict[str, object]] = []
+    for role in roles:
+        classification = classifications_by_name[
+            _normalized_person_name(role["character_name"])
+        ]
+        function_distribution[classification.category] = (
+            function_distribution.get(classification.category, 0) + 1
+        )
+        completed_roles.append({
+            key: value
+            for key, value in role.items()
+            if key != "first_action_event_order"
+        } | {
+            "first_scene_function": classification.category,
+            "first_scene_function_explanation": classification.explanation,
+            "first_scene_function_evidence_ids": classification.evidence_ids,
+        })
+    completed_artifact = {
+        **program_artifact,
+        "roles": completed_roles,
+        "function_distribution": [
+            {"function": function, "count": count}
+            for function, count in sorted(
+                function_distribution.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "contract_validation": {
+            "required_item_count": len(
+                LEARNING_QUESTION_ITEM_CONTRACTS["2.1"]
+            ),
+            "covered_item_count": len(answer.contract_items),
+            "character_classification_complete": True,
+            "program_owned_fields": [
+                "人物计数",
+                "首行动顺序",
+                "后续行动事件数与量级",
+                "新增人物间隔",
+                "功能分布",
+                "身份重复候选",
+            ],
+            "model_proposed_program_validated_fields": ["首场功能"],
+        },
+    }
+    program_metrics = [
+        {
+            "label": f"前 {item['through_chapter']} 章有效行动人物",
+            "value": str(item["active_character_count"]),
+            "unit": "人",
+            "method": str(item["method"]),
+            "evidence_ids": list(item.get("evidence_ids", []))[:16],
+        }
+        for item in program_artifact["program_counts"]
+    ]
+    program_metrics.extend([
+        {
+            "label": "首次行动引入批次",
+            "value": str(len(program_artifact["introduction_points"])),
+            "unit": "批",
+            "method": "按人物首次参与有效行动的章节去重后计数。",
+            "evidence_ids": [],
+        },
+        {
+            "label": "未裁定身份重复候选",
+            "value": str(len(program_artifact["identity_duplicate_candidates"])),
+            "unit": "组",
+            "method": "仅统计涉及前 30 章有效行动人物、且尚未由程序或用户裁定的身份候选。",
+            "evidence_ids": [],
+        },
+    ])
+    return completed_artifact, program_metrics
+
+
+def _program_2_1_reading_fields(
+    artifact: dict[str, object],
+) -> dict[str, list[str] | str]:
+    counts = {
+        int(item["through_chapter"]): int(item["active_character_count"])
+        for item in artifact["program_counts"]
+        if isinstance(item, dict)
+    }
+    introduction_count = len(artifact["introduction_points"])
+    function_distribution = [
+        item
+        for item in artifact["function_distribution"]
+        if isinstance(item, dict)
+    ]
+    top_functions = "、".join(
+        f"{item['function']} {item['count']} 人"
+        for item in function_distribution[:3]
+    )
+    volume_counts: dict[str, int] = {}
+    for role in artifact["roles"]:
+        if not isinstance(role, dict):
+            continue
+        volume = str(role.get("later_role_volume") or "")
+        if volume:
+            volume_counts[volume] = volume_counts.get(volume, 0) + 1
+    volume_summary = "、".join(
+        f"{label} {volume_counts[label]} 人"
+        for label in ("高频参与", "持续参与", "单次行动")
+        if volume_counts.get(label)
+    )
+    identity_candidate_count = len(artifact["identity_duplicate_candidates"])
+    conclusion = (
+        f"前 3、10、30 章分别有 {counts.get(3, 0)}、"
+        f"{counts.get(10, 0)}、{counts.get(30, 0)} 名具名人物参与有效行动；"
+        f"前 30 章共有 {introduction_count} 个首次行动引入批次。"
+        f"经逐人首次事件与证据核对，本次首场功能分类数量前三为"
+        f"{top_functions or '暂无'}；后续行动量级为{volume_summary or '暂无'}。"
+        f"当前仍有 {identity_candidate_count} 组身份重复候选未裁定，"
+        "且没有同口径跨书数据，因此本问只能作为单书部分回答。"
+    )
+    limitations = [
+        (
+            f"仍有 {identity_candidate_count} 组涉及前 30 章人物的身份重复候选"
+            "尚未裁定；程序不会静默合并，当前人数可能偏高。"
+        ),
+        "缺少同品类、同商业模式作品的同口径数据，不能把本书人物规模当成品类标准。",
+    ]
+    reusable_lessons = [
+        (
+            f"本书不是一次性罗列人物，而是在前 30 章的 "
+            f"{introduction_count} 个行动批次中持续引入；设计群像时可借鉴"
+            "“随事件入场”，但人物数量应按自己的篇幅和识别负担决定。"
+        ),
+        (
+            f"首场功能数量前三为{top_functions or '暂无'}。"
+            "可借鉴“首次行动即承担明确叙事功能”的做法，"
+            "不能照搬本书的类别比例。"
+        ),
+    ]
+    do_not_copy = [
+        (
+            f"不要把前 30 章 {counts.get(30, 0)} 名有效行动人物的密度"
+            "直接当成开书标准；没有稳定识别锚点时会增加读者记忆负担。"
+        ),
+        (
+            f"在 {identity_candidate_count} 组身份重复候选尚未裁定、"
+            "又缺少跨书对照时，不要把当前人数或功能比例外推为市场规律。"
+        ),
+    ]
+    return {
+        "conclusion": conclusion,
+        "limitations": limitations,
+        "reusable_lessons": reusable_lessons,
+        "do_not_copy": do_not_copy,
+    }
 
 
 def persist_learning_report(
@@ -1467,6 +2072,28 @@ def persist_learning_report(
     ))
     if referenced_evidence_ids != valid_evidence_ids:
         raise ValueError("LEARNING_REPORT_EVIDENCE_REFERENCE_INVALID")
+    if "2.1" in selected_question_ids:
+        from .workbench import build_workbench_projection
+
+        projection = build_workbench_projection(session, run.id)
+        answer_model = next(
+            answer for answer in output.answers if answer.question_id == "2.1"
+        )
+        artifact, program_metrics = _validated_2_1_program_artifact(
+            answer_model,
+            projection,
+            valid_evidence_ids,
+        )
+        persisted_answer = next(
+            answer
+            for answer in payload["answers"]
+            if answer["question_id"] == "2.1"
+        )
+        persisted_answer["program_artifacts"] = {
+            "opening_character_ledger": artifact,
+        }
+        persisted_answer["metrics"] = program_metrics
+        persisted_answer.update(_program_2_1_reading_fields(artifact))
     for answer in payload["answers"]:
         if answer["status"] in {"ANSWERED", "PARTIAL"}:
             if not answer["evidence_ids"]:
@@ -1749,6 +2376,25 @@ def build_learning_report_projection(
             "status": question_status,
             "conclusion": answer.get("conclusion", ""),
             "metrics": answer.get("metrics", []),
+            "contract_items": [
+                {
+                    **item,
+                    "label": next(
+                        (
+                            definition_item.label
+                            for definition_item in LEARNING_QUESTION_ITEM_CONTRACTS.get(
+                                definition.question_id,
+                                (),
+                            )
+                            if definition_item.item_id == item.get("item_id")
+                        ),
+                        str(item.get("item_id") or ""),
+                    ),
+                }
+                for item in answer.get("contract_items", [])
+                if isinstance(item, dict)
+            ],
+            "program_artifacts": answer.get("program_artifacts", {}),
             "evidence_ids": answer.get("evidence_ids", []),
             "counter_evidence_ids": answer.get("counter_evidence_ids", []),
             "limitations": answer.get("limitations", []),

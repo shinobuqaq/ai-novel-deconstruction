@@ -487,6 +487,64 @@ def test_loopback_compatible_service_keeps_full_response_mode(client) -> None:
     assert response.parameters["transport_mode"] == "LOCAL_FULL_RESPONSE"
 
 
+def test_loopback_learning_report_uses_streaming_for_long_output(client) -> None:
+    settings = client.app.state.settings
+    service = save_model_service(
+        settings,
+        service_id="openai-default",
+        name="本机 Gemini 桥接",
+        service_type="OPENAI_COMPATIBLE",
+        base_url="http://127.0.0.1:7861/v1",
+        api_key="sk-test",
+    )
+    save_analysis_profile(
+        settings,
+        profile_id=ENTITIES_EVENTS_PROFILE_ID,
+        name="本机长报告流式分析",
+        service_id=service.id,
+        model="gemini-local",
+        temperature=None,
+        max_output_tokens=30_000,
+        reasoning_effort="auto",
+        timeout_seconds=360,
+        max_retries=1,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+        assert request.headers["accept"] == "text/event-stream"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"answers\\":[]}"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":79582,'
+                '"completion_tokens":15892}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode(),
+        )
+
+    provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
+    response = asyncio.run(
+        provider.complete(
+            task_kind="analysis.learning_report",
+            payload={
+                "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
+                "instructions": "只返回 JSON",
+                "input": "长报告测试文本",
+                "output_schema": {"type": "object"},
+            },
+        )
+    )
+
+    assert response.parsed == {"answers": []}
+    assert response.prompt_tokens == 79_582
+    assert response.completion_tokens == 15_892
+    assert response.parameters["transport_mode"] == "STREAMING"
+
+
 def test_remote_openai_responses_service_streams(client) -> None:
     settings = client.app.state.settings
     service = save_model_service(

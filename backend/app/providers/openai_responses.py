@@ -52,6 +52,7 @@ class OpenAIResponsesProvider:
 
     async def complete(self, *, task_kind: str, payload: dict[str, Any]) -> ProviderResponse:
         service, profile = self._configuration(payload)
+        force_streaming = task_kind == "analysis.learning_report"
         schema = payload.get("output_schema")
         instructions = payload.get("instructions")
         model_input = payload.get("input")
@@ -160,6 +161,7 @@ class OpenAIResponsesProvider:
                     service,
                     endpoint,
                     request_body,
+                    force_streaming=force_streaming,
                 )
         except httpx.TimeoutException as exc:
             raise ProviderError(
@@ -294,7 +296,7 @@ class OpenAIResponsesProvider:
                 "context_window_tokens": profile.context_window_tokens,
                 "transport_mode": (
                     "STREAMING"
-                    if model_service_uses_streaming(service)
+                    if force_streaming or model_service_uses_streaming(service)
                     else "LOCAL_FULL_RESPONSE"
                 ),
                 "json_repairs": list(parsed_json.repairs),

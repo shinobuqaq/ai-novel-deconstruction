@@ -675,6 +675,52 @@ export type WorkbenchLearningQuestion = {
   status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
   conclusion: string;
   metrics: WorkbenchLearningMetric[];
+  contract_items: Array<{
+    item_id: string;
+    label: string;
+    status: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
+    finding: string;
+    metrics: WorkbenchLearningMetric[];
+    evidence_ids: string[];
+    limitations: string[];
+    classifications: Array<{
+      subject: string;
+      category: string;
+      first_action_chapter: number;
+      first_action_event_id: string;
+      explanation: string;
+      evidence_ids: string[];
+    }>;
+  }>;
+  program_artifacts: {
+    opening_character_ledger?: {
+      roles: Array<{
+        sequence_no: number;
+        character_name: string;
+        first_action_chapter: number;
+        first_action_event_id: string;
+        first_action_event_title: string;
+        action_event_count_through_30: number;
+        later_role_volume: string;
+        first_scene_function: string;
+        first_scene_function_explanation: string;
+        first_scene_function_evidence_ids: string[];
+      }>;
+      introduction_points: Array<{
+        chapter_ordinal: number;
+        new_character_count: number;
+        new_characters: string[];
+        chapters_since_previous_introduction: number | null;
+      }>;
+      function_distribution: Array<{ function: string; count: number }>;
+      identity_duplicate_candidates: Array<Record<string, unknown>>;
+      contract_validation: {
+        required_item_count: number;
+        covered_item_count: number;
+        character_classification_complete: boolean;
+      };
+    };
+  };
   evidence_ids: string[];
   counter_evidence_ids: string[];
   limitations: string[];

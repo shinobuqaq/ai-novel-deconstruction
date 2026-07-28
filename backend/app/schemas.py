@@ -692,6 +692,28 @@ class WorkbenchLearningMetricRead(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class WorkbenchLearningContractClassificationRead(BaseModel):
+    subject: str
+    category: str
+    first_action_chapter: int
+    first_action_event_id: str
+    explanation: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class WorkbenchLearningContractItemRead(BaseModel):
+    item_id: str
+    label: str
+    status: str
+    finding: str
+    metrics: list[WorkbenchLearningMetricRead] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    classifications: list[WorkbenchLearningContractClassificationRead] = Field(
+        default_factory=list
+    )
+
+
 class WorkbenchLearningQuestionRead(BaseModel):
     question_id: str
     stage_id: int
@@ -709,6 +731,10 @@ class WorkbenchLearningQuestionRead(BaseModel):
     status: str
     conclusion: str = ""
     metrics: list[WorkbenchLearningMetricRead] = Field(default_factory=list)
+    contract_items: list[WorkbenchLearningContractItemRead] = Field(
+        default_factory=list
+    )
+    program_artifacts: dict = Field(default_factory=dict)
     evidence_ids: list[str] = Field(default_factory=list)
     counter_evidence_ids: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)

@@ -368,6 +368,17 @@ code { color: #66737e; font-family: Consolas, monospace; font-size: var(--font-s
 .learning-metric-row div:first-child { border-left: 0; }
 .learning-metric-row strong { color: #2b5964; font-size: 20px; }
 .learning-metric-row span { color: #73818a; font-size: var(--font-size-readable-min); }
+.learning-contract-details { border: 1px solid #dce4e7; border-radius: 7px; background: #fbfcfc; }
+.learning-contract-details > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 15px; color: #315963; cursor: pointer; list-style-position: inside; }
+.learning-contract-details > summary span { color: #718087; font-size: var(--font-size-readable-min); font-weight: 500; }
+.learning-contract-list, .opening-character-ledger-list { display: grid; gap: 8px; max-height: 620px; padding: 0 14px 14px; overflow: auto; }
+.learning-contract-list article, .opening-character-ledger-list article { display: grid; gap: 6px; padding: 12px 13px; border-left: 3px solid #6f9a7c; background: #fff; }
+.learning-contract-list article.insufficient { border-left-color: #b28742; background: #fffaf0; }
+.learning-contract-list article header, .opening-character-ledger-list article header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.learning-contract-list article header i, .opening-character-ledger-list article header i { color: #718087; font-size: var(--font-size-readable-min); font-style: normal; }
+.learning-contract-list article p, .opening-character-ledger-list article p { font-size: var(--font-size-readable-min); line-height: 1.7; }
+.opening-character-ledger-list { grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+.opening-character-ledger-list article small { color: #6b7980; line-height: 1.6; }
 .learning-answer-block { display: grid; gap: 5px; padding: 9px 11px; border-left: 3px solid #5d9270; background: #f3f8f4; }
 .learning-answer-block.warning { border-left-color: #ad8132; background: #fff8e9; }
 .learning-answer-block strong { color: #395a45; font-size: var(--font-size-readable-min); }

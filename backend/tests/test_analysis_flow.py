@@ -344,7 +344,7 @@ class StaticAnalysisProvider:
             for question in report_input["question_catalog"]:
                 question_id = question["question_id"]
                 insufficient = question_id == "4.9"
-                answers.append({
+                answer = {
                     "question_id": question_id,
                     "status": "INSUFFICIENT_EVIDENCE" if insufficient else "PARTIAL",
                     "conclusion": (
@@ -364,7 +364,53 @@ class StaticAnalysisProvider:
                     "limitations": ["当前测试小说篇幅很短，不能外推长篇规律。"],
                     "reusable_lessons": [] if insufficient else ["先确认结构机制，再考虑是否适合自己的新书。"],
                     "do_not_copy": ["不能照搬原作人物、密信设定或具体表达。"],
-                })
+                    "contract_items": [],
+                }
+                if question_id == "2.1":
+                    roles = report_input["program_artifacts"][
+                        "opening_character_ledger"
+                    ]["roles"]
+                    answer["contract_items"] = [
+                        {
+                            "item_id": item["item_id"],
+                            "status": (
+                                "INSUFFICIENT_EVIDENCE"
+                                if item["item_id"] == "cross_book_comparison"
+                                else "SUPPORTED"
+                            ),
+                            "finding": (
+                                "当前没有同口径多书数据。"
+                                if item["item_id"] == "cross_book_comparison"
+                                else f"{item['label']}已由专项原料逐项覆盖。"
+                            ),
+                            "metrics": [],
+                            "evidence_ids": [],
+                            "limitations": [],
+                            "classifications": (
+                                [
+                                    {
+                                        "subject": role["character_name"],
+                                        "category": "主角锚点",
+                                        "first_action_chapter": role[
+                                            "first_action_chapter"
+                                        ],
+                                        "first_action_event_id": role[
+                                            "first_action_event_id"
+                                        ],
+                                        "explanation": "通过首次行动启动或参与开篇任务。",
+                                        "evidence_ids": [
+                                            role["first_action_evidence_ids"][0]
+                                        ],
+                                    }
+                                    for role in roles
+                                ]
+                                if item["item_id"] == "first_scene_functions"
+                                else []
+                            ),
+                        }
+                        for item in question["required_contract_items"]
+                    ]
+                answers.append(answer)
             output = {
                 "answers": answers,
                 "author_decisions": [],
@@ -1115,6 +1161,18 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         item["generated_count"]
         for item in first_learning_projection["learning_report"]["stages"]
     ) == 4
+    first_2_1 = next(
+        item
+        for item in first_learning_projection["learning_report"]["questions"]
+        if item["question_id"] == "2.1"
+    )
+    assert first_2_1["conclusion"].startswith(
+        "前 3、10、30 章分别有 1、1、1 名具名人物参与有效行动"
+    )
+    assert "指数" not in first_2_1["conclusion"]
+    assert "当前测试小说篇幅很短" not in first_2_1["limitations"]
+    assert first_2_1["reusable_lessons"]
+    assert first_2_1["do_not_copy"]
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",

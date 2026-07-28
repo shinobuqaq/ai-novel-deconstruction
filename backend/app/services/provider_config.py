@@ -257,9 +257,11 @@ async def post_model_request(
     service: ModelService,
     endpoint: str,
     request_body: dict[str, Any],
+    *,
+    force_streaming: bool = False,
 ) -> httpx.Response:
-    """Send remote model calls as SSE streams while preserving local full responses."""
-    if not model_service_uses_streaming(service):
+    """Stream remote calls and explicitly selected long local calls."""
+    if not (force_streaming or model_service_uses_streaming(service)):
         return await client.post(
             endpoint,
             headers=provider_http_headers(service.api_key, json_content=True),
@@ -301,8 +303,9 @@ async def post_model_request(
                 "error": {
                     "code": "REMOTE_STREAMING_REQUIRED",
                     "message": (
-                        "远程模型服务没有返回流式数据。远程或中转服务必须支持流式传输；"
-                        "只有 localhost、127.0.0.1 或 ::1 本机地址可以使用整包返回。"
+                        "当前模型请求需要流式传输，但服务没有返回流式数据。"
+                        "远程或中转服务必须支持流式传输；"
+                        "本机普通短任务仍可使用整包返回。"
                     ),
                 }
             },

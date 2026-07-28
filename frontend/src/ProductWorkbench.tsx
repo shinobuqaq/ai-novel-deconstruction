@@ -1106,6 +1106,48 @@ function FormalWorkbench({
                           ))}
                         </div>
                       )}
+                      {activeLearningQuestion.contract_items.length > 0 && (
+                        <details className="learning-contract-details">
+                          <summary>
+                            <strong>查看这一问的逐项验收</strong>
+                            <span>
+                              {activeLearningQuestion.contract_items.filter((item) => item.status === "SUPPORTED").length}
+                              /{activeLearningQuestion.contract_items.length} 项已有书内或程序依据
+                            </span>
+                          </summary>
+                          <div className="learning-contract-list">
+                            {activeLearningQuestion.contract_items.map((item) => (
+                              <article key={item.item_id} className={item.status === "SUPPORTED" ? "supported" : "insufficient"}>
+                                <header><strong>{item.label}</strong><i>{item.status === "SUPPORTED" ? "已有依据" : "仍缺数据"}</i></header>
+                                <p>{item.finding}</p>
+                                {item.limitations.length > 0 && <small>限制：{item.limitations.join("；")}</small>}
+                                {evidenceButtons(item.evidence_ids.slice(0, 3), "查看该项原文")}
+                              </article>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                      {activeLearningQuestion.program_artifacts.opening_character_ledger && (
+                        <details className="learning-contract-details opening-character-ledger">
+                          <summary>
+                            <strong>查看完整角色首行动账本</strong>
+                            <span>{activeLearningQuestion.program_artifacts.opening_character_ledger.roles.length} 人，默认收起</span>
+                          </summary>
+                          <div className="opening-character-ledger-list">
+                            {activeLearningQuestion.program_artifacts.opening_character_ledger.roles.map((item) => (
+                              <article key={`${item.sequence_no}-${item.character_name}`}>
+                                <header>
+                                  <strong>{item.sequence_no}. {item.character_name}</strong>
+                                  <i>第 {item.first_action_chapter} 章 · {item.later_role_volume}</i>
+                                </header>
+                                <p>{item.first_scene_function}：{item.first_scene_function_explanation}</p>
+                                <small>前 30 章参与有效行动事件 {item.action_event_count_through_30} 个 · 首次事件：{item.first_action_event_title}</small>
+                                {evidenceButtons(item.first_scene_function_evidence_ids, "查看首次行动原文")}
+                              </article>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                       {activeLearningQuestion.reusable_lessons.length > 0 && (
                         <div className="learning-answer-block">
                           <strong>可以参考</strong>
