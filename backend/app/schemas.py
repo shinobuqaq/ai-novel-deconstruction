@@ -714,6 +714,7 @@ class WorkbenchLearningQuestionRead(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     reusable_lessons: list[str] = Field(default_factory=list)
     do_not_copy: list[str] = Field(default_factory=list)
+    has_current_answer: bool = False
 
 
 class WorkbenchLearningStageRead(BaseModel):
@@ -749,6 +750,8 @@ class WorkbenchLearningReadinessCheckRead(BaseModel):
     question_id: str
     question: str
     ready: bool
+    answer_scope: str = "NOT_READY"
+    source_fingerprint: str = ""
     observed: dict[str, object] = Field(default_factory=dict)
     gaps: list[str] = Field(default_factory=list)
     required_artifact: str
@@ -758,7 +761,11 @@ class WorkbenchLearningReadinessRead(BaseModel):
     ready: bool
     policy: str
     ready_question_count: int
+    complete_question_count: int = 0
+    partial_question_count: int = 0
     total_question_count: int
+    assessed_question_count: int = 0
+    generation_ready_question_ids: list[str] = Field(default_factory=list)
     checks: list[WorkbenchLearningReadinessCheckRead]
     next_required_artifacts: list[str] = Field(default_factory=list)
 

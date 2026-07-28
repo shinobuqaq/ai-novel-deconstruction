@@ -367,24 +367,8 @@ class StaticAnalysisProvider:
                 })
             output = {
                 "answers": answers,
-                "author_decisions": [{
-                    "title": "可能提前确定密信作为开篇发动机",
-                    "likely_timing": "BEFORE_WRITING",
-                    "inference": "密信同时改变主角目标并留下后续问题，可能是开篇前置决定。",
-                    "evidence_ids": [evidence_id],
-                    "limitations": ["只能从成书倒推，不能证明作者真实创作顺序。"],
-                    "confidence": 72,
-                }],
-                "method_candidates": [{
-                    "title": "用具体物件同时触发目标与悬念",
-                    "mechanism": "让一个可见物件既改变主角行动方向，又提出需要追查的问题。",
-                    "observed_result": "本书开篇中的密信促使主角从被动归来转为主动追查。",
-                    "applicability": ["开篇需要快速建立行动目标"],
-                    "risks": ["物件来源长期不解释会消耗信任"],
-                    "evidence_ids": [evidence_id],
-                    "do_not_copy": "参考目标与悬念合并的机制，不复制密信、人物和场景。",
-                    "verification_scope": "SINGLE_BOOK_PENDING",
-                }],
+                "author_decisions": [],
+                "method_candidates": [],
             }
         return ProviderResponse(
             raw_text=json.dumps(output, ensure_ascii=False),
@@ -965,7 +949,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
     assert projection["deep_analysis"]["world_rules"][0]["discovered_chapter"] == 1
     assert projection["character_design_status"] == "NOT_GENERATED"
-    assert projection["learning_report"]["readiness"]["ready_question_count"] == 1
+    assert projection["learning_report"]["readiness"]["ready_question_count"] == 2
 
     character_start = client.post(
         f"/api/analysis-runs/{run['id']}/character-design/start"
@@ -993,7 +977,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert character_projection["character_design_evidence"]["is_current"] is True
     assert len(character_projection["character_design_evidence"]["fields"]) == 6
     assert character_projection["character_design_evidence"]["coverage"]["event_coverage_complete"] is True
-    assert character_projection["learning_report"]["readiness"]["ready_question_count"] == 2
+    assert character_projection["learning_report"]["readiness"]["ready_question_count"] == 3
     with client.app.state.session_factory() as session:
         cancelled_character_task = Task(
             project_id=character_claim.project_id,
@@ -1050,7 +1034,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert hooks_projection["chapter_end_hooks_evidence"]["is_current"] is True
     assert hooks_projection["chapter_end_hooks_evidence"]["coverage"]["sampled_chapter_count"] == 2
     assert len(hooks_projection["chapter_end_hooks"]) == 2
-    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 3
+    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 5
     hooks_diagnostics = client.get(
         f"/api/analysis-runs/{run['id']}/diagnostics"
     ).json()
@@ -1069,15 +1053,48 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
         learning_task_count_before_character_revision = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
-    blocked_learning_after_character = client.post(
+    first_learning_start = client.post(
         f"/api/analysis-runs/{run['id']}/learning-report/start"
     )
-    assert blocked_learning_after_character.status_code == 409
-    assert blocked_learning_after_character.json()["detail"]["readiness"]["ready_question_count"] == 3
+    assert first_learning_start.status_code == 202
     with client.app.state.session_factory() as session:
         assert session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
-        ) == learning_task_count_before_character_revision
+        ) == learning_task_count_before_character_revision + 1
+        first_learning_claim = claim_next_task(
+            session,
+            worker_id="first-incremental-learning-worker",
+            lease_seconds=60,
+        )
+    assert first_learning_claim is not None
+    assert first_learning_claim.kind == "analysis.learning_report"
+    assert json.loads(first_learning_claim.payload_json)["question_ids"] == [
+        "1.4",
+        "2.1",
+        "2.2",
+        "3.4",
+        "4.9",
+    ]
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        first_learning_claim,
+        registry,
+    )
+    first_learning_projection = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    first_learning_task_state = client.get(
+        f"/api/tasks/{first_learning_claim.id}"
+    ).json()
+    assert first_learning_projection["learning_report_status"] == "READY", (
+        first_learning_task_state["last_error_code"],
+        first_learning_task_state["last_error_message"],
+    )
+    assert sum(
+        item["generated_count"]
+        for item in first_learning_projection["learning_report"]["stages"]
+    ) == 5
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",
@@ -1147,7 +1164,8 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert latest_revision.json()["character_design_evidence"]["is_current"] is False
     assert latest_revision.json()["chapter_end_hooks_status"] == "OUTDATED"
     assert latest_revision.json()["chapter_end_hooks_evidence"]["is_current"] is False
-    assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 1
+    assert latest_revision.json()["learning_report_status"] == "OUTDATED"
+    assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 2
     assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
     latest_unaffected_fact = next(
         item
@@ -1186,11 +1204,11 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     assert current_revision.json()["character_design_evidence"]["revision"] == 2
 
     initial_learning = current_revision.json()["learning_report"]
-    assert current_revision.json()["learning_report_status"] == "NOT_GENERATED"
+    assert current_revision.json()["learning_report_status"] == "OUTDATED"
     assert len(initial_learning["questions"]) == 42
-    assert all(item["status"] == "NOT_GENERATED" for item in initial_learning["questions"])
-    assert initial_learning["readiness"]["ready"] is False
-    assert initial_learning["readiness"]["ready_question_count"] == 2
+    assert sum(item["status"] == "OUTDATED" for item in initial_learning["questions"]) == 5
+    assert initial_learning["readiness"]["ready"] is True
+    assert initial_learning["readiness"]["ready_question_count"] == 3
     with client.app.state.session_factory() as session:
         learning_task_count_before = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
@@ -1198,15 +1216,87 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(clie
     learning_start = client.post(
         f"/api/analysis-runs/{run['id']}/learning-report/start"
     )
-    assert learning_start.status_code == 409
-    assert learning_start.json()["detail"]["code"] == "LEARNING_REPORT_DATA_NOT_READY"
-    assert "不会消耗 Token" in learning_start.json()["detail"]["message"]
-    assert learning_start.json()["detail"]["readiness"]["ready"] is False
+    assert learning_start.status_code == 202
     with client.app.state.session_factory() as session:
         learning_task_count_after = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
-    assert learning_task_count_after == learning_task_count_before
+        refreshed_learning_claim = claim_next_task(
+            session,
+            worker_id="refreshed-incremental-learning-worker",
+            lease_seconds=60,
+        )
+    assert learning_task_count_after == learning_task_count_before + 1
+    assert refreshed_learning_claim is not None
+    assert json.loads(refreshed_learning_claim.payload_json)["question_ids"] == [
+        "1.4",
+        "2.1",
+        "2.2",
+    ]
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        refreshed_learning_claim,
+        registry,
+    )
+    partial_refresh = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert partial_refresh["learning_report_status"] == "READY"
+    assert sum(
+        item["generated_count"]
+        for item in partial_refresh["learning_report"]["stages"]
+    ) == 3
+
+    refreshed_hooks_start = client.post(
+        f"/api/analysis-runs/{run['id']}/chapter-end-hooks/start"
+    )
+    assert refreshed_hooks_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        refreshed_hooks_claim = claim_next_task(
+            session,
+            worker_id="chapter-end-hooks-refresh-worker",
+            lease_seconds=60,
+        )
+    assert refreshed_hooks_claim is not None
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        refreshed_hooks_claim,
+        registry,
+    )
+    hooks_refresh_projection = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert hooks_refresh_projection["learning_report_status"] == "OUTDATED"
+    assert hooks_refresh_projection["learning_report"]["readiness"]["ready_question_count"] == 5
+
+    hook_answers_start = client.post(
+        f"/api/analysis-runs/{run['id']}/learning-report/start"
+    )
+    assert hook_answers_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        hook_answers_claim = claim_next_task(
+            session,
+            worker_id="hook-answer-incremental-worker",
+            lease_seconds=60,
+        )
+    assert hook_answers_claim is not None
+    assert json.loads(hook_answers_claim.payload_json)["question_ids"] == ["3.4", "4.9"]
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        hook_answers_claim,
+        registry,
+    )
+    merged_learning = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert merged_learning["learning_report_status"] == "READY"
+    assert sum(
+        item["generated_count"]
+        for item in merged_learning["learning_report"]["stages"]
+    ) == 5
 
     evidence = client.get(f"/api/evidence/{events[0]['evidence_ids'][0]}")
     assert evidence.status_code == 200

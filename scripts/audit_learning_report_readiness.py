@@ -68,17 +68,22 @@ def _print_human(report: dict[str, object]) -> None:
         f"{report['chapter_count']} 章，状态 {report['run_status']}。"
     )
     print(
-        f"候选七问数据就绪：{readiness['ready_question_count']}/"
-        f"{readiness['total_question_count']}；整批可调用模型："
-        f"{'是' if readiness['ready'] else '否'}。"
+        f"核心 42 问中，首组已审计 {readiness['assessed_question_count']} 问："
+        f"{readiness['complete_question_count']} 问可完整回答，"
+        f"{readiness['partial_question_count']} 问可部分回答；"
+        f"当前可增量生成：{'是' if readiness['ready'] else '否'}。"
     )
     for item in readiness["checks"]:
-        status = "已就绪" if item["ready"] else "未就绪"
+        status = {
+            "COMPLETE": "可完整回答",
+            "PARTIAL": "可部分回答",
+            "NOT_READY": "原料未就绪",
+        }.get(item["answer_scope"], "状态未知")
         print(f"- {item['question_id']} {status}：{item['required_artifact']}")
         for gap in item["gaps"]:
-            print(f"  缺口：{gap}")
+            print(f"  限制或缺口：{gap}")
     if readiness["next_required_artifacts"]:
-        print("下一批需要补的专项原料：")
+        print("首组尚需补的专项原料：")
         for artifact in readiness["next_required_artifacts"]:
             print(f"- {artifact}")
     print("本审计只读数据库，不创建在线任务，不消耗 Token（令牌）。")

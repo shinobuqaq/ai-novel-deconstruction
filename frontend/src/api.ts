@@ -668,7 +668,7 @@ export type WorkbenchLearningQuestion = {
   scope_requirement: string;
   external_data_policy: string;
   recommended_rank: number | null;
-  status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "NOT_GENERATED";
+  status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
   conclusion: string;
   metrics: WorkbenchLearningMetric[];
   evidence_ids: string[];
@@ -676,6 +676,7 @@ export type WorkbenchLearningQuestion = {
   limitations: string[];
   reusable_lessons: string[];
   do_not_copy: string[];
+  has_current_answer: boolean;
 };
 
 export type WorkbenchLearningStage = {
@@ -711,6 +712,8 @@ export type WorkbenchLearningReadinessCheck = {
   question_id: string;
   question: string;
   ready: boolean;
+  answer_scope: "COMPLETE" | "PARTIAL" | "NOT_READY";
+  source_fingerprint: string;
   observed: Record<string, unknown>;
   gaps: string[];
   required_artifact: string;
@@ -720,7 +723,11 @@ export type WorkbenchLearningReadiness = {
   ready: boolean;
   policy: string;
   ready_question_count: number;
+  complete_question_count: number;
+  partial_question_count: number;
   total_question_count: number;
+  assessed_question_count: number;
+  generation_ready_question_ids: string[];
   checks: WorkbenchLearningReadinessCheck[];
   next_required_artifacts: string[];
 };

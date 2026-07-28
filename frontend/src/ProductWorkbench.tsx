@@ -202,6 +202,8 @@ const LEARNING_ANSWER_STATUS_LABELS: Record<string, string> = {
   ANSWERED: "已回答",
   PARTIAL: "部分回答",
   INSUFFICIENT_EVIDENCE: "证据不足",
+  READY_TO_GENERATE: "可以生成",
+  OUTDATED: "需要更新",
   NOT_GENERATED: "未生成",
 };
 
@@ -868,11 +870,12 @@ function FormalWorkbench({
               <section className="learning-report-hero">
                 <span>北极星 42 问 · 默认学习入口</span>
                 <h3>先看这本书能教我什么</h3>
-                <p>系统按写书顺序替你回答问题。当前“{learningReport.batch_label}”只是待验证的内部批次，不是 Fable 固定的开发顺序；原料不满足逐问合同时不会调用模型。</p>
+                <p>系统按写书顺序逐问形成答案，每问独立检查原料；原料只够回答一部分时会明确保留缺口，不再等待无关问题一起就绪。</p>
                 <div>
                   <strong>{generatedLearningCount}/42 已生成</strong>
                   <strong>{answeredLearningCount} 项已有可用答案</strong>
-                  <strong>{learningReadiness.ready_question_count}/7 项原料已就绪</strong>
+                  <strong>{learningReadiness.complete_question_count} 项可完整回答</strong>
+                  <strong>{learningReadiness.partial_question_count} 项可部分回答</strong>
                 </div>
                 <div className="learning-report-action">
                   <span>{LEARNING_REPORT_STATUS_LABELS[viewData.learning_report_status] ?? "状态未知"}</span>
@@ -915,7 +918,7 @@ function FormalWorkbench({
               <section className="learning-report-section character-design-ledger">
                 <header>
                   <div><span>{characterDesignReadiness?.ready ? "已完成专项 · 北极星 2.2" : "当前专项 · 北极星 2.2"}</span><h3>主角双层欲望与最小完整集证据表</h3></div>
-                  <p>从已经拆出的全书主角事件中定位六项人物要素的首次行动证据；这是独立证据账本，不是七问报告，也不是新书人设。</p>
+                  <p>从已经拆出的全书主角事件中定位六项人物要素的首次行动证据；这是供 2.2 独立编译答案的证据账本，不是新书人设。</p>
                 </header>
                 <div className={`character-design-state ${viewData.character_design_status.toLowerCase()}`}>
                   <div>
@@ -1027,8 +1030,8 @@ function FormalWorkbench({
 
               <section className="learning-report-section">
                 <header>
-                  <div><span>当前内部候选批次</span><h3>七个问题不代表 Fable 规定的固定批次</h3></div>
-                  <p>保留它们是为了复用现有原型；每问必须先满足自己的产出、计数、证据、范围和降级合同。</p>
+                  <div><span>第一次内容判断 · 首组五问</span><h3>先看实际答案有没有用、有没有抓住重点</h3></div>
+                  <p>1.4、2.1 允许带明确缺口的部分答案；2.2、3.4、4.9 通过各自证据合同后生成完整答案。五问互不借用就绪状态。</p>
                 </header>
                 <div className="learning-question-list">
                   {recommendedLearningQuestions.map((question) => (
@@ -1536,16 +1539,16 @@ function FormalWorkbench({
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
           <><div><strong>{viewData.deep_status === "OUTDATED" ? "故事结构已经更新" : "第一阶段结果可以确认"}</strong><span>{viewData.deep_status === "OUTDATED" ? "当前深层拆解仍对应上一版故事结构，请基于最新总览、人物、剧情和关系重新生成。" : "请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。"}</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : viewData.deep_status === "OUTDATED" ? "基于最新故事结构重新生成" : "确认故事结构并继续"}</button></>
-        ) : !characterDesignReadiness?.ready ? (
-          <><div><strong>{viewData.character_design_status === "GENERATING" ? "正在生成 2.2 主角证据账本" : "下一步先完成 2.2 主角证据账本"}</strong><span>{viewData.character_design_status === "GENERATING" ? "完成后会独立保存并把就绪度推进一项，不会提前生成七问报告。" : `当前只就绪 ${learningReadiness.ready_question_count}/7 项。系统会从已有拆书数据中核对主角六项要素及其首次行动证据。`}</span></div>{viewData.character_design_status !== "GENERATING" && <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>{busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}</button>}</>
-        ) : !chapterEndHooksReadiness?.ready ? (
-          <><div><strong>{viewData.chapter_end_hooks_status === "GENERATING" ? "正在生成 4.9 逐章章末钩账本" : "下一步完成 4.9 逐章章末钩账本"}</strong><span>{viewData.chapter_end_hooks_status === "GENERATING" ? "程序已经固定真实章末，正在判断类型和后续回应；完成前不会生成七问报告。" : `当前就绪 ${learningReadiness.ready_question_count}/7 项。${chapterEndHooksReadiness?.gaps.join("；") || "需要逐章补齐真实结尾和回应证据。"}`}</span></div>{viewData.chapter_end_hooks_status !== "GENERATING" && <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>{busy === "start-chapter-end-hooks" ? "正在准备" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : "生成 4.9 逐章账本"}</button>}</>
+        ) : !learningReadiness.ready && !characterDesignReadiness?.ready ? (
+          <><div><strong>{viewData.character_design_status === "GENERATING" ? "正在生成 2.2 主角证据账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.character_design_status === "GENERATING" ? "完成后会独立保存，2.2 就绪后即可单独形成答案。" : "系统会从已有拆书数据中核对主角六项要素及其首次行动证据。"}</span></div>{viewData.character_design_status !== "GENERATING" && <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>{busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}</button>}</>
+        ) : !learningReadiness.ready && !chapterEndHooksReadiness?.ready ? (
+          <><div><strong>{viewData.chapter_end_hooks_status === "GENERATING" ? "正在生成 4.9 逐章章末钩账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.chapter_end_hooks_status === "GENERATING" ? "程序已经固定真实章末，正在判断类型和后续回应。" : chapterEndHooksReadiness?.gaps.join("；") || "需要逐章补齐真实结尾和回应证据。"}</span></div>{viewData.chapter_end_hooks_status !== "GENERATING" && <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>{busy === "start-chapter-end-hooks" ? "正在准备" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : "生成 4.9 逐章账本"}</button>}</>
         ) : !learningReadiness.ready ? (
-          <div><strong>其余创作问题的证据原料还不够</strong><span>2.2 和 4.9 已完成，当前共就绪 {learningReadiness.ready_question_count}/7 项。后续按基线继续补：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}；补齐前不会生成七问报告。</span></div>
+          <div><strong>当前还没有可生成的学习答案</strong><span>系统不会创建在线任务，也不会消耗 Token（令牌）。下一项原料缺口：{learningReadiness.next_required_artifacts.slice(0, 3).join("、")}。</span></div>
         ) : viewData.learning_report_status !== "READY" ? (
-          <><div><strong>{viewData.learning_report_status === "GENERATING" ? "正在生成创作学习报告" : viewData.learning_report_status === "OUTDATED" ? "学习报告已经过期" : viewData.learning_report_status === "FAILED" ? "上次报告生成失败" : "候选批次原料已经就绪"}</strong><span>此批次是内部原型，不代表 Fable 指定的固定顺序；其余 35 问继续明确标为未生成。</span></div><button type="button" disabled={viewData.learning_report_status === "GENERATING" || busy === "start-learning-report"} onClick={onStartLearningReport}>{viewData.learning_report_status === "GENERATING" ? "正在生成" : busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成候选学习答案"}</button></>
+          <><div><strong>{viewData.learning_report_status === "GENERATING" ? "正在逐问生成学习答案" : viewData.learning_report_status === "OUTDATED" ? "有新的或过期问题可以更新" : viewData.learning_report_status === "FAILED" ? "上次答案生成失败" : "已有问题原料就绪"}</strong><span>本次只提交当前可回答且尚未生成的问题，其他问题不会阻塞，也不会被包装成已完成。</span></div><button type="button" disabled={viewData.learning_report_status === "GENERATING" || busy === "start-learning-report"} onClick={onStartLearningReport}>{viewData.learning_report_status === "GENERATING" ? "正在生成" : busy === "start-learning-report" ? "正在准备答案" : viewData.learning_report_status === "OUTDATED" ? "生成新增或更新答案" : "生成当前可答问题"}</button></>
         ) : (
-          <><div><strong>首批创作学习答案已经生成</strong><span>7 个起步问题已有正式状态、计数与证据；其余问题没有被伪装成已完成。</span></div>{analysisStatus === "REVIEW" && <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirmAnalysis}>{busy === "confirm-analysis" ? "正在保存确认" : "确认当前拆解结果"}</button>}</>
+          <><div><strong>当前可答的创作学习答案已经生成</strong><span>请先判断这些实际答案有没有用、有没有抓住重点；其余问题仍明确标为未生成。</span></div>{analysisStatus === "REVIEW" && <button type="button" disabled={busy === "confirm-analysis"} onClick={onConfirmAnalysis}>{busy === "confirm-analysis" ? "正在保存确认" : "确认当前拆解结果"}</button>}</>
         )}
       </footer>
     </section>
@@ -1933,7 +1936,7 @@ export default function ProductWorkbench() {
 
   async function handleStartCharacterDesign(force = false) {
     if (!analysisRun) return;
-    const confirmed = window.confirm("这一步会读取现有拆书数据并发起一次在线 AI 请求，用于生成独立的 2.2 主角证据账本，并计入 Token（令牌）用量。它不会生成七问报告，也不会写入新书开书包。是否继续？");
+    const confirmed = window.confirm("这一步会读取现有拆书数据并发起一次在线 AI 请求，用于生成独立的 2.2 主角证据账本，并计入 Token（令牌）用量。完成后 2.2 可以独立形成学习答案，但不会写入新书开书包。是否继续？");
     if (!confirmed) return;
     try {
       setBusy("start-character-design");
@@ -1948,7 +1951,7 @@ export default function ProductWorkbench() {
 
   async function handleStartChapterEndHooks(force = false) {
     if (!analysisRun) return;
-    const confirmed = window.confirm("这一步会从现有拆书数据中固定真实章末原文，并发起一次在线 AI 请求，用于生成独立的 4.9 逐章钩子与回应账本，会计入 Token（令牌）用量。它不会生成七问报告，也不会写入新书开书包。是否继续？");
+    const confirmed = window.confirm("这一步会从现有拆书数据中固定真实章末原文，并发起一次在线 AI 请求，用于生成独立的 4.9 逐章钩子与回应账本，会计入 Token（令牌）用量。完成后 3.4 和 4.9 可以按各自合同形成答案，但不会写入新书开书包。是否继续？");
     if (!confirmed) return;
     try {
       setBusy("start-chapter-end-hooks");
@@ -1968,7 +1971,7 @@ export default function ProductWorkbench() {
       setError("创作问题的证据原料尚未就绪，系统没有创建在线任务。请先查看学习报告里的数据就绪检查。");
       return;
     }
-    const confirmed = window.confirm("生成当前候选批次会发起一次新的在线 AI 请求，并计入 Token（令牌）用量。此批次不是 Fable 规定的固定顺序，其余 35 问不会被包装成已完成。是否继续？");
+    const confirmed = window.confirm(`这一步只会提交当前可回答且需要更新的创作问题，并发起一次在线 AI 请求，会计入 Token（令牌）用量。当前首组有 ${readiness.complete_question_count} 项可完整回答、${readiness.partial_question_count} 项可部分回答；其他问题不会阻塞或被包装成已完成。是否继续？`);
     if (!confirmed) return;
     try {
       setBusy("start-learning-report");

@@ -843,7 +843,12 @@ async def execute_task(
                 ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         try:
-            learning_output = parse_learning_report(response.parsed)
+            learning_output = parse_learning_report(
+                response.parsed,
+                expected_question_ids=[
+                    str(question_id) for question_id in payload.get("question_ids", [])
+                ],
+            )
         except LearningReportValidationError as exc:
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
@@ -885,6 +890,7 @@ async def execute_task(
                     if reason_code in {
                         "LEARNING_REPORT_ANSWER_EVIDENCE_MISSING",
                         "LEARNING_REPORT_METRIC_MISSING",
+                        "LEARNING_REPORT_PARTIAL_SCOPE_VIOLATION",
                     }
                     else "报告生成期间深层拆解已经更新，请基于最新结果重新生成。"
                 )

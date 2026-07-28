@@ -1303,14 +1303,16 @@ def build_workbench_projection(
         if chapter_end_hooks_evidence
         else []
     )
+    learning_readiness = assess_learning_report_readiness(projection)
     learning_report_status, learning_report = build_learning_report_projection(
         session,
         run_id,
         latest_deep_revision=deep_revision,
+        readiness=learning_readiness,
     )
     projection["learning_report_status"] = learning_report_status
     projection["learning_report"] = learning_report
-    learning_report["readiness"] = assess_learning_report_readiness(projection)
+    learning_report["readiness"] = learning_readiness
     return projection
 
 

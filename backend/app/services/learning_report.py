@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,9 +34,9 @@ from .provider_config import (
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.1.0"
-LEARNING_QUESTION_CATALOG_VERSION = "1.1.0"
-LEARNING_REPORT_BATCH_LABEL = "内部候选批次（7/42，非 Fable 固定批次）"
+LEARNING_REPORT_PROMPT_VERSION = "1.2.1"
+LEARNING_QUESTION_CATALOG_VERSION = "1.2.0"
+LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,8 +414,11 @@ LEARNING_QUESTION_CATALOG = (
     _q("8.2", "哪些参数是品类共性、哪些是个人风格？", "跨书参数分布与作者差异比较", "claims"),
 )
 
-PROTOTYPE_BATCH_QUESTION_IDS = ("1.4", "2.1", "2.2", "4.9", "5.3", "6.4", "6.5")
-_RECOMMENDED_RANK = {question_id: rank for rank, question_id in enumerate(PROTOTYPE_BATCH_QUESTION_IDS, start=1)}
+INITIAL_INCREMENTAL_QUESTION_IDS = ("1.4", "2.1", "2.2", "3.4", "4.9")
+_RECOMMENDED_RANK = {
+    question_id: rank
+    for rank, question_id in enumerate(INITIAL_INCREMENTAL_QUESTION_IDS, start=1)
+}
 _QUESTION_BY_ID = {item.question_id: item for item in LEARNING_QUESTION_CATALOG}
 
 if len(LEARNING_QUESTION_CATALOG) != 42 or len(_QUESTION_BY_ID) != 42:
@@ -474,7 +478,7 @@ class MethodCandidateProposal(BaseModel):
 class LearningReportOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    answers: list[LearningAnswerProposal] = Field(min_length=7, max_length=7)
+    answers: list[LearningAnswerProposal] = Field(min_length=1, max_length=5)
     author_decisions: list[AuthorDecisionProposal] = Field(default_factory=list, max_length=20)
     method_candidates: list[MethodCandidateProposal] = Field(default_factory=list, max_length=20)
 
@@ -528,8 +532,10 @@ def _evidence_ids(value: object) -> set[str]:
     found: set[str] = set()
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in {"evidence_ids", "counter_evidence_ids"} and isinstance(item, list):
+            if key.endswith("evidence_ids") and isinstance(item, list):
                 found.update(str(entry) for entry in item if entry)
+            elif key.endswith("evidence_id") and item:
+                found.add(str(item))
             else:
                 found.update(_evidence_ids(item))
     elif isinstance(value, list):
@@ -564,8 +570,9 @@ def _request_budget_chars(profile: Any) -> int:
     output_reserve = max(1, int(getattr(profile, "max_output_tokens", 16_000)))
     context_window = getattr(profile, "context_window_tokens", None)
     if context_window is not None:
-        return min(160_000, max(24_000, int(context_window) - output_reserve - 4_096))
-    return max(48_000, min(160_000, output_reserve * 3))
+        remaining_tokens = max(24_000, int(context_window) - output_reserve - 4_096)
+        return min(360_000, max(100_000, remaining_tokens * 2))
+    return max(80_000, min(180_000, output_reserve * 5))
 
 
 def _evidence_records(
@@ -603,14 +610,82 @@ def _material_bundle(
     }
 
 
-def _source_materials(projection: dict) -> list[tuple[int, str, dict]]:
+def _source_materials(
+    projection: dict,
+    question_ids: tuple[str, ...],
+) -> list[tuple[int, str, dict]]:
     deep = projection.get("deep_analysis") or {}
     materials: list[tuple[int, str, dict]] = []
     overview = projection.get("story_overview")
     if isinstance(overview, dict):
-        materials.append((100, "story_overview", overview))
+        materials.append((116, "story_overview", overview))
+    character_design = projection.get("character_design_evidence")
+    if (
+        "2.2" in question_ids
+        and isinstance(character_design, dict)
+        and character_design.get("is_current") is not False
+    ):
+        materials.append((120, "character_design_evidence", character_design))
+    chapter_end_hooks = projection.get("chapter_end_hooks_evidence")
+    if (
+        {"3.4", "4.9"}.intersection(question_ids)
+        and isinstance(chapter_end_hooks, dict)
+        and chapter_end_hooks.get("is_current") is not False
+    ):
+        hook_metadata = {
+            key: value for key, value in chapter_end_hooks.items() if key != "chapters"
+        }
+        materials.append((122, "chapter_end_hooks_summary", hook_metadata))
+        for item in _balanced_items(chapter_end_hooks.get("chapters", []), "chapter_ordinal"):
+            priority = 121 if int(item.get("chapter_ordinal") or 0) <= 3 else 118
+            materials.append((priority, "chapter_end_hook", item))
+    if {"1.4", "2.1"}.intersection(question_ids):
+        for item in _opening_action_counts(projection):
+            materials.append((117, "opening_action_program_count", {
+                **item,
+                "evidence_ids": item.get("evidence_ids", [])[:12],
+            }))
+        opening_events = []
+        for item in projection.get("events", []):
+            chapter_ordinals = [
+                int(value)
+                for value in item.get("chapter_ordinals", [])
+                if int(value) > 0
+            ]
+            if chapter_ordinals and min(chapter_ordinals) <= 30:
+                opening_events.append(item)
+        event_groups = (
+            (1, 3, 40),
+            (4, 10, 30),
+            (11, 30, 30),
+        )
+        for start, end, limit in event_groups:
+            group = [
+                item
+                for item in opening_events
+                if any(
+                    start <= int(chapter) <= end
+                    for chapter in item.get("chapter_ordinals", [])
+                )
+            ]
+            for item in group[:limit]:
+                materials.append((110, "opening_event", {
+                    key: item.get(key)
+                    for key in (
+                        "id",
+                        "title",
+                        "chapter_ordinals",
+                        "people",
+                        "trigger",
+                        "process",
+                        "outcome",
+                        "evidence_ids",
+                    )
+                }))
+    protagonist = str((overview or {}).get("protagonist") or "").strip()
     for item in projection.get("characters", []):
-        materials.append((92, "character", item))
+        if item.get("role") == "PROTAGONIST" or item.get("name") == protagonist:
+            materials.append((112, "protagonist", item))
     for item in projection.get("phases", []):
         materials.append((88, "narrative_phase", item))
     for item in deep.get("foreshadowing", []):
@@ -672,11 +747,24 @@ def _readiness_check(
     observed: dict[str, object],
     gaps: list[str],
     required_artifact: str,
+    answer_scope: Literal["COMPLETE", "PARTIAL", "NOT_READY"] | None = None,
+    source_material: object | None = None,
 ) -> dict[str, object]:
+    resolved_scope = answer_scope or ("COMPLETE" if ready else "NOT_READY")
     return {
         "question_id": question_id,
         "question": _QUESTION_BY_ID[question_id].question,
         "ready": ready,
+        "answer_scope": resolved_scope,
+        "source_fingerprint": hashlib.sha256(
+            json.dumps(
+                source_material if source_material is not None else observed,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
         "observed": observed,
         "gaps": gaps,
         "required_artifact": required_artifact,
@@ -684,11 +772,7 @@ def _readiness_check(
 
 
 def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
-    """Audit whether the prototype batch has the Fable-required source artifacts.
-
-    This is intentionally stricter than checking that a deep-analysis row exists.
-    A model task is useful only after the supporting counts and evidence ledgers exist.
-    """
+    """Classify each first-group question independently as complete, partial, or blocked."""
 
     chapters = projection.get("chapters", [])
     chapter_count = len(chapters)
@@ -723,24 +807,53 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "opening_event_count": len(opening_events),
             "overview_evidence_count": len(overview.get("evidence_ids", [])),
         },
-        gaps=selling_point_gaps,
+        gaps=(
+            selling_point_gaps
+            or [
+                "当前只能依据故事前提与前三章回答，书名、简介承诺和同类书对照仍需补充。"
+            ]
+        ),
         required_artifact="开篇承诺与首次兑现证据表",
+        answer_scope="PARTIAL" if not selling_point_gaps else "NOT_READY",
+        source_material={
+            "story_overview": overview,
+            "opening_events": opening_events,
+        },
     )
 
     action_gaps: list[str] = []
-    if chapter_count < 30:
-        action_gaps.append(f"当前只有 {chapter_count} 章，无法完成前 3/10/30 章三个固定口径。")
     for item in action_counts:
-        if int(item["active_character_count"]) == 0:
+        if min(int(item["through_chapter"]), chapter_count) > 0 and int(item["active_character_count"]) == 0:
             action_gaps.append(
                 f"前 {item['through_chapter']} 章没有可由事件证据确认的有效行动人物。"
             )
+    action_ready = any(int(item["active_character_count"]) > 0 for item in action_counts)
+    if not action_ready:
+        action_gaps.append("现有章节没有可由事件原文确认的有效行动人物。")
+    action_limitations = list(action_gaps)
+    if chapter_count < 30:
+        action_limitations.append(
+            f"当前只有 {chapter_count} 章，只能按实际篇幅回答，不能完成前 30 章口径。"
+        )
+    action_limitations.append("缺少同品类同商业模式作品的开篇阵容对照。")
     checks["2.1"] = _readiness_check(
         "2.1",
-        ready=not action_gaps,
+        ready=action_ready,
         observed={"program_counts": action_counts},
-        gaps=action_gaps,
+        gaps=action_limitations,
         required_artifact="前 3/10/30 章有效行动人物程序计数表",
+        answer_scope="PARTIAL" if action_ready else "NOT_READY",
+        source_material={
+            "program_counts": action_counts,
+            "opening_events": [
+                event
+                for event in events
+                if any(
+                    0 < int(chapter) <= 30
+                    for chapter in event.get("chapter_ordinals", [])
+                )
+            ],
+        },
     )
 
     protagonist_name = str(overview.get("protagonist") or "").strip()
@@ -811,6 +924,7 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         },
         gaps=character_gaps,
         required_artifact="主角双层欲望与最小完整集证据表",
+        source_material=character_design,
     )
 
     chapter_end_hooks_evidence = projection.get("chapter_end_hooks_evidence") or {}
@@ -870,6 +984,68 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         },
         gaps=hook_gaps,
         required_artifact="逐章章末钩与回应账本",
+        source_material=chapter_end_hooks_evidence,
+    )
+
+    opening_hook_samples = [
+        item
+        for item in chapter_end_hooks
+        if 1 <= int(item.get("chapter_ordinal") or 0) <= 3
+    ]
+    valid_opening_hook_samples = [
+        item
+        for item in opening_hook_samples
+        if item.get("ending_evidence_ids")
+        and item.get("hook_type")
+        and item.get("strength")
+        and (
+            item.get("hook_type") == "NONE"
+            or item.get("response_status") in {"RESOLVED", "PARTIAL", "UNRESOLVED"}
+        )
+        and (
+            item.get("response_status") not in {"RESOLVED", "PARTIAL"}
+            or (
+                item.get("response_evidence_ids")
+                and item.get("response_chapter_ordinal")
+                and item.get("response_distance") is not None
+            )
+        )
+    ]
+    opening_hook_gaps: list[str] = []
+    required_opening_hook_count = min(3, chapter_count)
+    if (
+        isinstance(chapter_end_hooks_evidence, dict)
+        and chapter_end_hooks_evidence.get("is_current") is False
+    ):
+        opening_hook_gaps.append("前三章章末钩记录对应旧版拆解，需要重新生成。")
+    if len(valid_opening_hook_samples) < required_opening_hook_count:
+        opening_hook_gaps.append(
+            f"前三章需要 {required_opening_hook_count} 章真实章末与回应记录，"
+            f"当前有效 {len(valid_opening_hook_samples)} 章。"
+        )
+    opening_hook_ready = required_opening_hook_count > 0 and not opening_hook_gaps
+    opening_hook_scope: Literal["COMPLETE", "PARTIAL", "NOT_READY"] = (
+        "COMPLETE"
+        if opening_hook_ready and chapter_count >= 3
+        else "PARTIAL"
+        if opening_hook_ready
+        else "NOT_READY"
+    )
+    if opening_hook_ready and chapter_count < 3:
+        opening_hook_gaps.append(
+            f"作品当前只有 {chapter_count} 章，无法形成完整三章口径。"
+        )
+    checks["3.4"] = _readiness_check(
+        "3.4",
+        ready=opening_hook_ready,
+        observed={
+            "required_chapter_count": required_opening_hook_count,
+            "valid_chapter_end_sample_count": len(valid_opening_hook_samples),
+        },
+        gaps=opening_hook_gaps,
+        required_artifact="前三章章末钩与回应明细",
+        answer_scope=opening_hook_scope,
+        source_material=valid_opening_hook_samples,
     )
 
     foreshadowing_ledger = projection.get("foreshadowing_ledger") or {}
@@ -947,13 +1123,26 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         required_artifact="单书方法候选三栏结算表",
     )
 
-    ordered_checks = [checks[question_id] for question_id in PROTOTYPE_BATCH_QUESTION_IDS]
+    ordered_checks = [
+        checks[question_id] for question_id in INITIAL_INCREMENTAL_QUESTION_IDS
+    ]
     blocking_checks = [item for item in ordered_checks if not item["ready"]]
+    generation_ready_question_ids = [
+        str(item["question_id"]) for item in ordered_checks if item["ready"]
+    ]
     return {
-        "ready": not blocking_checks,
-        "policy": "全部 7 问满足各自数据合同后才允许创建在线模型任务。",
-        "ready_question_count": len(ordered_checks) - len(blocking_checks),
-        "total_question_count": len(ordered_checks),
+        "ready": bool(generation_ready_question_ids),
+        "policy": "按问题独立生成；部分答案明确缺口，无关问题不得阻塞。",
+        "ready_question_count": len(generation_ready_question_ids),
+        "complete_question_count": sum(
+            item["answer_scope"] == "COMPLETE" for item in ordered_checks
+        ),
+        "partial_question_count": sum(
+            item["answer_scope"] == "PARTIAL" for item in ordered_checks
+        ),
+        "total_question_count": len(LEARNING_QUESTION_CATALOG),
+        "assessed_question_count": len(ordered_checks),
+        "generation_ready_question_ids": generation_ready_question_ids,
         "checks": ordered_checks,
         "next_required_artifacts": list(dict.fromkeys(
             str(item["required_artifact"]) for item in blocking_checks
@@ -998,8 +1187,30 @@ def provider_payload_for_learning_report(
         raise ValueError("LEARNING_REPORT_SOURCE_OUTDATED")
     projection = build_workbench_projection(session, run_id)
     readiness = assess_learning_report_readiness(projection)
-    if not readiness["ready"]:
+    requested_question_ids = tuple(
+        str(question_id) for question_id in task_payload.get("question_ids", [])
+    )
+    if (
+        not requested_question_ids
+        or len(set(requested_question_ids)) != len(requested_question_ids)
+        or not set(requested_question_ids).issubset(INITIAL_INCREMENTAL_QUESTION_IDS)
+    ):
+        raise ValueError("LEARNING_REPORT_QUESTION_SELECTION_INVALID")
+    readiness_by_id = {
+        str(item["question_id"]): item for item in readiness["checks"]
+    }
+    requested_fingerprints = task_payload.get("question_source_fingerprints") or {}
+    if any(
+        not readiness_by_id[question_id]["ready"]
+        for question_id in requested_question_ids
+    ):
         raise LearningReportNotReadyError(readiness)
+    if any(
+        requested_fingerprints.get(question_id)
+        != readiness_by_id[question_id]["source_fingerprint"]
+        for question_id in requested_question_ids
+    ):
+        raise ValueError("LEARNING_REPORT_SOURCE_OUTDATED")
     _service, profile = resolve_analysis_profile(
         settings,
         str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
@@ -1016,7 +1227,7 @@ def provider_payload_for_learning_report(
         unit.id: {"ordinal": ordinal, "title": unit.title}
         for ordinal, unit in enumerate(chapter_units, start=1)
     }
-    source_materials = _source_materials(projection)
+    source_materials = _source_materials(projection, requested_question_ids)
     all_evidence_ids = _evidence_ids({
         "story_overview": projection.get("story_overview"),
         "characters": projection.get("characters", []),
@@ -1042,22 +1253,43 @@ def provider_payload_for_learning_report(
             "scope_requirement": _QUESTION_BY_ID[question_id].scope_requirement,
             "external_data_policy": _QUESTION_BY_ID[question_id].external_data_policy,
         }
-        for question_id in PROTOTYPE_BATCH_QUESTION_IDS
+        for question_id in requested_question_ids
     ]
+    for item in question_catalog:
+        item["answer_scope"] = readiness_by_id[item["question_id"]]["answer_scope"]
+        item["known_gaps"] = readiness_by_id[item["question_id"]]["gaps"]
     character_index = [
         {
             key: character.get(key)
             for key in (
-                "id", "name", "aliases", "role", "role_reason", "goals",
-                "motivations", "abilities", "first_chapter_ordinal",
-                "last_chapter_ordinal", "appearance_count", "event_ids", "evidence_ids",
+                "id",
+                "name",
+                "aliases",
+                "role",
+                "first_chapter_ordinal",
+                "last_chapter_ordinal",
+                "appearance_count",
             )
         }
         for character in projection.get("characters", [])
     ]
+    compact_action_counts = [
+        {
+            key: item[key]
+            for key in (
+                "through_chapter",
+                "active_character_count",
+                "active_characters",
+                "event_count",
+                "method",
+            )
+        }
+        for item in _opening_action_counts(projection)
+    ]
     fixed_input = {
         "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
         "batch_label": LEARNING_REPORT_BATCH_LABEL,
+        "generation_policy": "每问独立生成；PARTIAL 必须保留已知缺口。",
         "question_catalog": question_catalog,
         "chapter_catalog": [
             {"ordinal": ordinal, "title": unit.title}
@@ -1065,10 +1297,12 @@ def provider_payload_for_learning_report(
         ],
         "character_index": character_index,
         "program_metrics": {
-            "opening_action_character_counts": _opening_action_counts(projection),
+            "opening_action_character_counts": compact_action_counts,
         },
     }
-    fixed_chars = len(json.dumps(fixed_input, ensure_ascii=False, separators=(",", ":")))
+    fixed_chars = len(
+        json.dumps(fixed_input, ensure_ascii=False, separators=(",", ":"), default=str)
+    )
     material_budget = max(0, _request_budget_chars(profile) - fixed_chars - 4_000)
     ranked_bundles: list[tuple[int, int, str, dict]] = []
     for order, (priority, kind, item) in enumerate(source_materials):
@@ -1080,7 +1314,9 @@ def provider_payload_for_learning_report(
     used_chars = 0
     selected_by_kind: dict[str, int] = {}
     for _priority, _order, kind, bundle in ranked_bundles:
-        size = len(json.dumps(bundle, ensure_ascii=False, separators=(",", ":")))
+        size = len(
+            json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), default=str)
+        )
         if used_chars + size <= material_budget:
             selected.append(bundle)
             used_chars += size
@@ -1104,7 +1340,12 @@ def provider_payload_for_learning_report(
     }
     return {
         "instructions": _prompt(),
-        "input": json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
+        "input": json.dumps(
+            input_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ),
         "output_schema": _inline_model_schema(LearningReportOutput),
         "model_profile_id": str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
         "prompt_id": LEARNING_REPORT_PROMPT_ID,
@@ -1116,7 +1357,11 @@ def provider_payload_for_learning_report(
     }
 
 
-def parse_learning_report(value: dict) -> LearningReportOutput:
+def parse_learning_report(
+    value: dict,
+    *,
+    expected_question_ids: tuple[str, ...] | list[str] | None = None,
+) -> LearningReportOutput:
     try:
         output = LearningReportOutput.model_validate(value)
     except ValidationError as exc:
@@ -1129,10 +1374,24 @@ def parse_learning_report(value: dict) -> LearningReportOutput:
             "LEARNING_REPORT_QUESTION_DUPLICATED",
             [{"path": ["answers"], "type": "value_error", "message": "同一问题只能回答一次"}],
         )
-    if set(question_ids) != set(PROTOTYPE_BATCH_QUESTION_IDS):
+    expected = tuple(expected_question_ids or INITIAL_INCREMENTAL_QUESTION_IDS)
+    if set(question_ids) != set(expected) or len(question_ids) != len(expected):
         raise LearningReportValidationError(
             "LEARNING_REPORT_QUESTION_COVERAGE_INVALID",
-            [{"path": ["answers"], "type": "value_error", "message": "必须逐一回答当前 7 个问题"}],
+            [{
+                "path": ["answers"],
+                "type": "value_error",
+                "message": f"必须恰好回答本次提交的 {len(expected)} 个问题",
+            }],
+        )
+    if output.author_decisions or output.method_candidates:
+        raise LearningReportValidationError(
+            "LEARNING_REPORT_OUT_OF_SCOPE_SUMMARY",
+            [{
+                "path": ["author_decisions", "method_candidates"],
+                "type": "value_error",
+                "message": "首组逐问答案不得提前生成作者决策或方法候选汇总",
+            }],
         )
     return output
 
@@ -1156,7 +1415,60 @@ def persist_learning_report(
     source_deep_revision = int(task_payload.get("source_deep_revision") or 0)
     if deep is None or deep.revision_no != source_deep_revision:
         raise ValueError("LEARNING_REPORT_SOURCE_OUTDATED")
-    payload = output.model_dump(mode="json")
+    selected_question_ids = tuple(
+        str(question_id) for question_id in task_payload.get("question_ids", [])
+    )
+    selected_scopes = task_payload.get("question_answer_scopes") or {}
+    for answer in output.answers:
+        if (
+            selected_scopes.get(answer.question_id) == "PARTIAL"
+            and answer.status == "ANSWERED"
+        ):
+            raise ValueError("LEARNING_REPORT_PARTIAL_SCOPE_VIOLATION")
+
+    existing = session.scalar(
+        select(LearningReport).where(LearningReport.created_by_task_id == task.id)
+    )
+    previous_report = session.scalar(
+        select(LearningReport)
+        .where(
+            LearningReport.run_id == run.id,
+            LearningReport.created_by_task_id != task.id,
+        )
+        .order_by(LearningReport.revision_no.desc())
+    )
+    previous_payload: dict[str, object] = {}
+    if (
+        previous_report is not None
+        and previous_report.source_deep_revision == source_deep_revision
+        and _report_uses_current_contract(previous_report)
+    ):
+        previous_payload = json.loads(previous_report.payload_json)
+    current_fingerprints = task_payload.get("current_question_source_fingerprints") or {}
+    previous_fingerprints = previous_payload.get("question_source_fingerprints") or {}
+    merged_answers = {
+        str(item["question_id"]): item
+        for item in previous_payload.get("answers", [])
+        if (
+            isinstance(item, dict)
+            and item.get("question_id") not in selected_question_ids
+            and previous_fingerprints.get(str(item.get("question_id")))
+            == current_fingerprints.get(str(item.get("question_id")))
+        )
+    }
+    merged_answers.update({
+        answer.question_id: answer.model_dump(mode="json") for answer in output.answers
+    })
+    ordered_answer_ids = [
+        item.question_id
+        for item in LEARNING_QUESTION_CATALOG
+        if item.question_id in merged_answers
+    ]
+    payload = {
+        "answers": [merged_answers[question_id] for question_id in ordered_answer_ids],
+        "author_decisions": output.model_dump(mode="json")["author_decisions"],
+        "method_candidates": output.model_dump(mode="json")["method_candidates"],
+    }
     referenced_evidence_ids = _evidence_ids(payload)
     valid_evidence_ids = set(session.scalars(
         select(EvidenceSpan.id).where(
@@ -1175,13 +1487,14 @@ def persist_learning_report(
     payload.update({
         "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
         "batch_label": LEARNING_REPORT_BATCH_LABEL,
-        "generated_question_ids": list(PROTOTYPE_BATCH_QUESTION_IDS),
+        "generated_question_ids": ordered_answer_ids,
+        "question_source_fingerprints": {
+            question_id: current_fingerprints[question_id]
+            for question_id in ordered_answer_ids
+        },
         "source_deep_revision": source_deep_revision,
     })
     payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    existing = session.scalar(
-        select(LearningReport).where(LearningReport.created_by_task_id == task.id)
-    )
     if existing is None:
         revision_no = (session.scalar(
             select(func.max(LearningReport.revision_no)).where(LearningReport.run_id == run.id)
@@ -1222,10 +1535,16 @@ def enqueue_learning_report(
         return None
     from .workbench import build_workbench_projection
 
-    readiness = assess_learning_report_readiness(
-        build_workbench_projection(session, run.id)
-    )
-    if not readiness["ready"]:
+    readiness = assess_learning_report_readiness(build_workbench_projection(session, run.id))
+    checks_by_id = {
+        str(item["question_id"]): item for item in readiness["checks"]
+    }
+    eligible_question_ids = [
+        question_id
+        for question_id in INITIAL_INCREMENTAL_QUESTION_IDS
+        if checks_by_id[question_id]["ready"]
+    ]
+    if not eligible_question_ids:
         raise LearningReportNotReadyError(readiness)
     latest_report = session.scalar(
         select(LearningReport)
@@ -1248,12 +1567,37 @@ def enqueue_learning_report(
         TaskStatus.WAITING_CONFIRMATION.value,
     }:
         return latest_task
+    current_fingerprints = {
+        question_id: str(checks_by_id[question_id]["source_fingerprint"])
+        for question_id in INITIAL_INCREMENTAL_QUESTION_IDS
+    }
+    current_answer_ids: set[str] = set()
     if (
         latest_report is not None
         and latest_report.source_deep_revision == deep.revision_no
         and _report_uses_current_contract(latest_report)
-        and not force
     ):
+        latest_payload = json.loads(latest_report.payload_json)
+        report_fingerprints = latest_payload.get("question_source_fingerprints") or {}
+        current_answer_ids = {
+            str(item.get("question_id"))
+            for item in latest_payload.get("answers", [])
+            if (
+                isinstance(item, dict)
+                and report_fingerprints.get(str(item.get("question_id")))
+                == current_fingerprints.get(str(item.get("question_id")))
+            )
+        }
+    selected_question_ids = (
+        eligible_question_ids
+        if force
+        else [
+            question_id
+            for question_id in eligible_question_ids
+            if question_id not in current_answer_ids
+        ]
+    )
+    if not selected_question_ids:
         return latest_task
     try:
         _service, profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
@@ -1267,7 +1611,16 @@ def enqueue_learning_report(
             "source_deep_revision": deep.revision_no,
             "provider_name": "openai",
             "model_profile_id": profile.id,
-            "question_ids": list(PROTOTYPE_BATCH_QUESTION_IDS),
+            "question_ids": selected_question_ids,
+            "question_answer_scopes": {
+                question_id: checks_by_id[question_id]["answer_scope"]
+                for question_id in selected_question_ids
+            },
+            "question_source_fingerprints": {
+                question_id: current_fingerprints[question_id]
+                for question_id in selected_question_ids
+            },
+            "current_question_source_fingerprints": current_fingerprints,
             "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
         },
         profile.max_retries + 1,
@@ -1294,6 +1647,7 @@ def build_learning_report_projection(
     run_id: str,
     *,
     latest_deep_revision: int | None,
+    readiness: dict[str, object] | None = None,
 ) -> tuple[str, dict[str, object]]:
     report = session.scalar(
         select(LearningReport)
@@ -1316,14 +1670,36 @@ def build_learning_report_projection(
         TaskStatus.WAITING_CONFIRMATION.value,
     }
     payload = json.loads(report.payload_json) if report is not None else {}
-    report_is_current = bool(
+    report_base_is_current = bool(
         report is not None
         and report.source_deep_revision == latest_deep_revision
         and _report_uses_current_contract(report)
     )
+    readiness_by_id = {
+        str(item["question_id"]): item
+        for item in (readiness or {}).get("checks", [])
+    }
+    report_fingerprints = payload.get("question_source_fingerprints") or {}
+    current_answer_ids = {
+        str(item.get("question_id"))
+        for item in payload.get("answers", [])
+        if (
+            report_base_is_current
+            and isinstance(item, dict)
+            and report_fingerprints.get(str(item.get("question_id")))
+            == readiness_by_id.get(str(item.get("question_id")), {}).get(
+                "source_fingerprint"
+            )
+        )
+    }
+    pending_question_ids = {
+        question_id
+        for question_id, item in readiness_by_id.items()
+        if item.get("ready") and question_id not in current_answer_ids
+    }
     if latest_task is not None and latest_task.status in active_statuses:
         status = "GENERATING"
-    elif report_is_current:
+    elif current_answer_ids and not pending_question_ids:
         status = "READY"
     elif report is not None:
         status = "OUTDATED"
@@ -1339,6 +1715,15 @@ def build_learning_report_projection(
     questions: list[dict[str, object]] = []
     for definition in LEARNING_QUESTION_CATALOG:
         answer = answer_by_id.get(definition.question_id, {})
+        has_current_answer = definition.question_id in current_answer_ids
+        if has_current_answer:
+            question_status = answer.get("status", "NOT_GENERATED")
+        elif answer:
+            question_status = "OUTDATED"
+        elif readiness_by_id.get(definition.question_id, {}).get("ready"):
+            question_status = "READY_TO_GENERATE"
+        else:
+            question_status = "NOT_GENERATED"
         questions.append({
             "question_id": definition.question_id,
             "stage_id": definition.stage_id,
@@ -1353,7 +1738,7 @@ def build_learning_report_projection(
             "scope_requirement": definition.scope_requirement,
             "external_data_policy": definition.external_data_policy,
             "recommended_rank": _RECOMMENDED_RANK.get(definition.question_id),
-            "status": answer.get("status", "NOT_GENERATED"),
+            "status": question_status,
             "conclusion": answer.get("conclusion", ""),
             "metrics": answer.get("metrics", []),
             "evidence_ids": answer.get("evidence_ids", []),
@@ -1361,6 +1746,7 @@ def build_learning_report_projection(
             "limitations": answer.get("limitations", []),
             "reusable_lessons": answer.get("reusable_lessons", []),
             "do_not_copy": answer.get("do_not_copy", []),
+            "has_current_answer": has_current_answer,
         })
     stages: list[dict[str, object]] = []
     for stage_id, stage_name in STAGE_NAMES.items():
@@ -1369,9 +1755,15 @@ def build_learning_report_projection(
             "stage_id": stage_id,
             "stage_name": stage_name,
             "total_count": len(stage_questions),
-            "generated_count": sum(item["status"] != "NOT_GENERATED" for item in stage_questions),
-            "answered_count": sum(item["status"] in {"ANSWERED", "PARTIAL"} for item in stage_questions),
-            "insufficient_count": sum(item["status"] == "INSUFFICIENT_EVIDENCE" for item in stage_questions),
+            "generated_count": sum(item["has_current_answer"] for item in stage_questions),
+            "answered_count": sum(
+                item["has_current_answer"] and item["status"] in {"ANSWERED", "PARTIAL"}
+                for item in stage_questions
+            ),
+            "insufficient_count": sum(
+                item["has_current_answer"] and item["status"] == "INSUFFICIENT_EVIDENCE"
+                for item in stage_questions
+            ),
         })
     return status, {
         "catalog_version": LEARNING_QUESTION_CATALOG_VERSION,
@@ -1379,7 +1771,7 @@ def build_learning_report_projection(
         "revision": report.revision_no if report is not None else None,
         "source_deep_revision": report.source_deep_revision if report is not None else None,
         "generated_at": report.created_at if report is not None else None,
-        "recommended_question_ids": list(PROTOTYPE_BATCH_QUESTION_IDS),
+        "recommended_question_ids": list(INITIAL_INCREMENTAL_QUESTION_IDS),
         "questions": questions,
         "stages": stages,
         "author_decisions": payload.get("author_decisions", []),

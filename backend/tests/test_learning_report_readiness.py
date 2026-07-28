@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.learning_report import (
     LEARNING_QUESTION_CATALOG,
     LEARNING_QUESTION_CONTRACTS,
+    LearningReportValidationError,
     assess_learning_report_readiness,
+    parse_learning_report,
 )
 
 
@@ -109,28 +113,82 @@ def test_every_core_question_has_full_fable_contract() -> None:
         assert item.external_data_policy
 
 
-def test_sparse_deep_analysis_does_not_unlock_online_report() -> None:
+def test_sparse_deep_analysis_only_unlocks_independently_supported_questions() -> None:
     readiness = assess_learning_report_readiness(
         _projection(complete_specialized_ledgers=False)
     )
 
-    assert readiness["ready"] is False
+    assert readiness["ready"] is True
     assert readiness["ready_question_count"] == 2
+    assert readiness["partial_question_count"] == 2
+    assert readiness["complete_question_count"] == 0
+    assert readiness["total_question_count"] == 42
+    assert readiness["generation_ready_question_ids"] == ["1.4", "2.1"]
     checks = {item["question_id"]: item for item in readiness["checks"]}
     assert checks["1.4"]["ready"] is True
     assert checks["2.1"]["ready"] is True
     assert checks["2.2"]["ready"] is False
     assert checks["4.9"]["observed"]["generic_scene_analysis_count"] == 1
     assert checks["4.9"]["observed"]["valid_chapter_end_sample_count"] == 0
-    assert checks["5.3"]["observed"]["generic_foreshadowing_count"] == 1
+    assert checks["3.4"]["ready"] is False
     assert readiness["next_required_artifacts"][0] == "主角双层欲望与最小完整集证据表"
 
 
-def test_all_required_ledgers_unlock_prototype_batch() -> None:
+def test_specialized_ledgers_unlock_first_incremental_group() -> None:
     readiness = assess_learning_report_readiness(
         _projection(complete_specialized_ledgers=True)
     )
 
     assert readiness["ready"] is True
-    assert readiness["ready_question_count"] == 7
+    assert readiness["ready_question_count"] == 5
+    assert readiness["complete_question_count"] == 3
+    assert readiness["partial_question_count"] == 2
+    assert readiness["generation_ready_question_ids"] == [
+        "1.4",
+        "2.1",
+        "2.2",
+        "3.4",
+        "4.9",
+    ]
     assert readiness["next_required_artifacts"] == []
+
+
+def _answer(question_id: str) -> dict:
+    return {
+        "question_id": question_id,
+        "status": "PARTIAL",
+        "conclusion": "当前材料支持部分回答。",
+        "metrics": [],
+        "evidence_ids": [],
+        "counter_evidence_ids": [],
+        "limitations": ["仍有明确缺口。"],
+        "reusable_lessons": [],
+        "do_not_copy": ["不能照搬原作设定。"],
+    }
+
+
+def test_parser_accepts_exact_incremental_question_selection() -> None:
+    output = parse_learning_report(
+        {
+            "answers": [_answer("1.4"), _answer("2.1")],
+            "author_decisions": [],
+            "method_candidates": [],
+        },
+        expected_question_ids=["1.4", "2.1"],
+    )
+
+    assert [item.question_id for item in output.answers] == ["1.4", "2.1"]
+
+
+def test_parser_rejects_missing_incremental_question() -> None:
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [_answer("1.4")],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["1.4", "2.1"],
+        )
+
+    assert error.value.code == "LEARNING_REPORT_QUESTION_COVERAGE_INVALID"
