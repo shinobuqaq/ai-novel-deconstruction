@@ -807,7 +807,13 @@ def build_opening_structure_projection(
         status = "OUTDATED"
     elif (
         latest_task is not None
-        and latest_task.status == TaskStatus.FAILED.value
+        and (
+            latest_task.status == TaskStatus.FAILED.value
+            or (
+                latest_task.status == TaskStatus.CANCELLED.value
+                and bool(latest_task.last_error_code)
+            )
+        )
     ):
         status = "FAILED"
     else:

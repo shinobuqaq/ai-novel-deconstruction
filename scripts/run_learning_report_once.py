@@ -21,7 +21,11 @@ from app.models import (  # noqa: E402
     TaskStatus,
 )
 from app.providers import create_default_provider_registry  # noqa: E402
-from app.repositories import claim_next_task, get_task  # noqa: E402
+from app.repositories import (  # noqa: E402
+    claim_next_task,
+    get_task,
+    request_task_cancellation,
+)
 from app.services.learning_report import (  # noqa: E402
     LEARNING_REPORT_TASK_KIND,
     LearningReportNotReadyError,
@@ -76,6 +80,19 @@ def _active_pipeline_task_ids(
         ):
             matched.append(task.id)
     return matched
+
+
+def _cancel_remaining_tasks(
+    session: Session,
+    *,
+    task_ids: list[str],
+) -> int:
+    cancelled_count = 0
+    for task_id in task_ids:
+        task = request_task_cancellation(session, task_id=task_id)
+        if task is not None and task.status == TaskStatus.CANCELLED.value:
+            cancelled_count += 1
+    return cancelled_count
 
 
 def main() -> int:
@@ -185,6 +202,21 @@ def main() -> int:
                         f"{completed.last_error_message or '没有错误详情'}"
                     )
             if not accepted or completed.status != TaskStatus.SUCCEEDED.value:
+                with Session(engine) as session:
+                    remaining_ids = _active_pipeline_task_ids(
+                        session,
+                        run_id=args.run_id,
+                        question_id=args.question_id,
+                    )
+                    cancelled_count = _cancel_remaining_tasks(
+                        session,
+                        task_ids=remaining_ids,
+                    )
+                if cancelled_count:
+                    print(
+                        f"已关闭 {cancelled_count} 个等待重试或尚未执行的任务；"
+                        "本次固定入口不会自动追加模型调用。"
+                    )
                 return 1
             completed_count += 1
 
