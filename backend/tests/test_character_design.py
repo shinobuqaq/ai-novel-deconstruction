@@ -170,7 +170,8 @@ def test_program_compiles_zero_conflict_arc_without_model_embellishment() -> Non
 
     summary = _compiled_arc_summary(output, covered_event_count=163)
 
-    assert "确认的双层欲望冲突节点为 0 个" in summary
+    assert "尚未记录到有原文依据的欲望变化" in summary
+    assert "不表示主角后续不会变化" in summary
     assert "覆盖全书 163 个主角事件" in summary
     assert "屡次献祭" not in summary
     assert "孤独的英雄" not in summary
@@ -521,7 +522,7 @@ def test_reference_validation_rejects_wrong_event_chapter_and_cross_event_eviden
         )
 
 
-def test_conflict_requires_multiple_supporting_quotes() -> None:
+def test_observation_allows_one_quote_to_support_multiple_aspects() -> None:
     payload = _output_dict()
     payload["desire_conflicts"][0].update({
         "motive_evidence_ids": ["evidence_2"],
@@ -530,11 +531,11 @@ def test_conflict_requires_multiple_supporting_quotes() -> None:
         "sacrifice_evidence_ids": ["evidence_2"],
     })
 
-    with pytest.raises(CharacterDesignValidationError):
-        parse_character_design_evidence(payload)
+    output = parse_character_design_evidence(payload)
+    assert len(output.desire_conflicts) == 1
 
 
-def test_program_drops_self_rejected_non_concrete_conflict_candidate() -> None:
+def test_program_keeps_possible_cost_as_a_partial_observation() -> None:
     payload = _output_dict()
     payload["desire_conflicts"][0].update({
         "sacrifice": "这件事也许会有风险。",
@@ -558,14 +559,15 @@ def test_program_drops_self_rejected_non_concrete_conflict_candidate() -> None:
         {
             "evidence_1": FIELD_GROUNDING_TEXT,
             "evidence_2": "林舟决定继续追查。",
-            "evidence_2_support": "追查方向发生变化。",
+            "evidence_2_support": "这件事也许会有风险，追查方向发生变化。",
         },
     )
 
-    assert output.desire_conflicts == []
+    assert len(output.desire_conflicts) == 1
+    assert output.desire_conflicts[0].sacrifice_role == "POSSIBLE_COST"
 
 
-def test_program_promotes_mislabeled_concrete_cost_from_exact_quote() -> None:
+def test_program_does_not_override_model_cost_classification() -> None:
     payload = _output_dict()
     payload["desire_conflicts"][0]["sacrifice_role"] = "POSSIBLE_COST"
     output = parse_character_design_evidence(payload)
@@ -590,7 +592,7 @@ def test_program_promotes_mislabeled_concrete_cost_from_exact_quote() -> None:
         },
     )
 
-    assert output.desire_conflicts[0].sacrifice_role == "CONCRETE_COST"
+    assert output.desire_conflicts[0].sacrifice_role == "POSSIBLE_COST"
 
 
 def test_decision_support_keeps_short_nearby_choice_and_outcome_quotes() -> None:
@@ -787,7 +789,7 @@ def test_conflict_requires_explicit_event_result_evidence() -> None:
 
     with pytest.raises(
         ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_RESULT_EVIDENCE_INCOMPLETE",
+        match="CHARACTER_DESIGN_OBSERVATION_RESULT_EVIDENCE_INCOMPLETE",
     ):
         _raise_for_references(
             output,
@@ -854,7 +856,7 @@ def test_exact_quote_is_not_rejected_by_later_negation_in_same_evidence() -> Non
     )
 
 
-def test_short_exchange_quote_is_not_a_concrete_cost() -> None:
+def test_short_exchange_quote_is_kept_without_program_cost_judgment() -> None:
     payload = _output_dict()
     conflict = payload["desire_conflicts"][0]
     conflict.update({
@@ -867,29 +869,26 @@ def test_short_exchange_quote_is_not_a_concrete_cost() -> None:
     })
     output = parse_character_design_evidence(payload)
 
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_SACRIFICE_EVIDENCE_INCOMPLETE",
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": "林舟决定继续追查：交换。",
-                "evidence_2_support": "放弃等待后，追查方向发生变化。",
-            },
-        )
+    _raise_for_references(
+        output,
+        _projection(),
+        {"evidence_1", "evidence_2", "evidence_2_support"},
+        {
+            "event_1": ["evidence_1"],
+            "event_2": ["evidence_2", "evidence_2_support"],
+        },
+        {
+            "evidence_1": 1,
+            "evidence_2": 2,
+            "evidence_2_support": 2,
+        },
+        {
+            "evidence_1": FIELD_GROUNDING_TEXT,
+            "evidence_2": "林舟决定继续追查：交换。",
+            "evidence_2_support": "放弃等待后，追查方向发生变化。",
+        },
+    )
+    assert output.desire_conflicts[0].sacrifice == "交换"
 
 
 def test_conflict_accepts_a_direct_concrete_cost_quote() -> None:
@@ -932,17 +931,17 @@ def test_conflict_accepts_a_direct_concrete_cost_quote() -> None:
         (
             "motive",
             "统治世界",
-            "CHARACTER_DESIGN_CONFLICT_MOTIVE_EVIDENCE_INCOMPLETE",
+            "CHARACTER_DESIGN_OBSERVATION_MOTIVE_EVIDENCE_INCOMPLETE",
         ),
         (
             "choice",
             "抛下同伴独自逃走",
-            "CHARACTER_DESIGN_CONFLICT_CHOICE_EVIDENCE_INCOMPLETE",
+            "CHARACTER_DESIGN_OBSERVATION_CHOICE_EVIDENCE_INCOMPLETE",
         ),
         (
             "sacrifice",
             "失去并不存在的王位",
-            "CHARACTER_DESIGN_CONFLICT_SACRIFICE_EVIDENCE_INCOMPLETE",
+            "CHARACTER_DESIGN_OBSERVATION_SACRIFICE_EVIDENCE_INCOMPLETE",
         ),
     ],
 )
@@ -986,239 +985,123 @@ def test_conflict_roles_must_quote_their_own_selected_evidence(
         )
 
 
-def test_evolved_surface_desire_must_match_motive_quote() -> None:
+def test_partial_observation_fields_are_optional() -> None:
     payload = _output_dict()
     conflict = payload["desire_conflicts"][0]
     conflict.update({
-        "surface_desire_stage": "EVOLVED",
-        "surface_desire": "抛下同伴独自逃生",
+        "observation_kind": "PRESSURE",
+        "surface_desire": "",
+        "deep_desire": "",
         "motive": "继续追查",
-        "choice": "交换",
-        "choice_polarity": "ACCEPT",
-        "sacrifice": "放弃等待",
-        "choice_evidence_ids": ["evidence_2"],
-        "sacrifice_evidence_ids": ["evidence_2_support"],
-        "arc_change": (
-            "表层欲望从尽快找到寄信人。演化为抛下同伴独自逃生。"
-        ),
+        "choice": "",
+        "result": "",
+        "sacrifice": "",
+        "choice_evidence_ids": [],
+        "result_evidence_ids": [],
+        "sacrifice_evidence_ids": [],
+        "arc_change": "追查目标受到外部压力，但是否转向尚不能定论。",
     })
     output = parse_character_design_evidence(payload)
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "CHARACTER_DESIGN_EVOLVED_SURFACE_DESIRE_"
-            "EVIDENCE_INCOMPLETE"
-        ),
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": "林舟决定继续追查：交换。",
-                "evidence_2_support": "放弃等待后，追查方向发生变化。",
-            },
-        )
+    _raise_for_references(
+        output,
+        _projection(),
+        {"evidence_1", "evidence_2", "evidence_2_support"},
+        {
+            "event_1": ["evidence_1"],
+            "event_2": ["evidence_2", "evidence_2_support"],
+        },
+        {
+            "evidence_1": 1,
+            "evidence_2": 2,
+            "evidence_2_support": 2,
+        },
+        {
+            "evidence_1": FIELD_GROUNDING_TEXT,
+            "evidence_2": "林舟决定继续追查。",
+            "evidence_2_support": "追查方向发生变化。",
+        },
+    )
+    assert output.desire_conflicts[0].observation_kind == "PRESSURE"
 
 
-def test_external_offer_cannot_become_evolved_surface_desire() -> None:
+def test_external_offer_can_be_recorded_as_pressure_if_evidence_backed() -> None:
     payload = _output_dict()
     conflict = payload["desire_conflicts"][0]
     conflict.update({
-        "surface_desire_stage": "EVOLVED",
-        "surface_desire": "一个人逃走",
-        "motive": "你就该一个人逃走",
+        "observation_kind": "PRESSURE",
+        "motive": "提供一个加入学院的机会",
         "motive_source": "OTHER_CHARACTER",
         "motive_role": "EXTERNAL_OFFER",
-        "choice": "我不想跟你换",
-        "choice_polarity": "REFUSE",
-        "sacrifice": "放弃等待",
-        "sacrifice_evidence_ids": ["evidence_2_support"],
-        "arc_change": (
-            "表层欲望从尽快找到寄信人。演化为一个人逃走。"
-        ),
-    })
-
-    with pytest.raises(
-        CharacterDesignValidationError,
-        match="CHARACTER_DESIGN_CONFLICT_MOTIVE_ROLE_INVALID",
-    ):
-        parse_character_design_evidence(payload)
-
-
-def test_external_directive_is_rejected_even_when_model_labels_it_as_protagonist() -> None:
-    payload = _output_dict()
-    conflict = payload["desire_conflicts"][0]
-    conflict.update({
-        "surface_desire_stage": "EVOLVED",
-        "surface_desire": "一个人逃走",
-        "motive": "你就该一个人逃走",
-        "motive_source": "NARRATOR_ABOUT_PROTAGONIST",
-        "motive_role": "PROTAGONIST_MOTIVE",
-        "choice": "我不想跟你换",
-        "choice_polarity": "REFUSE",
-        "sacrifice": "放弃等待",
-        "arc_change": (
-            "表层欲望从尽快找到寄信人。演化为一个人逃走。"
-        ),
-        "motive_evidence_ids": ["evidence_2"],
-        "choice_evidence_ids": ["evidence_2"],
-        "sacrifice_evidence_ids": ["evidence_2_support"],
+        "choice": "",
+        "result": "",
+        "sacrifice": "",
+        "choice_evidence_ids": [],
+        "result_evidence_ids": [],
+        "sacrifice_evidence_ids": [],
     })
     output = parse_character_design_evidence(payload)
 
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_MOTIVE_SOURCE_MISMATCH",
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": (
-                    "同伴说：你就该一个人逃走。"
-                    "林舟回答：我不想跟你换。"
-                ),
-                "evidence_2_support": (
-                    "放弃等待后，追查方向发生变化。"
-                ),
-            },
-        )
+    _raise_for_references(
+        output,
+        _projection(),
+        {"evidence_1", "evidence_2", "evidence_2_support"},
+        {
+            "event_1": ["evidence_1"],
+            "event_2": ["evidence_2", "evidence_2_support"],
+        },
+        {
+            "evidence_1": 1,
+            "evidence_2": 2,
+            "evidence_2_support": 2,
+        },
+        {
+            "evidence_1": FIELD_GROUNDING_TEXT,
+            "evidence_2": (
+                "同伴提供一个加入学院的机会，林舟决定继续追查。"
+            ),
+            "evidence_2_support": "放弃等待后，追查方向发生变化。",
+        },
+    )
+    assert output.desire_conflicts[0].motive_role == "EXTERNAL_OFFER"
 
 
-def test_external_offer_wording_cannot_be_rewritten_as_protagonist_motive() -> None:
-    payload = _output_dict()
-    payload["desire_conflicts"][0]["motive"] = "提供一个加入学院的机会"
-    output = parse_character_design_evidence(payload)
-
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_MOTIVE_SOURCE_MISMATCH",
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": (
-                    "同伴承诺提供一个加入学院的机会，"
-                    "林舟决定继续追查。"
-                ),
-                "evidence_2_support": (
-                    "放弃等待后，追查方向发生变化。"
-                ),
-            },
-        )
-
-
-def test_choice_polarity_is_derived_from_the_selected_quote() -> None:
+def test_program_does_not_override_choice_or_cost_labels() -> None:
     payload = _output_dict()
     conflict = payload["desire_conflicts"][0]
     conflict.update({
-        "motive": "继续追查",
         "choice": "我不想跟你换",
         "choice_polarity": "ACCEPT",
-        "sacrifice": "放弃等待",
-        "motive_evidence_ids": ["evidence_2"],
+        "sacrifice": "我不想失去生命",
+        "sacrifice_role": "CONCRETE_COST",
         "choice_evidence_ids": ["evidence_2"],
         "sacrifice_evidence_ids": ["evidence_2_support"],
     })
     output = parse_character_design_evidence(payload)
 
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_CHOICE_POLARITY_MISMATCH",
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": "继续追查。我不想跟你换。",
-                "evidence_2_support": (
-                    "放弃等待后，追查方向发生变化。"
-                ),
-            },
-        )
-
-
-def test_feared_loss_cannot_be_labeled_as_an_incurred_cost() -> None:
-    payload = _output_dict()
-    conflict = payload["desire_conflicts"][0]
-    conflict.update({
-        "sacrifice": "我不想失去生命",
-        "sacrifice_role": "CONCRETE_COST",
-        "sacrifice_evidence_ids": ["evidence_2_support"],
-    })
-    output = parse_character_design_evidence(payload)
-
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_CONFLICT_SACRIFICE_EVIDENCE_INCOMPLETE",
-    ):
-        _raise_for_references(
-            output,
-            _projection(),
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": FIELD_GROUNDING_TEXT,
-                "evidence_2": "林舟决定继续追查。",
-                "evidence_2_support": (
-                    "我不想失去生命。追查方向发生变化。"
-                ),
-            },
-        )
+    _raise_for_references(
+        output,
+        _projection(),
+        {"evidence_1", "evidence_2", "evidence_2_support"},
+        {
+            "event_1": ["evidence_1"],
+            "event_2": ["evidence_2", "evidence_2_support"],
+        },
+        {
+            "evidence_1": 1,
+            "evidence_2": 2,
+            "evidence_2_support": 2,
+        },
+        {
+            "evidence_1": FIELD_GROUNDING_TEXT,
+            "evidence_2": "林舟决定继续追查。我不想跟你换。",
+            "evidence_2_support": (
+                "我不想失去生命。追查方向发生变化。"
+            ),
+        },
+    )
+    assert output.desire_conflicts[0].choice_polarity == "ACCEPT"
+    assert output.desire_conflicts[0].sacrifice_role == "CONCRETE_COST"
 
 
 def test_supported_field_value_must_match_selected_event_and_evidence() -> None:
@@ -1295,7 +1178,7 @@ def test_supported_field_rejects_a_grounded_prefix_with_hallucinated_tail() -> N
 
     with pytest.raises(
         ValueError,
-        match="CHARACTER_DESIGN_FIELD_VALUE_NOT_CONTIGUOUS",
+        match="CHARACTER_DESIGN_FIELD_VALUE_UNGROUNDED",
     ):
         _raise_for_references(
             output,
@@ -1474,6 +1357,7 @@ def test_first_display_repeat_ignores_unowned_earlier_support() -> None:
         "evidence_ids": ["evidence_2"],
     })
     payload["desire_conflicts"] = []
+    payload["desire_conflicts"] = []
     output = parse_character_design_evidence(payload)
 
     _raise_for_references(
@@ -1506,7 +1390,7 @@ def test_first_display_repeat_ignores_unowned_earlier_support() -> None:
     )
 
 
-def test_full_reference_validation_rejects_later_repeated_core_ability() -> None:
+def test_program_does_not_use_repeat_heuristic_as_literary_gate() -> None:
     projection = _projection()
     projection["events"][0]["process"] = (
         "林舟输入 Black Sheep Wall 后首次打开全图。"
@@ -1526,36 +1410,33 @@ def test_full_reference_validation_rejects_later_repeated_core_ability() -> None
         "display_event": "林舟再次输入 Black Sheep Wall 联系外界。",
         "evidence_ids": ["evidence_2"],
     })
+    payload["desire_conflicts"] = []
     output = parse_character_design_evidence(payload)
 
-    with pytest.raises(
-        ValueError,
-        match="CHARACTER_DESIGN_FIRST_DISPLAY_NOT_EARLIEST",
-    ):
-        _raise_for_references(
-            output,
-            projection,
-            {"evidence_1", "evidence_2", "evidence_2_support"},
-            {
-                "event_1": ["evidence_1"],
-                "event_2": ["evidence_2", "evidence_2_support"],
-            },
-            {
-                "evidence_1": 1,
-                "evidence_2": 2,
-                "evidence_2_support": 2,
-            },
-            {
-                "evidence_1": (
-                    f"{FIELD_GROUNDING_TEXT} "
-                    "林舟输入 Black Sheep Wall 打开全图。"
-                ),
-                "evidence_2": (
-                    "林舟再次输入 Black Sheep Wall 联系外界。"
-                ),
-                "evidence_2_support": "追查方向发生变化。",
-            },
-        )
+    _raise_for_references(
+        output,
+        projection,
+        {"evidence_1", "evidence_2", "evidence_2_support"},
+        {
+            "event_1": ["evidence_1"],
+            "event_2": ["evidence_2", "evidence_2_support"],
+        },
+        {
+            "evidence_1": 1,
+            "evidence_2": 2,
+            "evidence_2_support": 2,
+        },
+        {
+            "evidence_1": (
+                f"{FIELD_GROUNDING_TEXT} "
+                "林舟输入 Black Sheep Wall 打开全图。"
+            ),
+            "evidence_2": (
+                "林舟再次输入 Black Sheep Wall 联系外界。"
+            ),
+            "evidence_2_support": "追查方向发生变化。",
+        },
+    )
 
 
 def test_distinctive_later_repeat_is_not_accepted_as_first_display() -> None:
@@ -1575,15 +1456,15 @@ def test_distinctive_later_repeat_is_not_accepted_as_first_display() -> None:
     )
 
 
-def test_parser_rejects_conflict_that_rewrites_stable_desires() -> None:
+def test_parser_allows_later_desire_reinterpretation() -> None:
     payload = _output_dict()
     payload["desire_conflicts"][0]["deep_desire"] = "接受别人提供的机会。"
 
-    with pytest.raises(
-        CharacterDesignValidationError,
-        match="CHARACTER_DESIGN_DEEP_DESIRE_MISMATCH",
-    ):
-        parse_character_design_evidence(payload)
+    parsed = parse_character_design_evidence(payload)
+    assert (
+        parsed.desire_conflicts[0].deep_desire
+        == "接受别人提供的机会。"
+    )
 
 
 def test_parser_does_not_hard_reject_model_arc_summary_wording() -> None:

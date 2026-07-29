@@ -36,7 +36,7 @@ from .provider_config import (
 CHARACTER_DESIGN_TASK_KIND = "analysis.character_design_evidence"
 CHARACTER_DESIGN_QUESTION_ID = "2.2"
 CHARACTER_DESIGN_PROMPT_ID = "character_design_evidence"
-CHARACTER_DESIGN_PROMPT_VERSION = "2.1.0"
+CHARACTER_DESIGN_PROMPT_VERSION = "2.2.0"
 CHARACTER_DESIGN_SUPPORT_POLICY_VERSION = "2.0.0"
 CHARACTER_DESIGN_SOFT_INPUT_TOKENS = 150_000
 CHARACTER_DESIGN_REQUEST_OVERHEAD_TOKENS = 4_096
@@ -92,8 +92,8 @@ class CharacterDesignFieldEvidence(BaseModel):
         default="",
         max_length=800,
         description=(
-            "SUPPORTED 时必须从 evidence_ids 所引原文连续复制一段，"
-            "不得概括、拼接或补词；解释写入 explanation"
+            "SUPPORTED 时写出由 evidence_ids 所引原文支持的人物判断；"
+            "可以忠实概括，解释写入 explanation"
         ),
     )
     first_display_chapter_ordinal: int | None = Field(default=None, ge=1)
@@ -135,84 +135,57 @@ class CharacterDesignFieldEvidence(BaseModel):
 class DesireConflictEvidence(BaseModel):
     chapter_ordinal: int = Field(ge=1)
     event_id: str = Field(min_length=1, max_length=64)
-    surface_desire_stage: Literal["INITIAL", "EVOLVED"]
-    surface_desire: str = Field(
-        min_length=1,
-        max_length=600,
-        description=(
-            "INITIAL 时逐字复制顶部 surface_desire.value；"
-            "EVOLVED 时写 motive 原文能够直接证明的现场目标"
-        ),
-    )
-    deep_desire: str = Field(
-        min_length=1,
-        max_length=600,
-        description=(
-            "必须逐字复制顶部 deep_desire.value，不能复制 explanation、"
-            "概括、改写或补充"
-        ),
-    )
-    motive: str = Field(min_length=1, max_length=1000)
+    observation_kind: Literal[
+        "CONFLICT",
+        "DEEPENING",
+        "SHIFT",
+        "PRESSURE",
+        "REINTERPRETATION",
+        "OTHER",
+    ] = "CONFLICT"
+    surface_desire_stage: Literal["INITIAL", "EVOLVED"] = "INITIAL"
+    surface_desire: str = Field(default="", max_length=600)
+    deep_desire: str = Field(default="", max_length=600)
+    motive: str = Field(default="", max_length=1000)
     motive_source: Literal[
         "PROTAGONIST",
         "NARRATOR_ABOUT_PROTAGONIST",
         "OTHER_CHARACTER",
-    ]
+    ] | None = None
     motive_role: Literal[
         "PROTAGONIST_GOAL",
         "PROTAGONIST_MOTIVE",
         "EXTERNAL_OFFER",
         "EXTERNAL_THREAT",
         "OTHER",
-    ]
-    choice: str = Field(min_length=1, max_length=1000)
-    choice_polarity: Literal["ACCEPT", "REFUSE", "ACT"]
-    result: str = Field(min_length=1, max_length=1000)
-    sacrificed_desire: Literal["SURFACE", "DEEP"]
-    sacrifice: str = Field(
-        min_length=1,
-        max_length=1000,
-        description=(
-            "必须逐字摘录已经实际失去、放弃或承担的具体代价；"
-            "同意交易、让契约生效或愿意支付代价本身不算代价已经发生"
-        ),
-    )
+    ] | None = None
+    choice: str = Field(default="", max_length=1000)
+    choice_polarity: Literal["ACCEPT", "REFUSE", "ACT"] | None = None
+    result: str = Field(default="", max_length=1000)
+    sacrificed_desire: Literal["SURFACE", "DEEP"] | None = None
+    sacrifice: str = Field(default="", max_length=1000)
     sacrifice_role: Literal[
         "CONCRETE_COST",
         "MOTIVE_OR_FEELING",
         "POSSIBLE_COST",
         "OTHER",
-    ]
-    arc_change: str = Field(
-        min_length=1,
-        max_length=1000,
-        description=(
-            "EVOLVED 时必须逐字包含顶部初始 surface_desire.value"
-            "和本节点 surface_desire，再解释两者如何变化"
-        ),
-    )
-    motive_evidence_ids: list[str] = Field(min_length=1, max_length=4)
-    choice_evidence_ids: list[str] = Field(min_length=1, max_length=4)
-    result_evidence_ids: list[str] = Field(min_length=1, max_length=4)
-    sacrifice_evidence_ids: list[str] = Field(
-        min_length=1,
-        max_length=4,
-        description=(
-            "只能引用直接写明具体代价已经发生的原文；"
-            "若没有这种原文，不得生成该冲突节点"
-        ),
-    )
+    ] | None = None
+    arc_change: str = Field(min_length=1, max_length=1000)
+    motive_evidence_ids: list[str] = Field(default_factory=list, max_length=4)
+    choice_evidence_ids: list[str] = Field(default_factory=list, max_length=4)
+    result_evidence_ids: list[str] = Field(default_factory=list, max_length=4)
+    sacrifice_evidence_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
-    def require_distinct_evidence_roles(self) -> "DesireConflictEvidence":
+    def require_at_least_one_evidence(self) -> "DesireConflictEvidence":
         evidence_ids = {
             *self.motive_evidence_ids,
             *self.choice_evidence_ids,
             *self.result_evidence_ids,
             *self.sacrifice_evidence_ids,
         }
-        if len(evidence_ids) < 2:
-            raise ValueError("冲突节点的动机、选择和结果至少需要两条不同原文")
+        if not evidence_ids:
+            raise ValueError("欲望变化或冲突观察至少需要一条原文")
         return self
 
 
@@ -291,105 +264,6 @@ def parse_character_design_evidence(value: dict) -> CharacterDesignEvidenceOutpu
                 "message": "必须恰好覆盖表层欲望、深层欲望、动机、性格反差、行为底线和核心能力",
             }],
         )
-    field_by_name = {item.field: item for item in output.fields}
-    surface_field = field_by_name["surface_desire"]
-    deep_field = field_by_name["deep_desire"]
-    if surface_field.status != "SUPPORTED" or deep_field.status != "SUPPORTED":
-        if output.desire_conflicts:
-            raise CharacterDesignValidationError(
-                "CHARACTER_DESIGN_CONFLICT_WITHOUT_DESIRE_FIELDS",
-                [{
-                    "path": ["desire_conflicts"],
-                    "type": "value_error",
-                    "message": "两层欲望字段证据不足时不能生成欲望冲突节点",
-                }],
-            )
-        return output
-    for index, item in enumerate(output.desire_conflicts):
-        if item.motive_role not in {
-            "PROTAGONIST_GOAL",
-            "PROTAGONIST_MOTIVE",
-        }:
-            raise CharacterDesignValidationError(
-                "CHARACTER_DESIGN_CONFLICT_MOTIVE_ROLE_INVALID",
-                [{
-                    "path": [
-                        "desire_conflicts",
-                        str(index),
-                        "motive_role",
-                    ],
-                    "type": "value_error",
-                    "message": (
-                        "外部提议、威胁或其他角色自己的目标"
-                        "不能冒充主角欲望或动机"
-                    ),
-                }],
-            )
-        if (
-            item.surface_desire_stage == "INITIAL"
-            and _normalized(item.surface_desire)
-            != _normalized(surface_field.value)
-        ):
-            raise CharacterDesignValidationError(
-                "CHARACTER_DESIGN_INITIAL_SURFACE_DESIRE_MISMATCH",
-                [{
-                    "path": ["desire_conflicts", str(index), "surface_desire"],
-                    "type": "value_error",
-                    "message": "初始阶段冲突必须引用顶部已经确认的表层欲望",
-                }],
-            )
-        if _normalized(item.deep_desire) != _normalized(deep_field.value):
-            raise CharacterDesignValidationError(
-                "CHARACTER_DESIGN_DEEP_DESIRE_MISMATCH",
-                [{
-                    "path": ["desire_conflicts", str(index), "deep_desire"],
-                    "type": "value_error",
-                    "message": "冲突节点必须引用顶部已经确认的稳定深层欲望",
-                }],
-            )
-        if item.surface_desire_stage == "EVOLVED":
-            if item.motive_source == "OTHER_CHARACTER":
-                raise CharacterDesignValidationError(
-                    "CHARACTER_DESIGN_EVOLVED_SURFACE_DESIRE_SOURCE_INVALID",
-                    [{
-                        "path": [
-                            "desire_conflicts",
-                            str(index),
-                            "motive_source",
-                        ],
-                        "type": "value_error",
-                        "message": (
-                            "演化后的现场目标必须由主角自己的表达"
-                            "或叙述者对主角的直接说明证明"
-                        ),
-                    }],
-                )
-            normalized_arc = _normalized(item.arc_change)
-            if (
-                _normalized_without_terminal_punctuation(
-                    surface_field.value
-                )
-                not in normalized_arc
-                or _normalized_without_terminal_punctuation(
-                    item.surface_desire
-                )
-                not in normalized_arc
-            ):
-                raise CharacterDesignValidationError(
-                    "CHARACTER_DESIGN_EVOLVED_SURFACE_DESIRE_UNEXPLAINED",
-                    [{
-                        "path": [
-                            "desire_conflicts",
-                            str(index),
-                            "arc_change",
-                        ],
-                        "type": "value_error",
-                        "message": (
-                            "表层欲望演化时必须明确写出顶部初始目标"
-                            "和当前新目标"
-                        ),
-                    }],
-                )
     return output
 
 
@@ -414,10 +288,9 @@ def _compiled_arc_summary(
     if not output.desire_conflicts:
         return (
             prefix
-            + "按“同一事件同时具备主角欲望或动机、实际选择、"
-            "现场结果和已经发生的具体代价”口径，确认的双层欲望"
-            "冲突节点为 0 个；当前没有可由该严格合同确认的"
-            "弧光转折时间轴。"
+            + "当前账本尚未记录到有原文依据的欲望变化、受压、"
+            "重新解释或冲突观察；这不表示主角后续不会变化，"
+            "也不表示只有付出明确代价才算人物弧光。"
         )
     chapters = "、".join(
         f"第{chapter}章"
@@ -427,9 +300,9 @@ def _compiled_arc_summary(
     )
     return (
         prefix
-        + f"按上述严格口径确认 {len(output.desire_conflicts)} 个"
-        f"双层欲望冲突节点，位于{chapters}；"
-        "各节点的动机、选择、现场结果和实际代价以节点原文为准。"
+        + f"记录到 {len(output.desire_conflicts)} 个有原文依据的"
+        f"欲望变化、受压、重新解释或冲突观察，位于{chapters}；"
+        "各节点只呈现原文实际支持的部分，不要求每项都同时具备。"
     )
 
 
@@ -1904,18 +1777,18 @@ def provider_payload_for_character_design(
             "output": (
                 "当前连续事件窗口内的六项首次展示候选"
                 if window_phase == "FIELDS"
-                else "当前连续事件窗口内的两层欲望冲突节点"
+                else "当前连续事件窗口内的人物欲望变化观察"
                 if window_phase == "CONFLICTS"
                 else "主角双层欲望卡、六项首次展示节奏表和弧光转折时间轴"
             ),
             "measurement": (
                 "逐窗定位六项首次行动候选，由程序跨窗选择全书最早位置"
                 if window_phase == "FIELDS"
-                else "使用程序已确定的六项字段，逐窗统计两层欲望冲突节点"
+                else "使用程序已确定的六项早期基线，逐窗记录后续欲望变化"
                 if window_phase == "CONFLICTS"
-                else "定位六项首次行动事件，并统计两层欲望冲突节点"
+                else "定位六项首次行动事件，并记录后续欲望变化"
             ),
-            "evidence": "每项必须由主角行动或选择的原文证明，人物简介不能单独作证",
+            "evidence": "每项必须引用所属事件的真实原文；文学解释可忠实概括，不按固定关键词验收",
             "scope": (
                 f"全书连续窗口 {task_payload.get('window_index')}/"
                 f"{task_payload.get('window_count')}，事件序号 "
@@ -1979,7 +1852,8 @@ def provider_payload_for_character_design(
         input_payload["accepted_character_fields"] = accepted_fields
         input_payload["window_policy"] = (
             "六项字段已由程序跨全部字段窗口确定；"
-            "本次只返回当前窗口内真实发生且付出具体代价的欲望冲突。"
+            "本次记录当前窗口内有原文依据的欲望加深、转向、受压、"
+            "重新解释或冲突；不要求同时具备明确代价或固定要素。"
         )
     if repair_mode:
         input_payload["repair_request"] = {
@@ -2074,46 +1948,16 @@ def _raise_for_references(
     protagonist_name, _character = _protagonist(projection)
     if _normalized(output.protagonist) != _normalized(protagonist_name):
         raise ValueError("CHARACTER_DESIGN_PROTAGONIST_REFERENCE_INVALID")
-    other_character_names = {
-        str(name)
-        for character in projection.get("characters", [])
-        if isinstance(character, dict)
-        for name in [
-            character.get("name"),
-            *(character.get("aliases") or []),
-        ]
-        if (
-            name
-            and _normalized(name) != _normalized(protagonist_name)
-        )
-    }
     event_by_id = {
         str(event.get("id")): event
         for event in _protagonist_events(projection, protagonist_name)
     }
-    event_sequence_by_id = {
-        str(event.get("id")): sequence_no
-        for sequence_no, event in enumerate(
-            _protagonist_events(projection, protagonist_name),
-            start=1,
-        )
-    }
-
-    def owned_event_evidence_texts(event: dict) -> list[str]:
-        if evidence_text_by_id is None:
-            return []
-        return [
-            evidence_text_by_id[str(evidence_id)]
-            for evidence_id in event.get("evidence_ids", [])
-            if str(evidence_id) in evidence_text_by_id
-        ]
 
     def validate_event_reference(
         *,
         event_id: str,
         chapter_ordinal: int,
         evidence_ids: list[str],
-        minimum_evidence_count: int = 1,
     ) -> None:
         event = event_by_id.get(event_id)
         if event is None:
@@ -2137,10 +1981,6 @@ def _raise_for_references(
             allowed_event_evidence
         ):
             raise ValueError("CHARACTER_DESIGN_EVENT_EVIDENCE_MISMATCH")
-        if len(evidence_set) < minimum_evidence_count:
-            raise ValueError(
-                "CHARACTER_DESIGN_CONFLICT_EVIDENCE_INCOMPLETE"
-            )
         if not evidence_set.issubset(valid_evidence_ids):
             raise ValueError("CHARACTER_DESIGN_EVIDENCE_REFERENCE_INVALID")
         if (
@@ -2165,33 +2005,7 @@ def _raise_for_references(
             event_id=str(item.first_display_event_id),
             chapter_ordinal=int(item.first_display_chapter_ordinal or 0),
             evidence_ids=item.evidence_ids,
-            minimum_evidence_count=(
-                2
-                if (
-                    item.field == "contrast"
-                    and _needs_contrast_context(selected_event)
-                )
-                else 1
-            ),
         )
-        selected_sequence = event_sequence_by_id[
-            str(item.first_display_event_id)
-        ]
-        if (
-            item.field == "surface_desire"
-            and any(
-                _contains_earlier_same_named_target_commitment(
-                    item.value,
-                    earlier_event,
-                    other_character_names=other_character_names,
-                )
-                for earlier_event_id, earlier_event in event_by_id.items()
-                if event_sequence_by_id[earlier_event_id] < selected_sequence
-            )
-        ):
-            raise ValueError(
-                "CHARACTER_DESIGN_FIRST_DISPLAY_NOT_EARLIEST"
-            )
         item.display_event = str(
             selected_event.get("title")
             or selected_event.get("process")
@@ -2203,41 +2017,27 @@ def _raise_for_references(
             raise ValueError(
                 "CHARACTER_DESIGN_FIELD_DISPLAY_EVENT_MISSING"
             )
-        selected_chapter = min(
-            int(chapter)
-            for chapter in selected_event.get("chapter_ordinals", [])
-            if int(chapter) > 0
-        )
         if evidence_text_by_id is not None:
-            selected_evidence_texts = [
-                evidence_text_by_id[evidence_id]
-                for evidence_id in item.evidence_ids
-                if evidence_id in evidence_text_by_id
-            ]
-            if not _is_extract_from_selected_evidence(
-                item.value,
-                selected_evidence_texts,
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_FIELD_VALUE_NOT_CONTIGUOUS"
-                )
-            selected_event_texts = [
-                selected_event.get(key)
-                for key in (
-                    "title",
-                    "summary",
-                    "trigger",
-                    "process",
-                    "outcome",
-                    "impact",
-                )
-                if selected_event.get(key)
-            ]
             grounding_sources = [
-                *selected_evidence_texts,
-                *selected_event_texts,
+                *(
+                    evidence_text_by_id[evidence_id]
+                    for evidence_id in item.evidence_ids
+                    if evidence_id in evidence_text_by_id
+                ),
+                *(
+                    selected_event.get(key)
+                    for key in (
+                        "title",
+                        "summary",
+                        "trigger",
+                        "process",
+                        "outcome",
+                        "impact",
+                    )
+                    if selected_event.get(key)
+                ),
             ]
-            if not _claim_is_strictly_grounded(
+            if not _claim_is_grounded(
                 item.value,
                 grounding_sources,
                 ignored_terms=(protagonist_name,),
@@ -2245,46 +2045,39 @@ def _raise_for_references(
                 raise ValueError(
                     "CHARACTER_DESIGN_FIELD_VALUE_UNGROUNDED"
                 )
-        if evidence_text_by_id is not None and any(
-            _contains_earlier_distinctive_repeat(
-                evidence_text_by_id.get(evidence_id),
-                earlier_event,
-                owned_event_evidence_texts(earlier_event),
-            )
-            for evidence_id in item.evidence_ids
-            for earlier_event in event_by_id.values()
-            if any(
-                0 < int(chapter) < selected_chapter
-                for chapter in earlier_event.get("chapter_ordinals", [])
-            )
-        ):
-            raise ValueError(
-                "CHARACTER_DESIGN_FIRST_DISPLAY_NOT_EARLIEST"
-            )
+            clauses = [
+                clause
+                for clause in re.split(
+                    r"(?:并且|并|而且|同时|随后|然后)",
+                    item.value,
+                )
+                if len(_grounding_text(clause)) >= 4
+            ]
+            if len(clauses) > 1 and any(
+                not _claim_is_grounded(
+                    clause,
+                    grounding_sources,
+                    ignored_terms=(protagonist_name,),
+                )
+                for clause in clauses
+            ):
+                raise ValueError(
+                    "CHARACTER_DESIGN_FIELD_VALUE_UNGROUNDED"
+                )
+        # 人物要素属于文学解释。程序不再要求逐字摘录、固定关键词
+        # 覆盖率或用重复动作启发式替模型裁决“是否足够典型”。
     accepted_conflicts: list[DesireConflictEvidence] = []
     for item in output.desire_conflicts:
-        has_concrete_sacrifice = _has_concrete_sacrifice_signal(
-            item.sacrifice
-        )
-        if (
-            item.sacrifice_role != "CONCRETE_COST"
-            and not has_concrete_sacrifice
-        ):
-            continue
-        if (
-            item.sacrifice_role == "CONCRETE_COST"
-            and not has_concrete_sacrifice
-        ):
-            raise ValueError(
-                "CHARACTER_DESIGN_CONFLICT_SACRIFICE_EVIDENCE_INCOMPLETE"
-            )
         evidence_groups = (
             item.motive_evidence_ids,
             item.choice_evidence_ids,
             item.result_evidence_ids,
             item.sacrifice_evidence_ids,
         )
-        for evidence_ids in evidence_groups:
+        non_empty_evidence_groups = [
+            evidence_ids for evidence_ids in evidence_groups if evidence_ids
+        ]
+        for evidence_ids in non_empty_evidence_groups:
             validate_event_reference(
                 event_id=item.event_id,
                 chapter_ordinal=item.chapter_ordinal,
@@ -2295,115 +2088,40 @@ def _raise_for_references(
             for evidence_ids in evidence_groups
             for evidence_id in evidence_ids
         }
-        if len(all_evidence) < 2:
+        if not all_evidence:
             raise ValueError(
                 "CHARACTER_DESIGN_CONFLICT_EVIDENCE_INCOMPLETE"
             )
         if evidence_text_by_id is not None:
-            event = event_by_id[item.event_id]
-            motive_texts = [
-                evidence_text_by_id[evidence_id]
-                for evidence_id in item.motive_evidence_ids
-                if evidence_id in evidence_text_by_id
-            ]
-            choice_texts = [
-                evidence_text_by_id[evidence_id]
-                for evidence_id in item.choice_evidence_ids
-                if evidence_id in evidence_text_by_id
-            ]
-            result_texts = [
-                evidence_text_by_id[evidence_id]
-                for evidence_id in item.result_evidence_ids
-                if evidence_id in evidence_text_by_id
-            ]
-            sacrifice_texts = [
-                evidence_text_by_id[evidence_id]
-                for evidence_id in item.sacrifice_evidence_ids
-                if evidence_id in evidence_text_by_id
-            ]
-            if not _is_extract_from_selected_evidence(
-                item.motive,
-                motive_texts,
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_MOTIVE_EVIDENCE_INCOMPLETE"
-                )
-            if _motive_appears_external(
-                item.motive,
-                motive_texts,
-                protagonist_name=protagonist_name,
-                other_character_names=other_character_names,
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_MOTIVE_SOURCE_MISMATCH"
-                )
-            if not _is_extract_from_selected_evidence(
-                item.choice,
-                choice_texts,
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_CHOICE_EVIDENCE_INCOMPLETE"
-                )
-            program_choice_polarity = _choice_polarity_from_text(
-                item.choice
+            claim_groups = (
+                (item.motive, item.motive_evidence_ids, "MOTIVE"),
+                (item.choice, item.choice_evidence_ids, "CHOICE"),
+                (item.result, item.result_evidence_ids, "RESULT"),
+                (
+                    item.sacrifice,
+                    item.sacrifice_evidence_ids,
+                    "SACRIFICE",
+                ),
             )
-            if (
-                program_choice_polarity is not None
-                and item.choice_polarity != program_choice_polarity
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_CHOICE_POLARITY_MISMATCH"
-                )
-            if (
-                item.surface_desire_stage == "EVOLVED"
-                and not _claim_is_strictly_grounded(
-                    item.surface_desire,
-                    motive_texts,
+            for claim, evidence_ids, label in claim_groups:
+                if not claim:
+                    continue
+                supporting_texts = [
+                    evidence_text_by_id[evidence_id]
+                    for evidence_id in evidence_ids
+                    if evidence_id in evidence_text_by_id
+                ]
+                if not supporting_texts or not _claim_is_grounded(
+                    claim,
+                    supporting_texts,
                     ignored_terms=(protagonist_name,),
-                )
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_EVOLVED_SURFACE_DESIRE_EVIDENCE_INCOMPLETE"
-                )
-            if (
-                item.surface_desire_stage == "EVOLVED"
-                and program_choice_polarity == "REFUSE"
-                and not _claim_is_strictly_grounded(
-                    item.surface_desire,
-                    [
-                        *choice_texts,
-                        *result_texts,
-                        event.get("process"),
-                        event.get("outcome"),
-                    ],
-                    ignored_terms=(protagonist_name,),
-                )
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_EVOLVED_SURFACE_DESIRE_REJECTED"
-                )
-            if (
-                not _is_extract_from_selected_evidence(
-                    item.result,
-                    result_texts,
-                )
-                or not _claim_is_grounded(
-                    item.result,
-                    [event.get("outcome")],
-                    ignored_terms=(protagonist_name,),
-                )
-            ):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_RESULT_EVIDENCE_INCOMPLETE"
-                )
-            if not _is_extract_from_selected_evidence(
-                item.sacrifice,
-                sacrifice_texts,
-            ) or not _has_concrete_sacrifice_signal(item.sacrifice):
-                raise ValueError(
-                    "CHARACTER_DESIGN_CONFLICT_SACRIFICE_EVIDENCE_INCOMPLETE"
-                )
-            item.sacrifice_role = "CONCRETE_COST"
+                ):
+                    raise ValueError(
+                        "CHARACTER_DESIGN_OBSERVATION_"
+                        f"{label}_EVIDENCE_INCOMPLETE"
+                    )
+        # 动机、选择、结果、代价可以只出现其中一部分。程序不再要求
+        # 同一事件集齐固定要素，也不再用关键词判断文学解释是否成立。
         accepted_conflicts.append(item)
     output.desire_conflicts = accepted_conflicts
 

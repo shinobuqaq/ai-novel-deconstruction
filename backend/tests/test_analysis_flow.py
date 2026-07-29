@@ -1745,7 +1745,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         if item["question_id"] == "2.2"
     )
     assert first_2_2["conclusion"].startswith(
-        "主角双层欲望与最小完整集均已按首次行动证据定位"
+        "主角双层欲望与最小完整集的早期基线均已按首次行动证据定位"
     )
     assert "当前可核查发现" not in {
         metric["label"] for metric in first_2_2["metrics"]
@@ -1754,7 +1754,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         "表层欲望首次展示章节",
         "深层欲望首次展示章节",
         "核心能力首次展示章节",
-        "双层欲望冲突节点",
+        "欲望变化或冲突观察",
     }.issubset({
         metric["label"] for metric in first_2_2["metrics"]
     })

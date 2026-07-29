@@ -209,11 +209,26 @@ def test_program_replaces_unverified_2_2_top_level_numbers() -> None:
         for metric in answer.metrics
     }
     assert "99" not in answer.conclusion
-    assert "表层欲望第 1 章立住" in answer.conclusion
-    assert "核心能力第 6 章立住" in answer.conclusion
+    assert "表层欲望的早期基线在第 1 章立住" in answer.conclusion
+    assert "不是中后期不变的人设常量" in answer.conclusion
+    assert "核心能力的早期基线在第 6 章立住" in answer.conclusion
     assert metric_values["表层欲望首次展示章节"] == "1"
     assert metric_values["核心能力首次展示章节"] == "6"
-    assert metric_values["双层欲望冲突节点"] == "2"
+    assert metric_values["欲望变化或冲突观察"] == "2"
+
+
+def test_empty_observation_ledger_does_not_claim_there_is_no_arc() -> None:
+    answer, projection = _valid_answer_and_projection()
+    projection["character_design_evidence"]["desire_conflicts"] = []
+
+    _apply_program_2_2_answer(
+        answer,
+        projection["character_design_evidence"],
+    )
+
+    assert answer.status == "PARTIAL"
+    assert "尚未记录欲望变化或冲突观察" in answer.conclusion
+    assert "不是“人物没有弧光”的结论" in answer.conclusion
 
 
 def test_program_normalizes_duplicate_terminal_punctuation() -> None:

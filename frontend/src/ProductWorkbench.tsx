@@ -1169,25 +1169,63 @@ function FormalWorkbench({
                         </details>
                       )}
                       {activeLearningQuestion.program_artifacts.opening_character_ledger && (
-                        <details className="learning-contract-details opening-character-ledger">
-                          <summary>
-                            <strong>查看完整角色首行动账本</strong>
-                            <span>{activeLearningQuestion.program_artifacts.opening_character_ledger.roles.length} 人，默认收起</span>
-                          </summary>
-                          <div className="opening-character-ledger-list">
+                        <>
+                          <div className="learning-answer-block">
+                            <strong>高参与度人物：身份、作用与后续戏份</strong>
+                            <ul>
+                              {[...activeLearningQuestion.program_artifacts.opening_character_ledger.roles]
+                                .sort((left, right) => (
+                                  right.action_event_count_through_30 - left.action_event_count_through_30
+                                  || left.sequence_no - right.sequence_no
+                                ))
+                                .slice(0, 8)
+                                .map((item) => (
+                                  <li key={`key-role-${item.sequence_no}`}>
+                                    {item.character_name}：{item.identity_summary}；首次以“{item.first_scene_function}”
+                                    发挥作用，前 30 章参与 {item.action_event_count_through_30} 个行动事件。
+                                  </li>
+                                ))}
+                            </ul>
+                          </div>
+                          <details className="learning-contract-details opening-character-ledger">
+                            <summary>
+                              <strong>查看完整角色首行动账本</strong>
+                              <span>{activeLearningQuestion.program_artifacts.opening_character_ledger.roles.length} 人，默认收起</span>
+                            </summary>
+                            <div className="opening-character-ledger-list">
                             {activeLearningQuestion.program_artifacts.opening_character_ledger.roles.map((item) => (
                               <article key={`${item.sequence_no}-${item.character_name}`}>
                                 <header>
                                   <strong>{item.sequence_no}. {item.character_name}</strong>
                                   <i>第 {item.first_action_chapter} 章 · {item.later_role_volume}</i>
                                 </header>
+                                <p>{item.identity_summary}</p>
                                 <p>{item.first_scene_function}</p>
                                 <small>前 30 章参与有效行动事件 {item.action_event_count_through_30} 个 · 首次事件：{item.first_action_event_title}</small>
                                 {evidenceButtons(item.first_scene_function_evidence_ids, "查看首次行动原文")}
                               </article>
                             ))}
-                          </div>
-                        </details>
+                            </div>
+                          </details>
+                        </>
+                      )}
+                      {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix && (
+                        <div className="learning-answer-block">
+                          <strong>类型与强度交叉关系</strong>
+                          <ul>
+                            {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix.rows.map((row) => (
+                              <li key={row.hook_type}>
+                                {row.type_label}：强 {row.counts.STRONG}、中 {row.counts.MEDIUM}、
+                                轻 {row.counts.LIGHT}、无 {row.counts.NONE}
+                                {row.examples.length > 0 && (
+                                  `；例：${row.examples.map((item) => (
+                                    `第 ${item.chapter_ordinal} 章（${item.strength_label}）`
+                                  )).join("、")}`
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
                       {activeLearningQuestion.reusable_lessons.length > 0 && (
                         <div className="learning-answer-block">

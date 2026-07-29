@@ -737,6 +737,7 @@ export type WorkbenchLearningQuestion = {
         first_action_event_title: string;
         action_event_count_through_30: number;
         later_role_volume: string;
+        identity_summary: string;
         first_scene_function: string;
         first_scene_function_evidence_ids: string[];
       }>;
@@ -753,6 +754,20 @@ export type WorkbenchLearningQuestion = {
         covered_item_count: number;
         character_classification_complete: boolean;
       };
+    };
+    chapter_end_hook_matrix?: {
+      rows: Array<{
+        hook_type: WorkbenchChapterEndHook["hook_type"];
+        type_label: string;
+        counts: Record<WorkbenchChapterEndHook["strength"], number>;
+        examples: Array<{
+          chapter_ordinal: number;
+          chapter_title: string;
+          strength: WorkbenchChapterEndHook["strength"];
+          strength_label: string;
+          ending_evidence_ids: string[];
+        }>;
+      }>;
     };
   };
   evidence_ids: string[];

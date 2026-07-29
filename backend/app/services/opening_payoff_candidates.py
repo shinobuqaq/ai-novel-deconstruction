@@ -46,7 +46,7 @@ OPENING_PAYOFF_CANDIDATES_QUESTION_ID = "1.4p"
 OPENING_PAYOFF_CANDIDATES_PROMPT_ID = (
     "opening_payoff_candidates"
 )
-OPENING_PAYOFF_CANDIDATES_PROMPT_VERSION = "1.0.0"
+OPENING_PAYOFF_CANDIDATES_PROMPT_VERSION = "1.1.0"
 OPENING_PAYOFF_CANDIDATES_WINDOW_OVERHEAD_CHARS = 12_000
 
 
@@ -434,18 +434,10 @@ def _validated_rows(
             raise ValueError(
                 "OPENING_PAYOFF_CANDIDATES_EVIDENCE_INVALID"
             )
-        program_exclusion = str(
-            candidate.get("program_exclusion_code") or ""
-        )
-        if (
-            program_exclusion
-            and proposal.exclusion_code != program_exclusion
-        ):
-            raise ValueError(
-                "OPENING_PAYOFF_CANDIDATES_EXCLUSION_INVALID"
-            )
+        # program_exclusion_code 只作为模型判断提示，不再覆盖模型的
+        # 文学分类。程序仍负责核对顺序与证据归属。
         is_complete = (
-            set(proposal.matched_facet_ids) == {"F1", "F2", "F3"}
+            bool(proposal.matched_facet_ids)
             and proposal.exclusion_code == "NONE"
         )
         if found_complete:

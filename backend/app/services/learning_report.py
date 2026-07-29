@@ -37,7 +37,7 @@ from .source_import import source_text
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.6.0"
+LEARNING_REPORT_PROMPT_VERSION = "1.7.0"
 LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.4.2",
     "1.4.3",
@@ -48,6 +48,7 @@ LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.5.4",
     "1.5.5",
     "1.6.0",
+    "1.7.0",
 })
 LEARNING_QUESTION_CATALOG_VERSION = "1.3.0"
 LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
@@ -155,10 +156,10 @@ _CHAPTER_END_HOOK_STRENGTH_LABELS = {
     "NONE": ("NONE", "无钩"),
 }
 LEARNING_QUESTION_CONTRACT_VERSIONS = {
-    "1.4": "2.4.0",
-    "2.1": "2.0.0",
-    "2.2": "2.1.0",
-    "4.9": "2.0.0",
+    "1.4": "2.5.0",
+    "2.1": "2.1.0",
+    "2.2": "2.2.0",
+    "4.9": "2.1.0",
 }
 
 
@@ -660,13 +661,13 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
         ),
         LearningContractItemDefinition(
             "desire_conflicts",
-            "双层欲望冲突节点",
-            "统计表层与深层欲望发生冲突的节点，并说明主角的选择与弧光变化。",
+            "欲望变化与冲突观察",
+            "记录欲望的加深、转向、受压、重新解释或冲突，并说明对人物弧光的意义；不要求同一节点集齐固定要素。",
         ),
         LearningContractItemDefinition(
             "arc_timeline",
-            "弧光转折时间轴",
-            "按章节顺序汇总已核验冲突节点形成的转折；当前来源未覆盖后续作品时必须限定范围。",
+            "人物变化时间轴",
+            "按章节顺序汇总有原文依据的变化观察；没有明确代价或完整冲突时也可保留局部变化。",
         ),
     ),
     "4.9": (
@@ -1278,9 +1279,9 @@ def _opening_payoff_candidate_artifact(
             },
         ],
         "classification_policy": (
-            "从 sequence_no=1 连续分类；同时命中 F1/F2/F3 且 "
-            "exclusion_code=NONE 才是完整兑现。程序选择第一条完整兑现，"
-            "并从 anchor_evidence_no 对应原文编译所有位置数字。"
+            "从 sequence_no=1 连续分类；F1/F2/F3 是观察面而非"
+            "缺一不可的打分项。模型结合卖点承诺与上下文判断兑现，"
+            "程序选择第一条并从所引原文编译位置数字。"
         ),
         "coverage": {
             "source_event_count": len(sortable_events),
@@ -1483,6 +1484,19 @@ def _opening_character_program_artifact(projection: dict) -> dict[str, object]:
     counts, intervals and later activity volume remain program-owned facts.
     """
 
+    character_profiles = {
+        _normalized_person_name(item.get("name")): item
+        for item in projection.get("characters", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    role_labels = {
+        "PROTAGONIST": "主角",
+        "CORE_SUPPORTING": "核心配角",
+        "IMPORTANT_SUPPORTING": "重要配角",
+        "MINOR": "次要人物",
+        "UNCLASSIFIED": "身份待进一步判断",
+    }
+
     opening_events: list[tuple[int, int, dict]] = []
     for event_order, event in enumerate(projection.get("events", [])):
         chapter_ordinals = sorted({
@@ -1526,7 +1540,7 @@ def _opening_character_program_artifact(projection: dict) -> dict[str, object]:
                 action_event_ids.append(event_id)
 
     roles: list[dict[str, object]] = []
-    for item in people.values():
+    for normalized_name, item in people.items():
         event_count = len(item["action_event_ids_through_30"])
         if event_count <= 1:
             volume = "单次行动"
@@ -1534,10 +1548,28 @@ def _opening_character_program_artifact(projection: dict) -> dict[str, object]:
             volume = "持续参与"
         else:
             volume = "高频参与"
+        profile = character_profiles.get(normalized_name, {})
+        identity_parts = [
+            role_labels.get(str(profile.get("role") or ""), ""),
+            "、".join(
+                str(value).strip()
+                for value in profile.get("identities", [])[:3]
+                if str(value).strip()
+            ),
+            str(profile.get("description") or "").strip(),
+        ]
+        identity_summary = "；".join(
+            dict.fromkeys(part for part in identity_parts if part)
+        )
         roles.append({
             **item,
             "action_event_count_through_30": event_count,
             "later_role_volume": volume,
+            "identity_summary": (
+                identity_summary[:360]
+                if identity_summary
+                else "现有资料尚未形成可靠身份说明"
+            ),
         })
     roles.sort(key=lambda item: (
         int(item["first_action_chapter"]),
@@ -1612,6 +1644,7 @@ def _compact_opening_character_model_artifact(
                     "first_action_event_id",
                     "first_action_event_title",
                     "first_action_evidence_ids",
+                    "identity_summary",
                 )
             }
             for item in artifact["roles"]
@@ -2679,7 +2712,11 @@ def parse_learning_report(
                     ),
                 }],
             )
-        if insufficient_items and answer.status == "ANSWERED":
+        if (
+            insufficient_items
+            and answer.status == "ANSWERED"
+            and answer.question_id not in {"1.4", "2.1", "2.2", "4.9"}
+        ):
             raise LearningReportValidationError(
                 "LEARNING_REPORT_CONTRACT_STATUS_INCONSISTENT",
                 [{
@@ -2695,17 +2732,6 @@ def parse_learning_report(
             item_by_id = {
                 item.item_id: item for item in answer.contract_items
             }
-            if answer.status != "PARTIAL":
-                raise LearningReportValidationError(
-                    "LEARNING_REPORT_1_4_SCOPE_INVALID",
-                    [{
-                        "path": ["answers", answer.question_id, "status"],
-                        "type": "value_error",
-                        "message": (
-                            "当前缺少同口径多书对照，1.4 必须标为部分回答。"
-                        ),
-                    }],
-                )
             if (
                 item_by_id["cross_book_comparison"].status
                 != "INSUFFICIENT_EVIDENCE"
@@ -2721,32 +2747,6 @@ def parse_learning_report(
                         ],
                         "type": "value_error",
                         "message": "没有同口径多书数据时不得生成同类书卖点对比。",
-                    }],
-                )
-        if answer.question_id == "2.2":
-            expected_status = (
-                "PARTIAL" if insufficient_items else "ANSWERED"
-            )
-            if answer.status != expected_status:
-                raise LearningReportValidationError(
-                    "LEARNING_REPORT_2_2_CONTRACT_STATUS_INVALID",
-                    [{
-                        "path": ["answers", answer.question_id, "status"],
-                        "type": "value_error",
-                        "message": (
-                            "2.2 有证据不足项目时整问必须标为部分回答；"
-                            "八项均有证据时才可标为完整回答。"
-                        ),
-                    }],
-                )
-        if answer.question_id == "4.9":
-            if answer.status != "ANSWERED" or insufficient_items:
-                raise LearningReportValidationError(
-                    "LEARNING_REPORT_4_9_CONTRACT_INCOMPLETE",
-                    [{
-                        "path": ["answers", answer.question_id, "status"],
-                        "type": "value_error",
-                        "message": "专项原料已完整，必须逐项回答全部合同。",
                     }],
                 )
         if answer.question_id == "2.1":
@@ -2769,19 +2769,6 @@ def parse_learning_report(
                         ],
                         "type": "value_error",
                         "message": "2.1 必须逐人返回首场功能分类，不能只给人数。",
-                    }],
-                )
-            if answer.status != "PARTIAL":
-                raise LearningReportValidationError(
-                    "LEARNING_REPORT_2_1_CROSS_BOOK_SCOPE_INVALID",
-                    [{
-                        "path": [
-                            "answers",
-                            answer.question_id,
-                            "status",
-                        ],
-                        "type": "value_error",
-                        "message": "当前没有同口径多书数据，2.1 必须标为部分回答。",
                     }],
                 )
     return output
@@ -3058,11 +3045,34 @@ def _program_2_1_reading_fields(
         if volume_counts.get(label)
     )
     identity_candidate_count = len(artifact["identity_duplicate_candidates"])
+    representative_roles = sorted(
+        (
+            item
+            for item in artifact["roles"]
+            if isinstance(item, dict)
+        ),
+        key=lambda item: (
+            -int(item.get("action_event_count_through_30") or 0),
+            int(item.get("sequence_no") or 0),
+        ),
+    )[:8]
+    representative_summary = "；".join(
+        (
+            f"{item.get('character_name')}（{item.get('identity_summary')}）"
+            f"在第 {item.get('first_action_chapter')} 章以"
+            f"“{item.get('first_scene_function')}”功能进入，"
+            f"前 30 章参与 {item.get('action_event_count_through_30')} 个行动事件"
+        )
+        for item in representative_roles
+    )
     conclusion = (
         f"前 3、10、30 章分别有 {counts.get(3, 0)}、"
         f"{counts.get(10, 0)}、{counts.get(30, 0)} 名具名人物参与有效行动；"
         f"前 30 章共有 {introduction_count} 个首次行动引入批次。"
-        f"经逐人首次事件与证据核对，本次首场功能分类数量前三为"
+        "这些数字只说明人物进入速度，必须和“谁进入、以什么身份、"
+        "承担什么功能、后续是否继续参与”一起看。"
+        f"高参与度代表人物为：{representative_summary or '暂无'}。"
+        f"经逐人首次事件与证据核对，首场功能分类数量前三为"
         f"{top_functions or '暂无'}；后续行动量级为{volume_summary or '暂无'}。"
         f"当前仍有 {identity_candidate_count} 组身份重复候选未裁定，"
         "且没有同口径跨书数据，因此本问只能作为单书部分回答。"
@@ -3084,6 +3094,10 @@ def _program_2_1_reading_fields(
             f"首场功能数量前三为{top_functions or '暂无'}。"
             "可借鉴“首次行动即承担明确叙事功能”的做法，"
             "不能照搬本书的类别比例。"
+        ),
+        (
+            "人物数量本身不构成方法；真正可参考的是身份、首场功能与"
+            "后续参与量如何配合，让人物随事件进入并继续产生作用。"
         ),
     ]
     do_not_copy = [
@@ -3510,19 +3524,8 @@ def _legacy_1_4_payoff_ledger(
             raise ValueError(
                 "LEARNING_REPORT_1_4_PAYOFF_EVIDENCE_REFERENCE_INVALID"
             )
-        program_exclusion = str(
-            candidate.get("program_exclusion_code") or ""
-        )
-        if (
-            program_exclusion
-            and classification.exclusion_code != program_exclusion
-        ):
-            raise ValueError(
-                "LEARNING_REPORT_1_4_PAYOFF_PROGRAM_EXCLUSION_INVALID"
-            )
         is_complete = (
-            set(classification.matched_facet_ids)
-            == {"F1", "F2", "F3"}
+            bool(classification.matched_facet_ids)
             and classification.exclusion_code == "NONE"
         )
         row = {
@@ -3680,8 +3683,8 @@ def _program_1_4_answer(
         row
         for row in classified_rows
         if (
-            "F1" in row.get("matched_facet_ids", [])
-            and "F3" in row.get("matched_facet_ids", [])
+            bool(row.get("matched_facet_ids"))
+            and row.get("exclusion_code") != "UNRELATED"
             and 1 <= int(row.get("chapter_ordinal") or 0) <= 3
         )
     ]
@@ -3703,7 +3706,7 @@ def _program_1_4_answer(
         payoff.status = "INSUFFICIENT_EVIDENCE"
         payoff.finding = (
             f"程序已按源文件顺序连续核对全书 {scanned_count} 个"
-            "有效事件候选，未发现同时命中 F1、F2、F3 的完整兑现。"
+            "有效事件候选，当前模型判断中未发现完整兑现。"
         )
         payoff.metrics = []
         payoff.evidence_ids = []
@@ -3729,7 +3732,7 @@ def _program_1_4_answer(
         answer.status = "PARTIAL"
         answer.conclusion = (
             f"{selling_point.finding} 当前全书连续候选中没有找到"
-            "同时满足真实机制、主角直接卷入和现实行动的完整兑现。"
+            "可由原文和上下文支持的完整兑现。"
         )
         answer.metrics = [scan_metric]
         answer.evidence_ids = list(dict.fromkeys([
@@ -3874,7 +3877,7 @@ def _program_1_4_answer(
     )
     payoff.finding = (
         f"程序按源文件顺序连续核对前 {selected_sequence} 个事件候选，"
-        f"第一条同时命中 F1、F2、F3 的完整兑现是第 {chapter} 章"
+        f"结合卖点承诺和上下文判断，第一条完整兑现是第 {chapter} 章"
         f"“{chapter_title}”第 {paragraph_number} 段、源文件第 "
         f"{source_char_start} 个字符处的“"
         f"{selected_candidate.get('event_title')}”。"
@@ -4147,37 +4150,50 @@ def _program_2_2_contract_items(
     ))
     if any(
         int(conflict.get("chapter_ordinal") or 0) <= 0
-        or not str(conflict.get("surface_desire") or "").strip()
-        or not str(conflict.get("deep_desire") or "").strip()
-        or not str(conflict.get("motive") or "").strip()
-        or not str(conflict.get("choice") or "").strip()
-        or not str(conflict.get("result") or "").strip()
-        or conflict.get("sacrificed_desire") not in {"SURFACE", "DEEP"}
-        or not str(conflict.get("sacrifice") or "").strip()
         or not str(conflict.get("arc_change") or "").strip()
-        or not conflict.get("motive_evidence_ids")
-        or not conflict.get("choice_evidence_ids")
-        or not conflict.get("result_evidence_ids")
-        or not conflict.get("sacrifice_evidence_ids")
         or not conflict.get("evidence_ids")
         for conflict in conflicts
     ):
         raise ValueError("LEARNING_REPORT_2_2_CONFLICT_SOURCE_INVALID")
 
+    observation_kind_labels = {
+        "CONFLICT": "欲望冲突",
+        "DEEPENING": "欲望加深",
+        "SHIFT": "目标转向",
+        "PRESSURE": "欲望受压",
+        "REINTERPRETATION": "重新解释",
+        "OTHER": "人物变化",
+    }
+    def observation_detail(conflict: dict) -> str:
+        details = [
+            f"表层欲望“{_trim_2_2_sentence(conflict.get('surface_desire'))}”"
+            if conflict.get("surface_desire") else "",
+            f"深层欲望“{_trim_2_2_sentence(conflict.get('deep_desire'))}”"
+            if conflict.get("deep_desire") else "",
+            f"现场动机“{_trim_2_2_sentence(conflict.get('motive'))}”"
+            if conflict.get("motive") else "",
+            f"选择“{_trim_2_2_sentence(conflict.get('choice'))}”"
+            if conflict.get("choice") else "",
+            f"结果“{_trim_2_2_sentence(conflict.get('result'))}”"
+            if conflict.get("result") else "",
+            f"代价“{_trim_2_2_sentence(conflict.get('sacrifice'))}”"
+            if conflict.get("sacrifice") else "",
+        ]
+        return "，".join(detail for detail in details if detail)
+
     conflict_finding = (
         "".join(
             (
                 f"第 {int(conflict['chapter_ordinal'])} 章，"
-                f"表层欲望“{_trim_2_2_sentence(conflict['surface_desire'])}”与"
-                f"深层欲望“{_trim_2_2_sentence(conflict['deep_desire'])}”发生冲突；"
-                f"现场动机原文是“{_trim_2_2_sentence(conflict['motive'])}”；"
-                f"主角选择原文是“{_trim_2_2_sentence(conflict['choice'])}”；"
-                f"现场结果是{_trim_2_2_sentence(conflict['result'])}，"
-                f"并付出代价“{_trim_2_2_sentence(conflict['sacrifice'])}”。"
+                f"{observation_kind_labels.get(str(conflict.get('observation_kind') or 'CONFLICT'), '人物变化')}："
+                f"{observation_detail(conflict) or _trim_2_2_sentence(conflict['arc_change'])}。"
             )
             for conflict in conflicts
         )
-        or "当前专项账本未发现双层欲望冲突节点。"
+        or (
+            "当前专项账本尚未记录到有原文依据的欲望变化或冲突观察；"
+            "这不能反推主角中后期没有变化。"
+        )
     )
     arc_finding = (
         "".join(
@@ -4187,15 +4203,18 @@ def _program_2_2_contract_items(
             )
             for conflict in conflicts
         )
-        or "当前没有已核验冲突节点可形成弧光转折时间轴。"
+        or (
+            "当前没有可编入时间轴的变化观察；需要重新按加深、转向、"
+            "受压、重新解释和冲突等宽口径检查后文。"
+        )
     )
     for item_id, finding, label in (
-        ("desire_conflicts", conflict_finding, "冲突节点"),
-        ("arc_timeline", arc_finding, "转折节点"),
+        ("desire_conflicts", conflict_finding, "变化观察"),
+        ("arc_timeline", arc_finding, "时间轴节点"),
     ):
         compiled.append(LearningContractItemProposal.model_validate({
             "item_id": item_id,
-            "status": "SUPPORTED",
+            "status": "SUPPORTED" if conflicts else "INSUFFICIENT_EVIDENCE",
             "finding": finding,
             "metrics": [{
                 "label": label,
@@ -4205,7 +4224,11 @@ def _program_2_2_contract_items(
                 "evidence_ids": conflict_evidence_ids,
             }],
             "evidence_ids": conflict_evidence_ids,
-            "limitations": [],
+            "limitations": (
+                [] if conflicts else [
+                    "账本空白只表示当前未记录，不能解释为人物没有变化。"
+                ]
+            ),
             "classifications": [],
         }))
     return compiled
@@ -4249,7 +4272,7 @@ def _apply_program_2_2_answer(
             for evidence_id in source.get("evidence_ids", [])
             if evidence_id
         ))
-        field_summaries.append(f"{label}第 {chapter} 章立住：{value}")
+        field_summaries.append(f"{label}的早期基线在第 {chapter} 章立住：{value}")
         metrics.append(LearningMetricProposal(
             label=f"{label}首次展示章节",
             value=str(chapter),
@@ -4282,10 +4305,10 @@ def _apply_program_2_2_answer(
     ))
     representative_evidence.extend(conflict_evidence)
     metrics.append(LearningMetricProposal(
-        label="双层欲望冲突节点",
+        label="欲望变化或冲突观察",
         value=str(len(conflicts)),
         unit="个",
-        method="由主角专项证据账本按章节顺序确定性汇总。",
+        method="由主角专项证据账本按章节顺序汇总；观察类型由模型结合原文判断。",
         evidence_ids=conflict_evidence[:16],
     ))
     conflict_summary = (
@@ -4298,7 +4321,9 @@ def _apply_program_2_2_answer(
     )
 
     answer.status = (
-        "PARTIAL" if insufficient_field_summaries else "ANSWERED"
+        "PARTIAL"
+        if insufficient_field_summaries or not conflicts
+        else "ANSWERED"
     )
     answer.conclusion = (
         (
@@ -4307,14 +4332,20 @@ def _apply_program_2_2_answer(
             f"{len(field_labels)} 项按首次行动证据定位；"
             f"{len(insufficient_field_summaries)} 项证据不足。"
             if insufficient_field_summaries
-            else "主角双层欲望与最小完整集均已按首次行动证据定位。"
+            else (
+                "主角双层欲望与最小完整集的早期基线"
+                "均已按首次行动证据定位；这些不是中后期不变的人设常量。"
+            )
         )
         + "；".join(field_summaries)
         + (
-            f"。另有 {len(conflicts)} 个双层欲望冲突与弧光转折节点，"
+            f"。另有 {len(conflicts)} 个欲望变化或冲突观察，"
             f"位于{conflict_summary}。"
             if conflicts
-            else "。当前专项账本未发现双层欲望冲突与弧光转折节点。"
+            else (
+                "。当前专项账本尚未记录欲望变化或冲突观察；"
+                "这不是“人物没有弧光”的结论，需按放宽后的口径重新检查后文。"
+            )
         )
     )
     answer.metrics = metrics
@@ -4327,7 +4358,7 @@ def _apply_program_2_2_answer(
         "本结论只覆盖当前单书的主角专项账本，不能外推为其他作品的通用章节阈值。",
     ]
     answer.reusable_lessons = [
-        "先分别记录表层欲望、深层欲望、动机、反差、边界和核心能力的首次行动证据，再按冲突节点观察弧光变化。"
+        "前六项用于确定人物最早立住的基线，不代表中后期保持不变；后文应另按加深、转向、受压、重新解释和冲突持续记录变化。"
     ]
     answer.do_not_copy = [
         "不能照搬本书的欲望内容、人物选择或首次展示章节；其他作品必须按自己的原文证据重新定位。"
@@ -4347,6 +4378,67 @@ def _program_hook_label(
     return aliases[1] if len(aliases) > 1 else aliases[0]
 
 
+def _program_4_9_matrix(ledger: dict) -> dict[str, object]:
+    chapters = [
+        item
+        for item in ledger.get("chapters", [])
+        if isinstance(item, dict)
+    ]
+    rows: list[dict[str, object]] = []
+    for hook_type in _CHAPTER_END_HOOK_TYPE_LABELS:
+        type_chapters = [
+            item
+            for item in chapters
+            if str(item.get("hook_type") or "") == hook_type
+        ]
+        if not type_chapters:
+            continue
+        counts = {
+            strength: sum(
+                str(item.get("strength") or "") == strength
+                for item in type_chapters
+            )
+            for strength in ("STRONG", "MEDIUM", "LIGHT", "NONE")
+        }
+        examples: list[dict[str, object]] = []
+        for strength in ("STRONG", "MEDIUM", "LIGHT", "NONE"):
+            example = next(
+                (
+                    item for item in type_chapters
+                    if str(item.get("strength") or "") == strength
+                ),
+                None,
+            )
+            if example is None:
+                continue
+            examples.append({
+                "chapter_ordinal": int(
+                    example.get("chapter_ordinal") or 0
+                ),
+                "chapter_title": str(
+                    example.get("chapter_title") or ""
+                ),
+                "strength": strength,
+                "strength_label": _program_hook_label(
+                    _CHAPTER_END_HOOK_STRENGTH_LABELS,
+                    strength,
+                ),
+                "ending_evidence_ids": list(
+                    example.get("ending_evidence_ids", [])
+                ),
+            })
+        rows.append({
+            "hook_type": hook_type,
+            "type_label": _program_hook_label(
+                _CHAPTER_END_HOOK_TYPE_LABELS,
+                hook_type,
+            ),
+            "counts": counts,
+            "examples": examples,
+        })
+    return {"rows": rows}
+
+
 def _apply_program_4_9_answer(
     answer: LearningAnswerProposal,
     ledger: dict,
@@ -4358,6 +4450,7 @@ def _apply_program_4_9_answer(
     ]
     coverage = ledger.get("coverage") or {}
     summary = ledger.get("summary") or {}
+    hook_matrix = _program_4_9_matrix(ledger)
     all_evidence = list(dict.fromkeys(
         str(evidence_id)
         for chapter in chapters
@@ -4446,6 +4539,14 @@ def _apply_program_4_9_answer(
         strength_metrics.append(metric)
         metrics.append(metric)
 
+    matrix_fragments = [
+        (
+            f"{row['type_label']}：强 {row['counts']['STRONG']}、"
+            f"中 {row['counts']['MEDIUM']}、轻 {row['counts']['LIGHT']}、"
+            f"无 {row['counts']['NONE']}"
+        )
+        for row in hook_matrix["rows"]
+    ]
     max_consecutive_strong = int(
         summary.get("max_consecutive_strong") or 0
     )
@@ -4559,6 +4660,8 @@ def _apply_program_4_9_answer(
             finding=(
                 f"强弱配比：{'；'.join(strength_fragments)}；"
                 f"最长连续强钩 {max_consecutive_strong} 章。"
+                "强弱不是由类型数量相加得到，而是对每章同一钩子的"
+                f"第二维判断；类型×强度交叉表为：{'；'.join(matrix_fragments)}。"
             ),
             metrics=strength_metrics,
             evidence_ids=all_evidence[:32],
@@ -4616,6 +4719,9 @@ def _apply_program_4_9_answer(
         f"全书 {source_chapter_count} 章由 {window_count} 个连续窗口"
         f"不重不漏覆盖。类型配比：{'；'.join(type_fragments)}。"
         f"强弱配比：{'；'.join(strength_fragments)}。"
+        "类型回答“用什么方式留下问题”，强弱回答“这个问题有多具体、"
+        "多紧迫、信息缺口多大”，两者独立判断，不做加法。"
+        f"交叉结果：{'；'.join(matrix_fragments)}。"
         f"最长连续强钩 {max_consecutive_strong} 章，"
         f"类型切换 {type_transition_count} 次，"
         f"同类连续上限 {max_consecutive_same_type} 章，"
@@ -4629,7 +4735,7 @@ def _apply_program_4_9_answer(
         "4.9 只统计全书章末钩类型与强弱节律，不追踪后续回应；前三章首次回应属于 3.4，重要悬念生命周期属于 4.10。"
     ]
     answer.reusable_lessons = [
-        "先把章末类型与强度分开逐章记账，再核对类型切换、连续强钩、同类连续段和无钩章，不用单个强场面代替全书节律。"
+        "先把章末类型与强度作为两个独立维度逐章记账，再看同一类型能否有不同强度，并核对类型切换、连续强钩、同类连续段和无钩章。"
     ]
     answer.do_not_copy = [
         "不能照搬本书的类型比例、强度序列或具体章末表达；其他作品必须按自己的全书章节重新统计。"
@@ -4741,11 +4847,14 @@ def _validate_2_2_answer_against_projection(
     ]
     conflict_evidence = _evidence_ids(conflicts)
     conflict_item = items["desire_conflicts"]
+    observation_status = (
+        "SUPPORTED" if conflicts else "INSUFFICIENT_EVIDENCE"
+    )
     if (
-        conflict_item.status != "SUPPORTED"
+        conflict_item.status != observation_status
         or not _metric_group_matches_count(
             conflict_item,
-            ("冲突节点", "转折节点"),
+            ("冲突节点", "转折节点", "变化观察", "时间轴节点"),
             len(conflicts),
         )
     ):
@@ -4754,7 +4863,7 @@ def _validate_2_2_answer_against_projection(
         set(conflict_item.evidence_ids) != conflict_evidence
         or not _2_2_metric_matches_with_evidence(
             conflict_item,
-            ("冲突节点", "转折节点"),
+            ("冲突节点", "转折节点", "变化观察", "时间轴节点"),
             len(conflicts),
             conflict_evidence,
         )
@@ -4774,11 +4883,11 @@ def _validate_2_2_answer_against_projection(
         raise ValueError("LEARNING_REPORT_2_2_CONFLICT_NODES_INVALID")
     arc_item = items["arc_timeline"]
     if (
-        arc_item.status != "SUPPORTED"
+        arc_item.status != observation_status
         or set(arc_item.evidence_ids) != conflict_evidence
         or not _2_2_metric_matches_with_evidence(
             arc_item,
-            ("冲突节点", "转折节点"),
+            ("冲突节点", "转折节点", "变化观察", "时间轴节点"),
             len(conflicts),
             conflict_evidence,
         )
@@ -4980,19 +5089,6 @@ def persist_learning_report(
     selected_question_ids = tuple(
         str(question_id) for question_id in task_payload.get("question_ids", [])
     )
-    selected_scopes = task_payload.get("question_answer_scopes") or {}
-    for answer in output.answers:
-        if (
-            selected_scopes.get(answer.question_id) == "PARTIAL"
-            and answer.status == "ANSWERED"
-        ):
-            raise ValueError("LEARNING_REPORT_PARTIAL_SCOPE_VIOLATION")
-        if (
-            selected_scopes.get(answer.question_id) == "COMPLETE"
-            and answer.status != "ANSWERED"
-        ):
-            raise ValueError("LEARNING_REPORT_COMPLETE_SCOPE_VIOLATION")
-
     projection: dict | None = None
     program_1_4_artifact: dict[str, object] | None = None
     if set(selected_question_ids).intersection({"1.4", "2.1", "2.2", "4.9"}):
@@ -5148,6 +5244,19 @@ def persist_learning_report(
         )
         persisted_answer["metrics"] = program_metrics
         persisted_answer.update(_program_2_1_reading_fields(artifact))
+    if "4.9" in selected_question_ids:
+        if projection is None:
+            raise ValueError("LEARNING_REPORT_PROGRAM_PROJECTION_MISSING")
+        persisted_answer = next(
+            answer
+            for answer in payload["answers"]
+            if answer["question_id"] == "4.9"
+        )
+        persisted_answer["program_artifacts"] = {
+            "chapter_end_hook_matrix": _program_4_9_matrix(
+                projection.get("chapter_end_hooks_evidence") or {}
+            ),
+        }
     referenced_evidence_ids = _evidence_ids(payload)
     valid_evidence_ids = set(session.scalars(
         select(EvidenceSpan.id).where(

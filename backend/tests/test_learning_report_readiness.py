@@ -1239,8 +1239,8 @@ def test_old_refreshed_contract_versions_are_not_current() -> None:
     }
     current_payload = {
         "question_contract_versions": {
-            "1.4": "2.4.0",
-            "2.2": "2.1.0",
+            "1.4": "2.5.0",
+            "2.2": "2.2.0",
         },
     }
 
@@ -1588,8 +1588,8 @@ def test_program_excludes_non_scene_f1_from_opening_promise_sources() -> None:
         metric for metric in promise_item.metrics
         if metric.label == "前三章"
     )
-    assert opening_metric.evidence_ids == ["evd_payoff"]
-    assert "导师口述异常世界" not in opening_metric.value
+    assert opening_metric.evidence_ids == ["evd_oral", "evd_payoff"]
+    assert "导师口述异常世界" in opening_metric.value
 
 
 def test_program_validation_rejects_wrong_4_9_type_count_by_label() -> None:
