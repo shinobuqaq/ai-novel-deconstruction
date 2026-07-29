@@ -158,6 +158,7 @@ def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any
     prompt_tokens = 0
     completion_tokens = 0
     valid_events = 0
+    completion_signal_seen = False
 
     for raw_line in raw_text.splitlines():
         line = raw_line.strip()
@@ -166,7 +167,10 @@ def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any
         if not line.startswith("data:"):
             continue
         data = line[5:].strip()
-        if not data or data == "[DONE]":
+        if data == "[DONE]":
+            completion_signal_seen = True
+            continue
+        if not data:
             continue
         try:
             event = json.loads(data)
@@ -182,6 +186,26 @@ def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any
             else:
                 detail = error
             raise ValueError(str(detail or "远程模型在流式响应中返回了错误。"))
+        event_type = str(event.get("type") or "")
+        if event_type in {
+            "error",
+            "response.failed",
+            "response.incomplete",
+        }:
+            response_detail = event.get("response")
+            if isinstance(response_detail, dict):
+                response_detail = (
+                    response_detail.get("error")
+                    or response_detail.get("incomplete_details")
+                    or response_detail.get("status")
+                )
+            detail = response_detail or event.get("message")
+            raise ValueError(
+                "远程模型的流式响应未完整完成。"
+                + (f" 服务返回：{detail}" if detail else "")
+            )
+        if service_type == "OPENAI" and event_type == "response.completed":
+            completion_signal_seen = True
 
         current_prompt, current_completion = _stream_usage(event.get("usage"))
         prompt_tokens = current_prompt or prompt_tokens
@@ -207,6 +231,14 @@ def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any
         for choice in choices:
             if not isinstance(choice, dict):
                 continue
+            finish_reason = str(choice.get("finish_reason") or "").strip().casefold()
+            if finish_reason and finish_reason != "stop":
+                raise ValueError(
+                    "远程模型的流式输出未正常结束："
+                    f"{finish_reason}。"
+                )
+            if finish_reason == "stop":
+                completion_signal_seen = True
             delta = choice.get("delta")
             if isinstance(delta, dict):
                 fragment = _stream_content_text(delta.get("content"))
@@ -222,6 +254,10 @@ def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any
 
     if valid_events == 0:
         raise ValueError("远程模型返回了无法识别的流式数据。")
+    if not completion_signal_seen:
+        raise ValueError(
+            "远程模型的流式响应在完整结束标记前中断。"
+        )
     output_text = "".join(fragments) or completed_text
     if service_type == "OPENAI":
         return {
@@ -281,8 +317,19 @@ async def post_model_request(
             headers=headers,
             json=body,
         ) as response:
-            await response.aread()
-        return response
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                chunks.extend(chunk)
+            buffered_headers = dict(response.headers)
+            buffered_headers.pop("content-encoding", None)
+            buffered_headers.pop("transfer-encoding", None)
+            buffered_headers["content-length"] = str(len(chunks))
+            return httpx.Response(
+                response.status_code,
+                request=response.request,
+                headers=buffered_headers,
+                content=bytes(chunks),
+            )
 
     response = await send(streaming_body)
     if "stream_options" in streaming_body and _stream_options_rejected(response):

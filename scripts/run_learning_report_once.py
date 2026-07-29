@@ -22,7 +22,10 @@ from app.services.tasks import execute_task_sync  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="为指定分析运行生成当前可答的创作学习问题，并等待本次任务完成。"
+        description=(
+            "为指定分析运行流式生成当前可答的创作学习问题；"
+            "持续接收分片，流结束后再完成 JSON 与证据校验。"
+        )
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument(

@@ -998,8 +998,11 @@ function FormalWorkbench({
                       {characterDesign.desire_conflicts.map((item, index) => (
                         <article key={`${item.event_id}-${index}`}>
                           <header><strong>第 {item.chapter_ordinal} 章</strong><span>表层目标与深层需要发生冲突</span></header>
-                          <dl><div><dt>表层欲望</dt><dd>{item.surface_desire}</dd></div><div><dt>深层欲望</dt><dd>{item.deep_desire}</dd></div><div><dt>实际选择</dt><dd>{item.choice}</dd></div><div><dt>弧光变化</dt><dd>{item.arc_change}</dd></div></dl>
-                          {evidenceButtons(item.evidence_ids, "查看冲突原文")}
+                          <dl><div><dt>表层欲望</dt><dd>{item.surface_desire}</dd></div><div><dt>深层欲望</dt><dd>{item.deep_desire}</dd></div><div><dt>现场动机原文</dt><dd>{item.motive}</dd></div><div><dt>实际选择原文</dt><dd>{item.choice}</dd></div><div><dt>现场结果原文</dt><dd>{item.result}</dd></div><div><dt>付出代价原文</dt><dd>{item.sacrifice}</dd></div><div><dt>弧光变化</dt><dd>{item.arc_change}</dd></div></dl>
+                          {evidenceButtons(item.motive_evidence_ids, "查看欲望与动机原文")}
+                          {evidenceButtons(item.choice_evidence_ids, "查看实际选择原文")}
+                          {evidenceButtons(item.result_evidence_ids, "查看现场结果原文")}
+                          {evidenceButtons(item.sacrifice_evidence_ids, "查看选择代价原文")}
                         </article>
                       ))}
                       {!characterDesign.desire_conflicts.length && <p className="result-empty">当前没有找到能由同一事件原文证明的双层欲望冲突节点，系统没有凑数。</p>}
@@ -1046,9 +1049,9 @@ function FormalWorkbench({
                             <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{item.phase_title || "未归入剧情阶段"}</span></div>
                             <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
                           </header>
-                          <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
+                          <h4>{item.hook_question || "本章没有形成具体未闭合问题"}</h4>
                           <p>{item.rationale}</p>
-                          {item.retention_basis && <small>无钩依据：{item.retention_basis}</small>}
+                          {item.retention_basis && <small>章末依据：{item.retention_basis}</small>}
                           <div className="chapter-hook-evidence-actions">
                             {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
                           </div>
@@ -1463,8 +1466,13 @@ function FormalWorkbench({
                           <strong>第 {item.chapter_ordinal} 章</strong>
                           <p>表层：{item.surface_desire}</p>
                           <p>深层：{item.deep_desire}</p>
-                          <p>选择与变化：{item.choice}；{item.arc_change}</p>
-                          {evidenceButtons(item.evidence_ids, "查看冲突原文")}
+                          <p>动机原文：{item.motive}</p>
+                          <p>选择与结果原文：{item.choice}；{item.result}</p>
+                          <p>代价与变化：{item.sacrifice}；{item.arc_change}</p>
+                          {evidenceButtons(item.motive_evidence_ids, "查看欲望与动机原文")}
+                          {evidenceButtons(item.choice_evidence_ids, "查看实际选择原文")}
+                          {evidenceButtons(item.result_evidence_ids, "查看现场结果原文")}
+                          {evidenceButtons(item.sacrifice_evidence_ids, "查看选择代价原文")}
                         </article>
                       ))}
                     </details>
@@ -1708,9 +1716,9 @@ function FormalWorkbench({
                               <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{item.phase_title || "未归入剧情阶段"}</span></div>
                               <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
                             </header>
-                            <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
+                            <h4>{item.hook_question || "本章没有形成具体未闭合问题"}</h4>
                             <p>{item.rationale}</p>
-                            {item.retention_basis && <small>追读依据：{item.retention_basis}</small>}
+                            {item.retention_basis && <small>章末依据：{item.retention_basis}</small>}
                             <div className="chapter-hook-evidence-actions">
                               {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
                             </div>
@@ -2769,7 +2777,7 @@ export default function ProductWorkbench() {
                                           <summary>
                                             <span>
                                               <strong>第 {callIndex + 1} 次 · {callLabel}</strong>
-                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}{call.finished_at ? ` · ${formatDuration(call.duration_seconds)}` : ""}{call.transport_mode === "STREAMING" ? " · 远程流式" : call.transport_mode === "LOCAL_FULL_RESPONSE" ? " · 本机整包" : ""}</small>
+                                              <small>{ANALYSIS_STAGE_STATUS_LABELS[call.status] ?? call.status}{call.attempt_no > 1 ? ` · 第 ${call.attempt_no} 次尝试` : ""}{call.finished_at ? ` · ${formatDuration(call.duration_seconds)}` : ""}{call.transport_mode === "STREAMING" ? " · 流式传输" : call.transport_mode === "LOCAL_FULL_RESPONSE" ? " · 本机整包" : ""}</small>
                                             </span>
                                             <span className="analysis-call-totals">
                                               <small>{call.prompt_tokens || call.input_chars ? `输入约 ${formatNumber(call.prompt_tokens)} 令牌 / ${formatNumber(call.input_chars)} 字符` : "输入规模未记录"}</small>

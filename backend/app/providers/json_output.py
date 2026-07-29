@@ -124,36 +124,44 @@ def parse_json_text(raw_text: str) -> ParsedJsonText:
 
 
 def _extract_complete_object(text: str) -> str | None:
-    start = text.find("{")
-    if start < 0:
-        return None
-    stack: list[str] = []
-    in_string = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char in "[{":
-            stack.append(char)
-        elif char in "]}":
-            if not stack:
-                return None
-            expected = "[" if char == "]" else "{"
-            if stack[-1] != expected:
-                return None
-            stack.pop()
-            if not stack:
-                return text[start : index + 1]
-    return None
+    cursor = 0
+    last_complete: str | None = None
+    while True:
+        start = text.find("{", cursor)
+        if start < 0:
+            return last_complete
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        end: int | None = None
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "[{":
+                stack.append(char)
+            elif char in "]}":
+                if not stack:
+                    break
+                expected = "[" if char == "]" else "{"
+                if stack[-1] != expected:
+                    break
+                stack.pop()
+                if not stack:
+                    end = index
+                    break
+        if end is None:
+            return last_complete
+        last_complete = text[start:end + 1]
+        cursor = end + 1
 
 
 def _remove_trailing_commas(text: str) -> str:

@@ -387,14 +387,14 @@ export default function SettingsPage() {
                       <div><span>测试状态</span><strong>{connectionLabel(selectedService)}</strong></div>
                       <div>
                         <span>传输方式</span>
-                        <strong>{isLoopbackServiceUrl(draft.base_url) ? "本机整包返回" : "远程流式传输"}</strong>
+                        <strong>{isLoopbackServiceUrl(draft.base_url) ? "本机按任务选择" : "流式传输"}</strong>
                       </div>
                       <small>{testTimeLabel(selectedService)}</small>
                       <p>
                         {selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}
                         {isLoopbackServiceUrl(draft.base_url)
-                          ? " 本机地址保持当前整包返回方式。"
-                          : " 远程地址会自动使用流式传输并在本机拼合完整结果。"}
+                          ? " 本机普通短任务可整包返回；长篇专项与学习答案强制流式传输。"
+                          : " 远程地址会自动使用流式传输，并在完整结束后校验结果。"}
                       </p>
                     </div>
                   )}

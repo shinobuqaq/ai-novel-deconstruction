@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
-from app.models import EvidenceSpan
+from app.models import EvidenceSpan, SourceUnit
 from app.services.opening_hook_payoffs import (
     OpeningHookPayoffsValidationError,
+    _chapter_response_records,
     _summary,
     _validate_window_output,
     _window_specs,
@@ -142,3 +144,53 @@ def test_program_summary_counts_response_states_and_distances() -> None:
     assert summary["unresolved_count"] == 1
     assert summary["average_response_distance_chapters"] == 3.5
     assert summary["maximum_response_distance_chapters"] == 5
+
+
+def test_response_material_uses_source_position_not_derived_index(client) -> None:
+    project = client.post("/api/projects", json={"name": "回应坐标测试"}).json()
+    source = (
+        "第一章 密信\n"
+        "林舟在半路发现一封信。\n"
+        "远处钟声响起，信封上的名字仍无人认识。\n"
+        "第二章 决定\n"
+        "林舟决定开始追查。"
+    )
+    imported = client.post(
+        f"/api/projects/{project['id']}/sources/import?filename=payoff-order.txt",
+        content=source.encode("utf-8"),
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        units = list(session.scalars(
+            select(SourceUnit)
+            .where(
+                SourceUnit.source_version_id == imported["version"]["id"],
+                SourceUnit.unit_type == "CHAPTER",
+            )
+            .order_by(SourceUnit.ordinal)
+        ))
+        middle = session.scalar(
+            select(EvidenceSpan).where(
+                EvidenceSpan.source_unit_id == units[0].id,
+                EvidenceSpan.text_snapshot == "林舟在半路发现一封信。",
+            )
+        )
+        assert middle is not None
+        middle.paragraph_index = 1_000_000 + middle.start_char
+        session.flush()
+
+        chapters, _evidence, _ignored = _chapter_response_records(
+            session,
+            units,
+            chapter_start=1,
+            chapter_end=1,
+        )
+
+    assert [item["text"] for item in chapters[0]["paragraphs"]] == [
+        "林舟在半路发现一封信。",
+        "远处钟声响起，信封上的名字仍无人认识。",
+    ]
+    assert [item["paragraph_index"] for item in chapters[0]["paragraphs"]] == [
+        1,
+        2,
+    ]

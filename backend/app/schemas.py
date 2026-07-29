@@ -825,10 +825,19 @@ class WorkbenchCharacterDesignFieldRead(BaseModel):
 class WorkbenchDesireConflictRead(BaseModel):
     chapter_ordinal: int
     event_id: str
+    surface_desire_stage: str = "INITIAL"
     surface_desire: str
     deep_desire: str
+    motive: str = ""
     choice: str
+    result: str = ""
+    sacrificed_desire: str = "SURFACE"
+    sacrifice: str = ""
     arc_change: str
+    motive_evidence_ids: list[str] = Field(default_factory=list)
+    choice_evidence_ids: list[str] = Field(default_factory=list)
+    result_evidence_ids: list[str] = Field(default_factory=list)
+    sacrifice_evidence_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str]
 
 

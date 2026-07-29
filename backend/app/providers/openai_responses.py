@@ -53,6 +53,8 @@ class OpenAIResponsesProvider:
     async def complete(self, *, task_kind: str, payload: dict[str, Any]) -> ProviderResponse:
         service, profile = self._configuration(payload)
         force_streaming = task_kind in {
+            "analysis.character_design_evidence",
+            "analysis.chapter_end_hooks",
             "analysis.learning_report",
             "analysis.opening_hook_payoffs",
         }

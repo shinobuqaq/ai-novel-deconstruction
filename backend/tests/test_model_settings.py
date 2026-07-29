@@ -14,6 +14,7 @@ from app.services.provider_config import (
     ModelService,
     ModelSettingsError,
     ModelProbeResult,
+    _stream_response_envelope,
     discover_models,
     model_service_uses_streaming,
     read_model_settings,
@@ -22,6 +23,15 @@ from app.services.provider_config import (
     snapshot_provider_routes,
     probe_selected_model,
 )
+
+
+class ChunkedAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
 
 
 def test_model_settings_api_keeps_secrets_local_and_supports_multiple_services(client) -> None:
@@ -290,15 +300,23 @@ def test_remote_compatible_service_streams_and_preserves_usage(client) -> None:
         assert body["stream"] is True
         assert body["stream_options"] == {"include_usage": True}
         assert request.headers["accept"] == "text/event-stream"
+        stream_body = (
+            'data: {"choices":[{"delta":{"content":"{\\"entities\\":[],"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"\\"events\\":[]}"}}]}\n\n'
+            'data: {"choices":[],"usage":{"prompt_tokens":52,"completion_tokens":8},'
+            '"note":"分片"}\n\n'
+            "data: [DONE]\n\n"
+        ).encode()
+        split_at = stream_body.index("分".encode()) + 1
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream; charset=utf-8"},
-            content=(
-                'data: {"choices":[{"delta":{"content":"{\\"entities\\":[],"}}]}\n\n'
-                'data: {"choices":[{"delta":{"content":"\\"events\\":[]}"}}]}\n\n'
-                'data: {"choices":[],"usage":{"prompt_tokens":52,"completion_tokens":8}}\n\n'
-                "data: [DONE]\n\n"
-            ).encode(),
+            stream=ChunkedAsyncByteStream([
+                stream_body[:23],
+                stream_body[23:split_at],
+                stream_body[split_at:split_at + 1],
+                stream_body[split_at + 1:],
+            ]),
         )
 
     provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
@@ -318,6 +336,110 @@ def test_remote_compatible_service_streams_and_preserves_usage(client) -> None:
     assert response.prompt_tokens == 52
     assert response.completion_tokens == 8
     assert response.parameters["transport_mode"] == "STREAMING"
+
+
+@pytest.mark.parametrize(
+    ("service_type", "raw_stream"),
+    [
+        (
+            "OPENAI_COMPATIBLE",
+            'data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\n',
+        ),
+        (
+            "OPENAI",
+            (
+                "event: response.output_text.delta\n"
+                'data: {"type":"response.output_text.delta",'
+                '"delta":"{\\"ok\\":true}"}\n\n'
+            ),
+        ),
+    ],
+)
+def test_stream_parser_rejects_eof_before_completion_signal(
+    service_type: str,
+    raw_stream: str,
+) -> None:
+    with pytest.raises(ValueError, match="完整结束标记前中断"):
+        _stream_response_envelope(raw_stream, service_type)
+
+
+def test_compatible_stream_accepts_finish_reason_without_done_marker() -> None:
+    envelope = _stream_response_envelope(
+        (
+            'data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},'
+            '"finish_reason":"stop"}]}\n\n'
+        ),
+        "OPENAI_COMPATIBLE",
+    )
+
+    assert envelope["choices"][0]["message"]["content"] == '{"ok":true}'
+
+
+def test_openai_stream_accepts_done_marker_without_completed_event() -> None:
+    envelope = _stream_response_envelope(
+        (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta",'
+            '"delta":"{\\"ok\\":true}"}\n\n'
+            "data: [DONE]\n\n"
+        ),
+        "OPENAI",
+    )
+
+    assert envelope["output"][0]["content"][0]["text"] == '{"ok":true}'
+
+
+@pytest.mark.parametrize(
+    ("service_type", "raw_stream"),
+    [
+        (
+            "OPENAI_COMPATIBLE",
+            (
+                'data: {"choices":[{"delta":{"content":"{\\"ok\\":"},'
+                '"finish_reason":"length"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        ),
+        (
+            "OPENAI_COMPATIBLE",
+            (
+                'data: {"choices":[{"delta":{"content":"{\\"ok\\":"},'
+                '"finish_reason":"content_filter"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        ),
+        (
+            "OPENAI_COMPATIBLE",
+            (
+                'data: {"choices":[{"delta":{"content":"{\\"ok\\":"},'
+                '"finish_reason":"tool_calls"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        ),
+        (
+            "OPENAI",
+            (
+                "event: response.incomplete\n"
+                'data: {"type":"response.incomplete",'
+                '"response":{"status":"incomplete"}}\n\n'
+            ),
+        ),
+        (
+            "OPENAI",
+            (
+                "event: response.failed\n"
+                'data: {"type":"response.failed",'
+                '"response":{"status":"failed"}}\n\n'
+            ),
+        ),
+    ],
+)
+def test_stream_parser_rejects_incomplete_completion(
+    service_type: str,
+    raw_stream: str,
+) -> None:
+    with pytest.raises(ValueError, match="未完整|未正常结束"):
+        _stream_response_envelope(raw_stream, service_type)
 
 
 def test_remote_stream_falls_back_when_include_usage_is_rejected(client) -> None:
@@ -487,7 +609,19 @@ def test_loopback_compatible_service_keeps_full_response_mode(client) -> None:
     assert response.parameters["transport_mode"] == "LOCAL_FULL_RESPONSE"
 
 
-def test_loopback_learning_report_uses_streaming_for_long_output(client) -> None:
+@pytest.mark.parametrize(
+    "task_kind",
+    [
+        "analysis.character_design_evidence",
+        "analysis.chapter_end_hooks",
+        "analysis.learning_report",
+        "analysis.opening_hook_payoffs",
+    ],
+)
+def test_loopback_long_form_analysis_uses_streaming(
+    client,
+    task_kind: str,
+) -> None:
     settings = client.app.state.settings
     service = save_model_service(
         settings,
@@ -529,7 +663,7 @@ def test_loopback_learning_report_uses_streaming_for_long_output(client) -> None
     provider = OpenAIResponsesProvider(settings, transport=httpx.MockTransport(handler))
     response = asyncio.run(
         provider.complete(
-            task_kind="analysis.learning_report",
+            task_kind=task_kind,
             payload={
                 "model_profile_id": ENTITIES_EVENTS_PROFILE_ID,
                 "instructions": "只返回 JSON",
@@ -582,7 +716,6 @@ def test_remote_openai_responses_service_streams(client) -> None:
                 'data: {"type":"response.output_text.delta","delta":"\\"events\\":[]}"}\n\n'
                 'event: response.completed\n'
                 'data: {"type":"response.completed","response":{"usage":{"input_tokens":31,"output_tokens":9}}}\n\n'
-                "data: [DONE]\n\n"
             ).encode(),
         )
 

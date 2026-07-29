@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,12 +36,14 @@ from .provider_config import (
 CHAPTER_END_HOOKS_TASK_KIND = "analysis.chapter_end_hooks"
 CHAPTER_END_HOOKS_QUESTION_ID = "4.9"
 CHAPTER_END_HOOKS_PROMPT_ID = "chapter_end_hooks"
-CHAPTER_END_HOOKS_PROMPT_VERSION = "2.0.0"
+CHAPTER_END_HOOKS_PROMPT_VERSION = "2.4.0"
 CHAPTER_END_HOOK_TARGET_INPUT_TOKENS = 24_000
 CHAPTER_END_HOOK_SOFT_INPUT_TOKENS = 32_000
 CHAPTER_END_HOOK_ESTIMATED_CHARS_PER_TOKEN = 2
 CHAPTER_END_HOOK_WINDOW_OVERHEAD_CHARS = 12_000
 CHAPTER_END_HOOK_MAX_WINDOW_CHAPTERS = 80
+CHAPTER_END_HOOK_CONTEXT_SPAN_LIMIT = 5
+CHAPTER_END_HOOK_CONTEXT_CHAR_LIMIT = 2_400
 
 HOOK_TYPES = (
     "CRISIS_SUSPENSION",
@@ -54,11 +57,13 @@ HOOK_TYPES = (
 _TRAILING_BOILERPLATE = re.compile(
     r"(?:https?://|www\.|\.com\b|\.net\b|"
     r"更多精彩|更多好书|请看小说网|txt\d*\.com|"
-    r"声明[：:]?本书|本站只提供|用户上传|免费下载服务|版权.*无任何关系)",
+    r"声明[：:]?本书|本站只提供|用户上传|免费下载服务|版权.*无任何关系|"
+    r"^\s*(?:"
+    r"[【\[\(（]?\s*(?:THE\s+)?END\s*[】\]\)）]?|"
+    r"[【\[\(（]?\s*(?:全文|全书)?完(?:结)?\s*[】\]\)）]?"
+    r")\s*[。.!！]?\s*$)",
     re.IGNORECASE,
 )
-
-
 class ChapterEndHookProposal(BaseModel):
     chapter_ordinal: int = Field(ge=1)
     ending_evidence_id: str = Field(min_length=1, max_length=64)
@@ -84,13 +89,13 @@ class ChapterEndHookProposal(BaseModel):
             if self.strength != "NONE":
                 raise ValueError("无钩章节的强度必须为 NONE")
             if self.hook_question.strip():
-                raise ValueError("无钩章节不能虚构追读问题")
+                raise ValueError("无钩章节不能虚构未闭合问题")
             if not self.retention_basis.strip():
-                raise ValueError("无钩章节必须说明靠什么维持阅读或为何属于非叙事内容")
+                raise ValueError("无钩章节必须说明章末如何收束或为何属于非叙事内容")
         elif self.strength == "NONE":
             raise ValueError("有钩章节必须标注实际强度")
         elif not self.hook_question.strip():
-            raise ValueError("有钩章节必须写出章末形成的具体追读问题")
+            raise ValueError("有钩章节必须写出章末形成的具体未闭合问题")
         if self.response_evidence_id or self.response_summary.strip():
             raise ValueError("4.9 不追踪逐章回应，不能挂接回应证据")
         return self
@@ -108,6 +113,15 @@ class ChapterEndHooksValidationError(ValueError):
         super().__init__(code)
         self.code = code
         self.errors = errors
+
+
+@dataclass(frozen=True)
+class ChapterEndHooksReconciliation:
+    output: ChapterEndHooksOutput | None
+    accepted_chapters: list[dict[str, object]]
+    accepted_attempt_ids: dict[str, str]
+    repair_chapter_ordinals: list[int]
+    errors: list[dict[str, object]]
 
 
 def _validation_errors(exc: ValidationError) -> list[dict[str, object]]:
@@ -238,7 +252,11 @@ def _ending_evidence_catalog(
         spans = list(session.scalars(
             select(EvidenceSpan)
             .where(EvidenceSpan.source_unit_id == unit.id)
-            .order_by(EvidenceSpan.paragraph_index, EvidenceSpan.start_char)
+            .order_by(
+                EvidenceSpan.end_char,
+                EvidenceSpan.start_char.desc(),
+                EvidenceSpan.paragraph_index,
+            )
         ))
         body_spans = [span for span in spans if not _is_heading(span, unit)] or spans
         effective = next(
@@ -255,15 +273,204 @@ def _ending_evidence_catalog(
         ignored_total += ignored
         by_chapter[chapter_ordinal] = effective
         text = effective.text_snapshot
+        effective_index = body_spans.index(effective)
+        context_spans = [
+            span
+            for span in body_spans[:effective_index + 1]
+            if not _is_boilerplate(span)
+        ][-CHAPTER_END_HOOK_CONTEXT_SPAN_LIMIT:]
+        ending_context = "\n".join(
+            span.text_snapshot.strip()
+            for span in context_spans
+            if span.text_snapshot.strip()
+        )[-CHAPTER_END_HOOK_CONTEXT_CHAR_LIMIT:]
         selected.append({
             "chapter_ordinal": chapter_ordinal,
             "chapter_title": unit.title,
             "ending_evidence_id": effective.id,
             "ending_text": text[-1600:],
             "ending_text_truncated": len(text) > 1600,
+            "ending_context": ending_context,
+            "ending_context_evidence_ids": [
+                span.id for span in context_spans
+            ],
             "ignored_trailing_boilerplate_count": ignored,
         })
     return selected, by_chapter, ignored_total
+
+
+def reconcile_chapter_end_hooks_response(
+    session: Session,
+    *,
+    task_payload: dict,
+    value: dict,
+    attempt_id: str,
+) -> ChapterEndHooksReconciliation:
+    run = session.get(AnalysisRun, task_payload.get("run_id"))
+    version = session.get(SourceVersion, task_payload.get("source_version_id"))
+    if run is None or version is None:
+        raise ValueError("ANALYSIS_RUN_NOT_FOUND")
+    projection = _base_projection(session, run.id)
+    units = _chapter_units(session, version.id)
+    fingerprint = chapter_end_hooks_source_fingerprint(projection, units)
+    if fingerprint != task_payload.get("source_fingerprint"):
+        raise ValueError("CHAPTER_END_HOOKS_SOURCE_OUTDATED")
+
+    chapter_start = int(task_payload.get("chapter_start") or 0)
+    chapter_end = int(task_payload.get("chapter_end") or 0)
+    if (
+        chapter_start < 1
+        or chapter_end < chapter_start
+        or chapter_end > len(units)
+    ):
+        raise ValueError("CHAPTER_END_HOOKS_WINDOW_INVALID")
+    original_ordinals = list(range(chapter_start, chapter_end + 1))
+    _records, ending_by_chapter, _ignored = _ending_evidence_catalog(
+        session,
+        units,
+        [ordinal - 1 for ordinal in original_ordinals],
+    )
+
+    accepted: dict[int, ChapterEndHookProposal] = {}
+    accepted_attempt_ids = {
+        str(key): str(item)
+        for key, item in (
+            task_payload.get("accepted_chapter_attempt_ids") or {}
+        ).items()
+        if str(key).isdigit() and item
+    }
+    errors: list[dict[str, object]] = []
+
+    for index, raw in enumerate(
+        task_payload.get("accepted_chapter_proposals") or []
+    ):
+        try:
+            proposal = ChapterEndHookProposal.model_validate(raw)
+        except ValidationError:
+            continue
+        ordinal = proposal.chapter_ordinal
+        ending = ending_by_chapter.get(ordinal)
+        if (
+            ending is not None
+            and proposal.ending_evidence_id == ending.id
+            and ordinal not in accepted
+        ):
+            accepted[ordinal] = proposal
+        else:
+            accepted_attempt_ids.pop(str(ordinal), None)
+
+    requested_raw = task_payload.get("repair_chapter_ordinals")
+    if requested_raw:
+        requested_ordinals = sorted({
+            int(item)
+            for item in requested_raw
+            if str(item).isdigit()
+            and int(item) in original_ordinals
+            and int(item) not in accepted
+        })
+    else:
+        requested_ordinals = [
+            ordinal for ordinal in original_ordinals
+            if ordinal not in accepted
+        ]
+
+    raw_chapters = value.get("chapters")
+    if not isinstance(raw_chapters, list):
+        errors.append({
+            "path": ["chapters"],
+            "type": "missing",
+            "message": "本次返回没有可识别的章节列表",
+        })
+        raw_chapters = []
+
+    raw_by_ordinal: dict[int, list[tuple[int, object]]] = defaultdict(list)
+    for index, raw in enumerate(raw_chapters):
+        if not isinstance(raw, dict):
+            errors.append({
+                "path": ["chapters", str(index)],
+                "type": "model_type",
+                "message": "章节结果必须是对象",
+            })
+            continue
+        ordinal = raw.get("chapter_ordinal")
+        if not isinstance(ordinal, int):
+            errors.append({
+                "path": ["chapters", str(index), "chapter_ordinal"],
+                "type": "int_type",
+                "message": "章节序号必须是整数",
+            })
+            continue
+        raw_by_ordinal[ordinal].append((index, raw))
+
+    for ordinal in requested_ordinals:
+        candidates = raw_by_ordinal.get(ordinal, [])
+        if len(candidates) != 1:
+            errors.append({
+                "path": ["chapters", str(ordinal)],
+                "type": "missing" if not candidates else "duplicated",
+                "message": (
+                    "本次没有返回该章节"
+                    if not candidates
+                    else "本次重复返回了该章节"
+                ),
+            })
+            continue
+        index, raw = candidates[0]
+        try:
+            proposal = ChapterEndHookProposal.model_validate(raw)
+        except ValidationError as exc:
+            errors.extend({
+                "path": [
+                    "chapters",
+                    str(index),
+                    *[str(part) for part in item.get("loc", ())],
+                ],
+                "type": str(item.get("type") or "value_error"),
+                "message": str(item.get("msg") or "字段无效"),
+            } for item in exc.errors())
+            continue
+        expected_ending = ending_by_chapter[ordinal]
+        if proposal.ending_evidence_id != expected_ending.id:
+            errors.append({
+                "path": ["chapters", str(index), "ending_evidence_id"],
+                "type": "value_error",
+                "message": "章末证据编号与该章真实章末不一致",
+            })
+            continue
+        accepted[ordinal] = proposal
+        accepted_attempt_ids[str(ordinal)] = attempt_id
+
+    for ordinal, candidates in raw_by_ordinal.items():
+        if ordinal not in requested_ordinals:
+            errors.append({
+                "path": ["chapters", str(candidates[0][0]), "chapter_ordinal"],
+                "type": "unexpected",
+                "message": "本次返回了未请求的章节，程序已忽略",
+            })
+
+    repair_ordinals = [
+        ordinal for ordinal in original_ordinals
+        if ordinal not in accepted
+    ]
+    accepted_chapters = [
+        accepted[ordinal].model_dump(mode="json")
+        for ordinal in original_ordinals
+        if ordinal in accepted
+    ]
+    output = (
+        ChapterEndHooksOutput(
+            chapters=[accepted[ordinal] for ordinal in original_ordinals]
+        )
+        if not repair_ordinals
+        else None
+    )
+    return ChapterEndHooksReconciliation(
+        output=output,
+        accepted_chapters=accepted_chapters,
+        accepted_attempt_ids=accepted_attempt_ids,
+        repair_chapter_ordinals=repair_ordinals,
+        errors=errors,
+    )
 
 
 def _window_specs(
@@ -370,7 +577,27 @@ def provider_payload_for_chapter_end_hooks(
         or chapter_end > len(units)
     ):
         raise ValueError("CHAPTER_END_HOOKS_WINDOW_INVALID")
-    window_indexes = list(range(chapter_start - 1, chapter_end))
+    original_ordinals = list(range(chapter_start, chapter_end + 1))
+    accepted_ordinals = {
+        int(item.get("chapter_ordinal") or 0)
+        for item in task_payload.get("accepted_chapter_proposals") or []
+        if isinstance(item, dict)
+    }
+    requested_raw = task_payload.get("repair_chapter_ordinals")
+    repair_mode = isinstance(requested_raw, list)
+    if repair_mode:
+        requested_ordinals = sorted({
+            int(item)
+            for item in requested_raw
+            if str(item).isdigit()
+            and int(item) in original_ordinals
+            and int(item) not in accepted_ordinals
+        })
+    else:
+        requested_ordinals = original_ordinals
+    if not requested_ordinals:
+        raise ValueError("CHAPTER_END_HOOKS_REPAIR_WINDOW_EMPTY")
+    window_indexes = [ordinal - 1 for ordinal in requested_ordinals]
     endings, _ending_by_chapter, ignored_total = _ending_evidence_catalog(
         session, units, window_indexes
     )
@@ -378,39 +605,32 @@ def provider_payload_for_chapter_end_hooks(
         "question_id": CHAPTER_END_HOOKS_QUESTION_ID,
         "contract": {
             "types": list(HOOK_TYPES),
-            "measurement": "逐章类型、强弱、追读问题和无钩维持依据；全书统计由程序在全部连续窗口完成后合并",
+            "measurement": "逐章类型、强弱、未闭合问题和章末收束依据；全书统计由程序在全部连续窗口完成后合并",
             "evidence": "每章只能使用程序指定的真实章末原文；4.9 不判断后续回应",
-            "scope": "正式模式按连续窗口覆盖全书全部章节，本请求只负责一个连续窗口",
+            "scope": (
+                "本请求只修复原窗口中未通过客观校验的章节；"
+                "已接受章节由程序保留，不得重复返回"
+                if repair_mode
+                else "正式模式按连续窗口覆盖全书全部章节，本请求只负责一个连续窗口"
+            ),
         },
         "source_chapter_count": len(units),
-        "coverage_policy": "ALL_CHAPTERS_WINDOWED",
+        "coverage_policy": (
+            "REPAIR_FAILED_CHAPTERS_ONLY"
+            if repair_mode
+            else "ALL_CHAPTERS_WINDOWED"
+        ),
         "window": {
             "group_id": task_payload.get("window_group_id"),
             "index": task_payload.get("window_index"),
             "count": task_payload.get("window_count"),
             "chapter_start": chapter_start,
             "chapter_end": chapter_end,
+            "repair_mode": repair_mode,
+            "requested_chapter_ordinals": requested_ordinals,
+            "accepted_chapter_count": len(accepted_ordinals),
         },
         "chapter_endings": endings,
-        "narrative_phases": [
-            {
-                key: phase.get(key)
-                for key in (
-                    "id",
-                    "title",
-                    "chapter_ordinals",
-                    "situation",
-                    "goal",
-                    "outcome",
-                    "change",
-                )
-            }
-            for phase in projection.get("phases", [])
-            if any(
-                chapter_start <= int(ordinal) <= chapter_end
-                for ordinal in phase.get("chapter_ordinals", [])
-            )
-        ],
     }
     request_budget = _request_budget(profile)
     input_budget = int(request_budget["input_char_budget"])
@@ -438,7 +658,11 @@ def provider_payload_for_chapter_end_hooks(
             "window_count": task_payload.get("window_count"),
             "chapter_start": chapter_start,
             "chapter_end": chapter_end,
-            "window_chapter_count": len(endings),
+            "window_chapter_count": len(original_ordinals),
+            "requested_chapter_count": len(endings),
+            "requested_chapter_ordinals": requested_ordinals,
+            "accepted_chapter_count": len(accepted_ordinals),
+            "repair_mode": repair_mode,
             "coverage_policy": input_payload["coverage_policy"],
             "ending_evidence_count": len(endings),
             "ignored_trailing_boilerplate_count": ignored_total,
@@ -705,6 +929,13 @@ def persist_chapter_end_hooks(
     _raise_for_references(output, ending_by_chapter)
 
     chapters: list[dict[str, object]] = []
+    accepted_attempt_ids = {
+        str(key): str(value)
+        for key, value in (
+            task_payload.get("accepted_chapter_attempt_ids") or {}
+        ).items()
+        if value
+    }
     for proposal in sorted(output.chapters, key=lambda item: item.chapter_ordinal):
         item = proposal.model_dump(mode="json")
         phase = _phase_for_chapter(projection, proposal.chapter_ordinal)
@@ -716,6 +947,10 @@ def persist_chapter_end_hooks(
             "response_distance": None,
             "phase_id": phase.get("id") if phase else None,
             "phase_title": phase.get("title") if phase else None,
+            "created_by_attempt_id": accepted_attempt_ids.get(
+                str(proposal.chapter_ordinal),
+                attempt_id,
+            ),
         })
         chapters.append(item)
 

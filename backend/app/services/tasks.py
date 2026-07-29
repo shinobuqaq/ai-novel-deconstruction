@@ -55,17 +55,15 @@ from .learning_report import (
 )
 from .character_design import (
     CHARACTER_DESIGN_TASK_KIND,
-    CharacterDesignValidationError,
-    parse_character_design_evidence,
     persist_character_design_evidence,
     provider_payload_for_character_design,
+    reconcile_character_design_response,
 )
 from .chapter_end_hooks import (
     CHAPTER_END_HOOKS_TASK_KIND,
-    ChapterEndHooksValidationError,
-    parse_chapter_end_hooks,
     persist_chapter_end_hooks,
     provider_payload_for_chapter_end_hooks,
+    reconcile_chapter_end_hooks_response,
 )
 from .opening_hook_payoffs import (
     OPENING_HOOK_PAYOFFS_TASK_KIND,
@@ -197,6 +195,27 @@ def _narrative_consistency_message(reason_code: str) -> str:
     if reason_code.startswith("NARRATIVE_INTERNAL_ID_LEAK"):
         return "在线 AI 把系统内部证据编号写进了给用户阅读的正文。系统已拒绝保存这份结果，并会自动重试。"
     return "在线 AI 返回的故事结构引用了不存在的人物、事件或原文证据。系统会自动重试。"
+
+
+def _character_design_consistency_message(reason_code: str) -> str:
+    messages = {
+        "CHARACTER_DESIGN_SOURCE_OUTDATED": (
+            "生成期间人物或拆解结果已经更新，请基于最新结果重新生成。"
+        ),
+        "CHARACTER_DESIGN_FIELD_VALUE_NOT_CONTIGUOUS": (
+            "主角证据表把多段原文拼成了一个摘录，或改写了原文。"
+            "系统已拒绝保存，并会自动重试。"
+        ),
+        "CHARACTER_DESIGN_FIRST_DISPLAY_NOT_EARLIEST": (
+            "主角要素选择的不是全书事件顺序中最早的合格展示。"
+            "系统已拒绝保存，并会自动重试。"
+        ),
+    }
+    return messages.get(
+        reason_code,
+        "主角证据表引用的事件、章节或原文对应不上。"
+        "系统已拒绝保存，并会自动重试。",
+    )
 
 
 def _attempt_diagnostics(
@@ -757,25 +776,6 @@ async def execute_task(
                     raw_text=response.raw_text,
                 ) from exc
     elif claim.kind == CHARACTER_DESIGN_TASK_KIND:
-        try:
-            character_design_output = parse_character_design_evidence(response.parsed)
-        except CharacterDesignValidationError as exc:
-            raise ProviderError(
-                code="PROVIDER_INVALID_OUTPUT",
-                message=_validation_message("主角双层欲望与最小完整集证据表", exc.errors),
-                retryable=True,
-                diagnostics=_attempt_diagnostics(
-                    provider_payload,
-                    response,
-                    phase="schema_validation",
-                    validation_errors=exc.errors,
-                ),
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
-                provider_name=response.provider_id or provider.name,
-                model=response.model,
-                raw_text=response.raw_text,
-            ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
                 acknowledge_task_cancellation(session, claim=claim)
@@ -784,22 +784,96 @@ async def execute_task(
             if task is None:
                 raise ValueError("TASK_NOT_FOUND")
             try:
+                reconciliation = reconcile_character_design_response(
+                    session,
+                    task_payload=payload,
+                    value=response.parsed,
+                    attempt_id=claim.current_attempt_id,
+                )
+                if reconciliation.output is None:
+                    diagnostics = _attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="partial_reference_validation",
+                        validation_errors=reconciliation.errors,
+                    )
+                    diagnostics["partial_acceptance"] = {
+                        "accepted_field_count": len(
+                            reconciliation.accepted_fields
+                        ),
+                        "accepted_desire_conflicts": (
+                            reconciliation.desire_conflicts_accepted
+                        ),
+                        "repair_component_count": len(
+                            reconciliation.repair_components
+                        ),
+                    }
+                    diagnostics["_task_payload_patch"] = {
+                        "accepted_character_fields": (
+                            reconciliation.accepted_fields
+                        ),
+                        "accepted_character_field_attempt_ids": (
+                            reconciliation.accepted_field_attempt_ids
+                        ),
+                        "accepted_desire_conflicts": (
+                            reconciliation.accepted_desire_conflicts
+                        ),
+                        "accepted_desire_conflicts_attempt_id": (
+                            reconciliation.accepted_desire_conflicts_attempt_id
+                        ),
+                        "desire_conflicts_accepted": (
+                            reconciliation.desire_conflicts_accepted
+                        ),
+                        "pending_desire_conflicts": (
+                            reconciliation.pending_desire_conflicts
+                        ),
+                        "pending_desire_conflicts_attempt_id": (
+                            reconciliation.pending_desire_conflicts_attempt_id
+                        ),
+                        "repair_character_components": (
+                            reconciliation.repair_components
+                        ),
+                    }
+                    raise ProviderError(
+                        code="PROVIDER_INVALID_OUTPUT",
+                        message=(
+                            "主角证据表已保留 "
+                            f"{len(reconciliation.accepted_fields)}/6 "
+                            "个通过客观校验的字段；"
+                            f"只重试 {len(reconciliation.repair_components)} "
+                            "个未通过部分。"
+                        ),
+                        retryable=True,
+                        diagnostics=diagnostics,
+                        prompt_tokens=response.prompt_tokens,
+                        completion_tokens=response.completion_tokens,
+                        provider_name=response.provider_id or provider.name,
+                        model=response.model,
+                        raw_text=response.raw_text,
+                    )
+                effective_payload = {
+                    **payload,
+                    "accepted_character_field_attempt_ids": (
+                        reconciliation.accepted_field_attempt_ids
+                    ),
+                    "accepted_desire_conflicts_attempt_id": (
+                        reconciliation.accepted_desire_conflicts_attempt_id
+                    ),
+                }
                 persisted_character_design = persist_character_design_evidence(
                     session,
                     task=task,
                     attempt_id=claim.current_attempt_id,
-                    task_payload=payload,
-                    output=character_design_output,
+                    task_payload=effective_payload,
+                    output=reconciliation.output,
                 )
+            except ProviderError:
+                raise
             except ValueError as exc:
                 reason_code = str(exc)
                 raise ProviderError(
                     code="PROVIDER_INVALID_OUTPUT",
-                    message=(
-                        "主角证据表引用的事件、章节或原文对应不上，请重新生成。"
-                        if reason_code != "CHARACTER_DESIGN_SOURCE_OUTDATED"
-                        else "生成期间人物或拆解结果已经更新，请基于最新结果重新生成。"
-                    ),
+                    message=_character_design_consistency_message(reason_code),
                     retryable=reason_code != "CHARACTER_DESIGN_SOURCE_OUTDATED",
                     diagnostics=_attempt_diagnostics(
                         provider_payload,
@@ -814,25 +888,6 @@ async def execute_task(
                     raw_text=response.raw_text,
                 ) from exc
     elif claim.kind == CHAPTER_END_HOOKS_TASK_KIND:
-        try:
-            chapter_end_hooks_output = parse_chapter_end_hooks(response.parsed)
-        except ChapterEndHooksValidationError as exc:
-            raise ProviderError(
-                code="PROVIDER_INVALID_OUTPUT",
-                message=_validation_message("逐章章末钩类型与节律账本", exc.errors),
-                retryable=True,
-                diagnostics=_attempt_diagnostics(
-                    provider_payload,
-                    response,
-                    phase="schema_validation",
-                    validation_errors=exc.errors,
-                ),
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
-                provider_name=response.provider_id or provider.name,
-                model=response.model,
-                raw_text=response.raw_text,
-            ) from exc
         with session_factory() as session:
             if not task_claim_is_current(session, claim=claim):
                 acknowledge_task_cancellation(session, claim=claim)
@@ -841,13 +896,71 @@ async def execute_task(
             if task is None:
                 raise ValueError("TASK_NOT_FOUND")
             try:
+                reconciliation = reconcile_chapter_end_hooks_response(
+                    session,
+                    task_payload=payload,
+                    value=response.parsed,
+                    attempt_id=claim.current_attempt_id,
+                )
+                if reconciliation.output is None:
+                    diagnostics = _attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="partial_reference_validation",
+                        validation_errors=reconciliation.errors,
+                    )
+                    diagnostics["partial_acceptance"] = {
+                        "accepted_chapter_count": len(
+                            reconciliation.accepted_chapters
+                        ),
+                        "repair_chapter_count": len(
+                            reconciliation.repair_chapter_ordinals
+                        ),
+                    }
+                    diagnostics["_task_payload_patch"] = {
+                        "accepted_chapter_proposals": (
+                            reconciliation.accepted_chapters
+                        ),
+                        "accepted_chapter_attempt_ids": (
+                            reconciliation.accepted_attempt_ids
+                        ),
+                        "repair_chapter_ordinals": (
+                            reconciliation.repair_chapter_ordinals
+                        ),
+                    }
+                    raise ProviderError(
+                        code="PROVIDER_INVALID_OUTPUT",
+                        message=(
+                            "章末钩账本已保留 "
+                            f"{len(reconciliation.accepted_chapters)} "
+                            "个通过客观校验的章节；"
+                            "只重试 "
+                            f"{len(reconciliation.repair_chapter_ordinals)} "
+                            "个错误章节。"
+                        ),
+                        retryable=True,
+                        diagnostics=diagnostics,
+                        prompt_tokens=response.prompt_tokens,
+                        completion_tokens=response.completion_tokens,
+                        provider_name=response.provider_id or provider.name,
+                        model=response.model,
+                        raw_text=response.raw_text,
+                    )
+                effective_payload = {
+                    **payload,
+                    "accepted_chapter_attempt_ids": (
+                        reconciliation.accepted_attempt_ids
+                    ),
+                }
                 persisted_chapter_end_hooks = persist_chapter_end_hooks(
                     session,
                     task=task,
                     attempt_id=claim.current_attempt_id,
-                    task_payload=payload,
-                    output=chapter_end_hooks_output,
+                    task_payload=effective_payload,
+                    output=reconciliation.output,
                 )
+            except ProviderError:
+                raise
             except ValueError as exc:
                 reason_code = str(exc)
                 raise ProviderError(
@@ -943,6 +1056,7 @@ async def execute_task(
                 expected_question_ids=[
                     str(question_id) for question_id in payload.get("question_ids", [])
                 ],
+                defer_user_text_checks_for={"2.2", "4.9"},
             )
         except LearningReportValidationError as exc:
             raise ProviderError(
@@ -971,6 +1085,7 @@ async def execute_task(
             try:
                 persisted_learning_report = persist_learning_report(
                     session,
+                    settings=settings,
                     task=task,
                     attempt_id=claim.current_attempt_id,
                     task_payload=payload,
@@ -986,7 +1101,17 @@ async def execute_task(
                         "LEARNING_REPORT_ANSWER_EVIDENCE_MISSING",
                         "LEARNING_REPORT_METRIC_MISSING",
                         "LEARNING_REPORT_PARTIAL_SCOPE_VIOLATION",
+                        "LEARNING_REPORT_COMPLETE_SCOPE_VIOLATION",
                     }
+                    else (
+                        "创作学习答案的合同项目、客观数字或原文对应"
+                        "没有通过专项账本校验，请按输入证据重新生成。"
+                    )
+                    if reason_code.startswith((
+                        "LEARNING_REPORT_1_4_",
+                        "LEARNING_REPORT_2_2_",
+                        "LEARNING_REPORT_4_9_",
+                    ))
                     else "报告生成期间深层拆解已经更新，请基于最新结果重新生成。"
                 )
                 raise ProviderError(
@@ -1200,7 +1325,13 @@ def execute_task_sync(
             error_code = exc.code
             retryable = exc.retryable
             retry_after_seconds = exc.retry_after_seconds
-            failure_diagnostics = exc.diagnostics
+            failure_diagnostics = dict(exc.diagnostics)
+            task_payload_patch = failure_diagnostics.pop(
+                "_task_payload_patch",
+                None,
+            )
+            if isinstance(task_payload_patch, dict):
+                task_payload.update(task_payload_patch)
             failure_usage = {
                 "prompt_tokens": exc.prompt_tokens,
                 "completion_tokens": exc.completion_tokens,

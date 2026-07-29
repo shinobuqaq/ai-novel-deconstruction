@@ -64,11 +64,23 @@ ANALYSIS_OUTPUT = {
             "narrative_mode": "ACTUAL",
             "location": "旧宅",
             "trigger": "林舟回到旧宅并进入房间。",
-            "process": "林舟看见桌上放着一封写有自己名字的密信。",
+            "process": (
+                "林舟看见桌上放着一封写有自己名字的密信。他想尽快找到寄信人，"
+                "弄清来意并掌握自己的处境；虽然警惕未知风险，确认线索后仍决定"
+                "主动追查，没有证据时不把猜测当成事实，并从密信线索中确定"
+                "下一步行动。"
+            ),
             "outcome": "林舟确认有人专门给自己留下了密信。",
             "impact": "林舟决定追查寄信人的身份和目的。",
             "discovery_routes": ["INFORMATION_CHANGE"],
-            "evidence_quotes": ["桌上放着一封写着他名字的密信"],
+            "evidence_quotes": [
+                (
+                    "桌上放着一封写着他名字的密信。林舟想尽快找到寄信人，"
+                    "弄清来意并掌握自己的处境；虽然警惕未知风险，确认线索后"
+                    "仍决定主动追查，没有证据时不把猜测当成事实，并从密信"
+                    "线索中确定下一步行动。"
+                )
+            ],
             "confidence": 94,
         }
     ],
@@ -272,16 +284,35 @@ class StaticAnalysisProvider:
             }
         elif task_kind == "analysis.character_design_evidence":
             character_input = json.loads(payload["input"])
+            assert set(character_input["protagonist"]) == {
+                "id",
+                "name",
+                "aliases",
+            }
+            assert "narrative_phases" not in character_input
+            assert [
+                event["sequence_no"]
+                for event in character_input["protagonist_events"]
+            ] == list(range(
+                1,
+                len(character_input["protagonist_events"]) + 1,
+            ))
             event = character_input["protagonist_events"][0]
             evidence_id = event["evidence_ids"][0]
             chapter_ordinal = event["chapter_ordinals"][0]
             field_values = {
-                "surface_desire": "找到密信的寄信人并弄清来意。",
-                "deep_desire": "不再被动等待别人决定自己的处境。",
-                "motivation": "密信明确写着自己的名字，无法把风险交给别人处理。",
-                "contrast": "面对未知会警惕，但确认线索后会主动追查。",
-                "boundary": "没有可靠证据前不把猜测当成事实。",
-                "core_ability": "从具体线索中确定下一步可执行行动。",
+                "surface_desire": "尽快找到寄信人，弄清来意。",
+                "deep_desire": (
+                    "林舟想尽快找到寄信人，"
+                    "弄清来意并掌握自己的处境。"
+                ),
+                "motivation": "林舟想尽快找到寄信人，弄清来意。",
+                "contrast": (
+                    "虽然警惕未知风险，"
+                    "确认线索后仍决定主动追查"
+                ),
+                "boundary": "没有证据时不把猜测当成事实。",
+                "core_ability": "从密信线索中确定下一步行动。",
             }
             output = {
                 "protagonist": character_input["protagonist"]["name"],
@@ -292,25 +323,18 @@ class StaticAnalysisProvider:
                         "value": value,
                         "first_display_chapter_ordinal": chapter_ordinal,
                         "first_display_event_id": event["id"],
-                        "display_event": "林舟发现写着自己名字的密信后，决定天亮主动寻找寄信人。",
+                        "display_event": "林舟发现写着自己名字的密信后，确认线索并决定主动追查。",
                         "evidence_ids": [evidence_id],
                         "explanation": "这一决定通过可核查行动展示了人物要素，而不是只依赖人物简介。",
                     }
                     for field, value in field_values.items()
                 ],
-                "desire_conflicts": [{
-                    "chapter_ordinal": chapter_ordinal,
-                    "event_id": event["id"],
-                    "surface_desire": "尽快找到寄信人。",
-                    "deep_desire": "掌握自己的处境，不再被动等待。",
-                    "choice": "林舟决定天亮后主动追查。",
-                    "arc_change": "从被动发现线索转为主动承担追查。",
-                    "evidence_ids": [evidence_id],
-                }],
+                "desire_conflicts": [],
                 "arc_summary": "林舟由被动回到旧宅，转为主动追查密信来源；短篇样本只能证明这一阶段变化。",
             }
         elif task_kind == "analysis.chapter_end_hooks":
             hook_input = json.loads(payload["input"])
+            assert "narrative_phases" not in hook_input
             output = {
                 "chapters": [
                     {
@@ -321,9 +345,9 @@ class StaticAnalysisProvider:
                         "hook_question": "寄信人是谁？" if ending["chapter_ordinal"] == 1 else "",
                         "rationale": "密信在章末抛出新的身份问题。" if ending["chapter_ordinal"] == 1 else "主角作出决定后完整收束。",
                         "retention_basis": (
-                            "具体身份缺口会推动读者继续追查。"
+                            "章末留下寄信人的身份缺口。"
                             if ending["chapter_ordinal"] == 1
-                            else "依靠已经建立的追查主线维持阅读。"
+                            else "本章完成行动结算，没有新增未闭合问题。"
                         ),
                         "response_status": "NOT_APPLICABLE",
                         "response_evidence_id": None,
@@ -343,30 +367,172 @@ class StaticAnalysisProvider:
             answers = []
             for question in report_input["question_catalog"]:
                 question_id = question["question_id"]
-                insufficient = question_id == "4.9"
                 answer = {
                     "question_id": question_id,
-                    "status": "INSUFFICIENT_EVIDENCE" if insufficient else "PARTIAL",
-                    "conclusion": (
-                        "现有材料没有逐章章末结尾证据，不能把阶段悬念当成章末钩统计。"
-                        if insufficient
-                        else f"样本只足以部分回答北极星问题 {question_id}。"
+                    "status": (
+                        "ANSWERED"
+                        if question["answer_scope"] == "COMPLETE"
+                        else "PARTIAL"
                     ),
-                    "metrics": [] if insufficient else [{
+                    "conclusion": f"样本已按当前范围回答北极星问题 {question_id}。",
+                    "metrics": [{
                         "label": "当前可核查发现",
                         "value": "1",
                         "unit": "项",
                         "method": "按当前输入中带原文依据的结构项计数。",
                         "evidence_ids": [evidence_id],
                     }],
-                    "evidence_ids": [] if insufficient else [evidence_id],
+                    "evidence_ids": [evidence_id],
                     "counter_evidence_ids": [],
                     "limitations": ["当前测试小说篇幅很短，不能外推长篇规律。"],
-                    "reusable_lessons": [] if insufficient else ["先确认结构机制，再考虑是否适合自己的新书。"],
+                    "reusable_lessons": ["先确认结构机制，再考虑是否适合自己的新书。"],
                     "do_not_copy": ["不能照搬原作人物、密信设定或具体表达。"],
                     "contract_items": [],
                 }
-                if question_id == "2.1":
+                if question_id == "1.4":
+                    promise_material = next(
+                        material
+                        for material in report_input["materials"]
+                        if material["kind"] == "opening_promise_sources"
+                    )
+                    promise_sources = promise_material["item"]
+                    payoff_ledger = report_input["program_artifacts"][
+                        "opening_payoff_candidate_ledger"
+                    ]
+                    payoff_candidate = payoff_ledger["candidates"][0]
+                    opening_evidence = payoff_candidate[
+                        "evidence_options"
+                    ][0]
+                    opening_evidence_id = opening_evidence["evidence_id"]
+                    opening_chapter = opening_evidence["chapter_ordinal"]
+                    promise_evidence_ids = (
+                        promise_sources["description_evidence_ids"]
+                        or [opening_evidence_id]
+                    )
+                    first_three_evidence_id = next(
+                        (
+                            option["evidence_id"]
+                            for candidate in payoff_ledger["candidates"]
+                            for option in candidate["evidence_options"]
+                            if (
+                                1 <= int(option["chapter_ordinal"]) <= 3
+                                and option["evidence_id"]
+                                not in promise_evidence_ids
+                            )
+                        ),
+                        opening_evidence_id,
+                    )
+                    answer["evidence_ids"] = list(dict.fromkeys([
+                        *promise_evidence_ids,
+                        opening_evidence_id,
+                    ]))
+                    answer["metrics"][0]["evidence_ids"] = [
+                        opening_evidence_id
+                    ]
+                    answer["contract_items"] = []
+                    for item in question["required_contract_items"]:
+                        item_id = item["item_id"]
+                        status = (
+                            "INSUFFICIENT_EVIDENCE"
+                            if item_id == "cross_book_comparison"
+                            else "SUPPORTED"
+                        )
+                        finding = (
+                            "缺少同品类同商业模式多书对照。"
+                            if item_id == "cross_book_comparison"
+                            else f"{item['label']}已由开篇原料支持。"
+                        )
+                        metrics = []
+                        item_evidence_ids = (
+                            []
+                            if item_id == "cross_book_comparison"
+                            else [opening_evidence_id]
+                        )
+                        payoff_classifications = []
+                        if item_id == "opening_promise_sources":
+                            title = (
+                                promise_sources["preferred_title"]
+                                or "源文件未提供独立书名"
+                            )
+                            description = (
+                                "简介已核对"
+                                if promise_sources["description_present"]
+                                else "简介缺失"
+                            )
+                            finding = (
+                                f"书名：{title}；{description}；"
+                                "故事前提是林舟因密信进入追查；"
+                                "前三章承诺他将面对旧宅秘密。"
+                            )
+                            metrics = [
+                                {
+                                    "label": "书名",
+                                    "value": title,
+                                    "unit": "",
+                                    "method": "核对源文件前置书名。",
+                                    "evidence_ids": [],
+                                },
+                                {
+                                    "label": "简介",
+                                    "value": (
+                                        "简介承诺林舟将进入旧宅秘密。"
+                                        if promise_sources[
+                                            "description_present"
+                                        ]
+                                        else "源文件未识别出独立简介。"
+                                    ),
+                                    "unit": "",
+                                    "method": "核对源文件前置简介。",
+                                    "evidence_ids": promise_evidence_ids,
+                                },
+                                {
+                                    "label": "故事前提",
+                                    "value": "林舟因密信进入旧宅追查。",
+                                    "unit": "",
+                                    "method": "核对故事总览和开篇事件。",
+                                    "evidence_ids": promise_evidence_ids,
+                                },
+                                {
+                                    "label": "前三章",
+                                    "value": "前三章以现场事件建立旧宅秘密。",
+                                    "unit": "",
+                                    "method": "核对前三章非简介现场原文。",
+                                    "evidence_ids": [
+                                        first_three_evidence_id
+                                    ],
+                                },
+                            ]
+                            item_evidence_ids = list(dict.fromkeys([
+                                *promise_evidence_ids,
+                                first_three_evidence_id,
+                            ]))
+                        if item_id == "first_payoff_location":
+                            finding = "提交连续候选分类，由程序编译位置。"
+                            metrics = []
+                            item_evidence_ids = []
+                            payoff_classifications = [{
+                                "sequence_no": 1,
+                                "matched_facet_ids": ["F1", "F2", "F3"],
+                                "exclusion_code": "NONE",
+                                "anchor_evidence_no": 1,
+                            }]
+                        answer["contract_items"].append(
+                        {
+                            "item_id": item_id,
+                            "status": status,
+                            "finding": finding,
+                            "metrics": metrics,
+                            "evidence_ids": item_evidence_ids,
+                            "limitations": (
+                                ["当前只能形成单书部分观察。"]
+                                if item_id == "cross_book_comparison"
+                                else []
+                            ),
+                            "classifications": [],
+                            "payoff_classifications": payoff_classifications,
+                        }
+                        )
+                elif question_id == "2.1":
                     roles = report_input["program_artifacts"][
                         "opening_character_ledger"
                     ]["roles"]
@@ -388,6 +554,226 @@ class StaticAnalysisProvider:
                         }
                         for item in question["required_contract_items"]
                     ]
+                elif question_id == "2.2":
+                    design_material = next(
+                        material
+                        for material in report_input["materials"]
+                        if material["kind"] == "character_design_evidence"
+                    )
+                    design = design_material["item"]
+                    field_by_id = {
+                        item["field"]: item for item in design["fields"]
+                    }
+                    conflict_evidence_ids = [
+                        evidence_id
+                        for item in design["desire_conflicts"]
+                        for evidence_id in item["evidence_ids"]
+                    ]
+                    answer["evidence_ids"] = list(dict.fromkeys(
+                        evidence_id
+                        for item in design["fields"]
+                        for evidence_id in item["evidence_ids"]
+                    ))[:24]
+                    answer["metrics"] = [{
+                        "label": "已核验主角要素",
+                        "value": str(len(design["fields"])),
+                        "unit": "项",
+                        "method": "按主角专项证据账本统计。",
+                        "evidence_ids": answer["evidence_ids"][:1],
+                    }]
+                    answer["contract_items"] = []
+                    for item in question["required_contract_items"]:
+                        item_id = item["item_id"]
+                        if item_id in field_by_id:
+                            field = field_by_id[item_id]
+                            metric_value = str(
+                                field["first_display_chapter_ordinal"]
+                            )
+                            item_evidence_ids = field["evidence_ids"]
+                        else:
+                            metric_value = str(
+                                len(design["desire_conflicts"])
+                            )
+                            item_evidence_ids = conflict_evidence_ids
+                        finding = f"{item['label']}已由主角行动原文支持。"
+                        if item_id == "arc_timeline":
+                            finding = (
+                                "；".join(
+                                    f"第 {conflict['chapter_ordinal']} 章形成弧光转折"
+                                    for conflict in design[
+                                        "desire_conflicts"
+                                    ]
+                                )
+                                or "当前专项账本未发现可核验的弧光转折。"
+                            )
+                        answer["contract_items"].append({
+                            "item_id": item_id,
+                            "status": "SUPPORTED",
+                            "finding": finding,
+                            "metrics": [{
+                                "label": (
+                                    "首次展示章节"
+                                    if item_id in field_by_id
+                                    else "已核验转折节点"
+                                ),
+                                "value": metric_value,
+                                "unit": "章" if item_id in field_by_id else "个",
+                                "method": "按专项证据账本确定性统计。",
+                                "evidence_ids": item_evidence_ids,
+                            }],
+                            "evidence_ids": item_evidence_ids,
+                            "limitations": [],
+                            "classifications": [],
+                        })
+                elif question_id == "4.9":
+                    hook_summary_material = next(
+                        material
+                        for material in report_input["materials"]
+                        if material["kind"] == "chapter_end_hooks_summary"
+                    )
+                    hook_summary = hook_summary_material["item"]["summary"]
+                    hook_coverage = hook_summary_material["item"]["coverage"]
+                    example_evidence_ids = [
+                        examples[0]["ending_evidence_ids"][0]
+                        for examples in hook_summary[
+                            "examples_by_type"
+                        ].values()
+                        if examples
+                    ]
+                    answer["evidence_ids"] = example_evidence_ids
+                    answer["metrics"] = [{
+                        "label": "全书章末分类覆盖",
+                        "value": str(
+                            hook_coverage["source_chapter_count"]
+                        ),
+                        "unit": "章",
+                        "method": "按连续窗口逐章分类。",
+                        "evidence_ids": example_evidence_ids[:1],
+                    }]
+                    answer["contract_items"] = []
+                    for item in question["required_contract_items"]:
+                        item_id = item["item_id"]
+                        metrics = []
+                        item_evidence_ids = example_evidence_ids
+                        finding = f"{item['label']}已由逐章章末账本支持。"
+                        if item_id == "chapter_coverage":
+                            metrics = [
+                                {
+                                    "label": "全书章节",
+                                    "value": str(
+                                        hook_coverage[
+                                            "source_chapter_count"
+                                        ]
+                                    ),
+                                    "unit": "章",
+                                    "method": "按正式来源章节统计。",
+                                    "evidence_ids": [],
+                                },
+                                {
+                                    "label": "连续窗口",
+                                    "value": str(
+                                        hook_coverage["window_count"]
+                                    ),
+                                    "unit": "个",
+                                    "method": "按正式窗口账本统计。",
+                                    "evidence_ids": [],
+                                },
+                            ]
+                        elif item_id == "type_distribution":
+                            metrics = [
+                                {
+                                    "label": row["hook_type"],
+                                    "value": str(row["count"]),
+                                    "unit": f"章，占比 {row['ratio']}",
+                                    "method": "按逐章类型分类统计。",
+                                    "evidence_ids": [],
+                                }
+                                for row in hook_summary["type_distribution"]
+                            ]
+                        elif item_id == "strength_rhythm":
+                            metrics = [
+                                {
+                                    "label": row["strength"],
+                                    "value": str(row["count"]),
+                                    "unit": "章",
+                                    "method": "按逐章强度分类统计。",
+                                    "evidence_ids": [],
+                                }
+                                for row in hook_summary[
+                                    "strength_distribution"
+                                ]
+                            ] + [{
+                                "label": "最长连续强钩",
+                                "value": str(
+                                    hook_summary[
+                                        "max_consecutive_strong"
+                                    ]
+                                ),
+                                "unit": "章",
+                                "method": "按连续章节精确合并。",
+                                "evidence_ids": [],
+                            }]
+                        elif item_id == "type_rotation":
+                            metrics = [
+                                {
+                                    "label": "类型切换",
+                                    "value": str(
+                                        hook_summary[
+                                            "type_transition_count"
+                                        ]
+                                    ),
+                                    "unit": "次",
+                                    "method": "比较相邻章节类型。",
+                                    "evidence_ids": [],
+                                },
+                                {
+                                    "label": "同类连续上限",
+                                    "value": str(
+                                        hook_summary[
+                                            "max_consecutive_same_type"
+                                        ]
+                                    ),
+                                    "unit": "章",
+                                    "method": "按连续章节精确合并。",
+                                    "evidence_ids": [],
+                                },
+                            ]
+                        elif item_id == "no_hook_analysis":
+                            metrics = [{
+                                "label": "无钩章",
+                                "value": str(hook_summary["no_hook_count"]),
+                                "unit": (
+                                    f"章，占比 {hook_summary['no_hook_ratio']}"
+                                ),
+                                "method": "按逐章 NONE 分类统计。",
+                                "evidence_ids": [],
+                            }]
+                        elif item_id == "representative_examples":
+                            metrics = [{
+                                "label": "已覆盖类型",
+                                "value": str(
+                                    len(hook_summary["examples_by_type"])
+                                ),
+                                "unit": "种",
+                                "method": "每种类型取一条真实章末原文。",
+                                "evidence_ids": example_evidence_ids,
+                            }]
+                        elif item_id == "scope_boundary":
+                            metrics = []
+                            item_evidence_ids = []
+                            finding = (
+                                "4.9 不追踪后续回应；前三章首次回应属于 "
+                                "3.4，重要悬念生命周期属于 4.10。"
+                            )
+                        answer["contract_items"].append({
+                            "item_id": item_id,
+                            "status": "SUPPORTED",
+                            "finding": finding,
+                            "metrics": metrics,
+                            "evidence_ids": item_evidence_ids,
+                            "limitations": [],
+                            "classifications": [],
+                        })
                 answers.append(answer)
             output = {
                 "answers": answers,
@@ -484,12 +870,42 @@ class InvalidStructureProvider:
         )
 
 
+class PartialAcceptanceFailureProvider:
+    name = "fake"
+
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        raise ProviderError(
+            code="PROVIDER_INVALID_OUTPUT",
+            message="只重试未通过部分。",
+            retryable=True,
+            diagnostics={
+                "phase": "partial_reference_validation",
+                "partial_acceptance": {
+                    "accepted_chapter_count": 1,
+                    "repair_chapter_count": 1,
+                },
+                "_task_payload_patch": {
+                    "accepted_chapter_proposals": [{
+                        "chapter_ordinal": 1,
+                    }],
+                    "repair_chapter_ordinals": [2],
+                },
+            },
+            prompt_tokens=10,
+            completion_tokens=5,
+            provider_name="fake",
+        )
+
+
 def _import_confirmed_novel(client) -> dict:
     project = client.post("/api/projects", json={"name": "雨夜旧宅"}).json()
     source = (
         "第一章 归来\n"
         "雨下得很大，林舟推开旧宅的木门。\n"
-        "桌上放着一封写着他名字的密信。\n"
+        "桌上放着一封写着他名字的密信。林舟想尽快找到寄信人，"
+        "弄清来意并掌握自己的处境；虽然警惕未知风险，确认线索后仍决定"
+        "主动追查，没有证据时不把猜测当成事实，并从密信线索中确定"
+        "下一步行动。\n"
         "第二章 决定\n"
         "林舟决定天亮后去找寄信人。"
     )
@@ -503,6 +919,61 @@ def _import_confirmed_novel(client) -> dict:
     confirmed = client.post(f"/api/source-versions/{result['version']['id']}/confirm")
     assert confirmed.status_code == 200
     return result
+
+
+def test_partial_acceptance_payload_survives_retry_scheduling(client) -> None:
+    project = client.post(
+        "/api/projects",
+        json={"name": "局部恢复任务测试"},
+    ).json()
+    with client.app.state.session_factory() as session:
+        task = Task(
+            project_id=project["id"],
+            kind="fake.echo",
+            payload_json=json.dumps(
+                {"original": "kept"},
+                ensure_ascii=False,
+            ),
+            max_attempts=2,
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+    with client.app.state.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="partial-acceptance-worker",
+            lease_seconds=60,
+        )
+    assert claim is not None
+    assert claim.id == task_id
+
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        claim,
+        ProviderRegistry([PartialAcceptanceFailureProvider()]),
+    )
+
+    with client.app.state.session_factory() as session:
+        persisted = session.get(Task, task_id)
+        attempt = session.get(TaskAttempt, claim.current_attempt_id)
+        assert persisted is not None
+        assert attempt is not None
+        status = persisted.status
+        payload = json.loads(persisted.payload_json)
+        diagnostics = json.loads(attempt.diagnostics_json)
+    assert status == TaskStatus.RETRY_WAIT.value
+    assert payload["original"] == "kept"
+    assert payload["repair_chapter_ordinals"] == [2]
+    assert payload["accepted_chapter_proposals"] == [{
+        "chapter_ordinal": 1,
+    }]
+    assert diagnostics["partial_acceptance"] == {
+        "accepted_chapter_count": 1,
+        "repair_chapter_count": 1,
+    }
+    assert "_task_payload_patch" not in diagnostics
 
 
 def test_analysis_requires_local_provider_configuration(client) -> None:
@@ -1131,9 +1602,34 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     first_learning_task_state = client.get(
         f"/api/tasks/{first_learning_claim.id}"
     ).json()
+    with client.app.state.session_factory() as session:
+        first_learning_attempt = session.get(
+            TaskAttempt,
+            first_learning_claim.current_attempt_id,
+        )
+        first_learning_diagnostics = (
+            json.loads(first_learning_attempt.diagnostics_json)
+            if first_learning_attempt is not None
+            else {}
+        )
+        first_learning_task_states = [
+            (
+                item.id,
+                item.status,
+                item.last_error_code,
+                item.last_error_message,
+            )
+            for item in session.scalars(
+                select(Task)
+                .where(Task.kind == "analysis.learning_report")
+                .order_by(Task.created_at)
+            )
+        ]
     assert first_learning_projection["learning_report_status"] == "READY", (
         first_learning_task_state["last_error_code"],
         first_learning_task_state["last_error_message"],
+        first_learning_diagnostics.get("reason_code"),
+        first_learning_task_states,
     )
     assert sum(
         item["generated_count"]
@@ -1151,6 +1647,47 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     assert "当前测试小说篇幅很短" not in first_2_1["limitations"]
     assert first_2_1["reusable_lessons"]
     assert first_2_1["do_not_copy"]
+    first_2_2 = next(
+        item
+        for item in first_learning_projection["learning_report"]["questions"]
+        if item["question_id"] == "2.2"
+    )
+    assert first_2_2["conclusion"].startswith(
+        "主角双层欲望与最小完整集均已按首次行动证据定位"
+    )
+    assert "当前可核查发现" not in {
+        metric["label"] for metric in first_2_2["metrics"]
+    }
+    assert {
+        "表层欲望首次展示章节",
+        "深层欲望首次展示章节",
+        "核心能力首次展示章节",
+        "双层欲望冲突节点",
+    }.issubset({
+        metric["label"] for metric in first_2_2["metrics"]
+    })
+    first_4_9 = next(
+        item
+        for item in first_learning_projection["learning_report"]["questions"]
+        if item["question_id"] == "4.9"
+    )
+    expected_hook_chapters = str(
+        hooks_projection["chapter_end_hooks_evidence"]["coverage"][
+            "source_chapter_count"
+        ]
+    )
+    chapter_metric = next(
+        metric
+        for metric in first_4_9["metrics"]
+        if metric["label"] == "全书章节"
+    )
+    assert chapter_metric["value"] == expected_hook_chapters
+    assert first_4_9["conclusion"].startswith(
+        f"全书 {expected_hook_chapters} 章"
+    )
+    assert "当前可核查发现" not in {
+        metric["label"] for metric in first_4_9["metrics"]
+    }
 
     issue = client.post(
         f"/api/analysis-runs/{run['id']}/issues",

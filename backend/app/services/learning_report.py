@@ -32,32 +32,70 @@ from .provider_config import (
     prepare_task_provider_routes,
     resolve_analysis_profile,
 )
+from .source_import import source_text
 
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.4.3"
-LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({"1.4.2", "1.4.3"})
+LEARNING_REPORT_PROMPT_VERSION = "1.5.5"
+LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
+    "1.4.2",
+    "1.4.3",
+    "1.5.0",
+    "1.5.1",
+    "1.5.2",
+    "1.5.3",
+    "1.5.4",
+    "1.5.5",
+})
 LEARNING_QUESTION_CATALOG_VERSION = "1.3.0"
 LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
 LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS = 150_000
 LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 1.5
+OPENING_PAYOFF_CANDIDATE_LIMIT = 200
 
 _UNSUPPORTED_EXTERNAL_CAUSALITY = re.compile(
     r"(?:导致|造成|带来|提升|提高|降低|减少|增加|推动|引发|"
-    r"拉升|强化|增强)"
+    r"拉升|强化|增强|迫使|促使|吸引|激发|诱导|驱使)"
     r".{0,16}"
     r"(?:读者流失|读者留存|追读率|留存率|付费率|追读欲望|"
-    r"阅读欲望|留住读者|弃书|销量|口碑|商业成功|市场表现)"
+    r"阅读欲望|读者预期|读者期待|读者信任|读者共鸣|"
+    r"读者耐心|读者兴趣|读者翻页|读者继续阅读|"
+    r"读者好奇|读者关注|读者关切|读者渴望|读者想知道|"
+    r"阅读冲动|追读欲望|留住读者|弃书|销量|口碑|"
+    r"商业成功|市场表现|受众共鸣)"
 )
 _EXTERNAL_EFFECT_TERM = re.compile(
     r"(?:读者流失|读者留存|追读率|留存率|付费率|留住读者|"
-    r"弃书|销量|口碑|商业成功|市场表现)"
+    r"读者预期|读者期待|读者信任|读者共鸣|读者耐心|"
+    r"读者兴趣|读者翻页|读者继续阅读|读者好奇|"
+    r"读者关注|读者关切|读者渴望|读者想知道|"
+    r"阅读冲动|追读欲望|弃书|销量|口碑|商业成功|"
+    r"市场表现|受众共鸣)"
+)
+_READER_BEHAVIOR_OR_PSYCHOLOGY = re.compile(
+    r"(?:读者|受众).{0,8}"
+    r"(?:翻页|继续阅读|追读|好奇|关注|关切|渴望|想知道|"
+    r"期待|兴趣|共鸣|耐心)"
+)
+_UNSUPPORTED_EXTERNAL_EFFECT_ASSERTION = re.compile(
+    r"(?:读者流失|读者留存|追读率|留存率|付费率|留住读者|"
+    r"读者预期|读者期待|读者信任|读者共鸣|读者耐心|"
+    r"读者兴趣|读者翻页|读者继续阅读|读者好奇|"
+    r"读者关注|读者关切|读者渴望|读者想知道|"
+    r"阅读冲动|追读欲望|弃书|销量|口碑|商业成功|"
+    r"市场表现|受众共鸣)"
+    r".{0,16}"
+    r"(?:提升|提高|降低|减少|增加|上升|下降|改善|恶化|"
+    r"增强|减弱|变好|变差|更高|更低|很好|很差|建立|形成)"
 )
 _EXTERNAL_EFFECT_UNCERTAINTY = re.compile(
-    r"(?:不能|无法|不可|不得|缺少|需要|仍需|有待|待)"
+    r"(?:不能|无法|不可|不得|缺少|需要|需|仍需|有待|待)"
     r".{0,20}"
     r"(?:证明|验证|数据|外推|判断)"
+)
+_EXTERNAL_EFFECT_QUESTION = re.compile(
+    r"(?:是否|能否|会否|尚不确定|尚不明确|仍不确定|未知)"
 )
 _UNSUPPORTED_EXTERNAL_MAGNITUDE = re.compile(
     r"(?:较大|很大|极大|极高|高)"
@@ -66,8 +104,60 @@ _UNSUPPORTED_EXTERNAL_MAGNITUDE = re.compile(
     r".{0,12}"
     r"(?:读者流失|读者留存|弃书|追读|付费|销量|口碑|市场)"
 )
+_PROHIBITED_PRICING_TERM = re.compile(
+    r"(?:价格|价钱|报价|售价|收费|收取费用|计费|费率|"
+    r"价格估算|币种|金额|单价|费用|"
+    r"(?:模型|调用|API|Token|令牌|推理|生成).{0,8}(?:成本|花费)|"
+    r"人民币|美元|欧元|日元|英镑|港币|CNY|RMB|USD|EUR|JPY|GBP|HKD|"
+    r"[¥￥$€£]|"
+    r"(?:\d[\d,]*(?:\.\d+)?|[零〇一二三四五六七八九十百千万亿两]+)"
+    r"\s*(?:元|块钱|人民币|美元|欧元|日元|英镑|港币)|"
+    r"(?:Token|令牌|调用).{0,16}(?:收|花费|耗费|成本)"
+    r".{0,8}\d+(?:\.\d+)?\s*(?:元|块))",
+    re.IGNORECASE,
+)
+_USER_TEXT_CLAUSE_BREAK = re.compile(
+    r"[，,。；;！？!?\n\r：:]+|(?<!不)但(?:是)?|然而|不过|可是|反而"
+)
+_CHAPTER_END_RESPONSE_DISTANCE = re.compile(
+    r"(?:回应|兑现(?!前置)|回收).{0,12}"
+    r"(?:距离|章距|字距|间隔|跨度|章数|字数|字符数|耗时|用时|"
+    r"下一章|下章|第[0-9一二三四五六七八九十百]+章|"
+    r"\d[\d,，]*\s*(?:章|字|字符))"
+    r"|(?:下一章|下章|第[0-9一二三四五六七八九十百]+章|"
+    r"\d[\d,，]*\s*(?:章|字|字符))"
+    r".{0,12}(?:回应|兑现(?!前置)|回收)"
+)
+_CHAPTER_END_RESPONSE_SCOPE_DENIAL = re.compile(
+    r"(?:4\.9.{0,12})?"
+    r"(?:不(?:负责|统计|追踪|计算|记录|涉及|包含|分析|回答)|"
+    r"不得.{0,8}|无需.{0,8}|无须.{0,8})"
+    r".{0,16}(?:回应|兑现(?!前置)|回收)"
+    r"|(?:回应|兑现(?!前置)|回收).{0,12}"
+    r"(?:距离|章距|字距|间隔|跨度|章数|字数|字符数)"
+    r".{0,16}(?:不在|不属于|应由|交由|由)"
+    r".{0,12}(?:4\.9|3\.4|4\.10|职责|范围)"
+)
+
+_CHAPTER_END_HOOK_TYPE_LABELS = {
+    "CRISIS_SUSPENSION": ("CRISIS_SUSPENSION", "危机悬置"),
+    "NEW_INFORMATION": ("NEW_INFORMATION", "新信息抛出", "新信息"),
+    "PAYOFF_PRIMING": ("PAYOFF_PRIMING", "期待兑现前置"),
+    "REVERSAL": ("REVERSAL", "反转"),
+    "EMOTIONAL_FREEZE": ("EMOTIONAL_FREEZE", "情绪定格"),
+    "NONE": ("NONE", "无钩"),
+}
+_CHAPTER_END_HOOK_STRENGTH_LABELS = {
+    "STRONG": ("STRONG", "强钩"),
+    "MEDIUM": ("MEDIUM", "中钩"),
+    "LIGHT": ("LIGHT", "轻钩", "缓钩"),
+    "NONE": ("NONE", "无钩"),
+}
 LEARNING_QUESTION_CONTRACT_VERSIONS = {
+    "1.4": "2.3.0",
     "2.1": "2.0.0",
+    "2.2": "2.1.0",
+    "4.9": "2.0.0",
 }
 
 
@@ -162,7 +252,7 @@ LEARNING_QUESTION_CONTRACTS = {
         "单书至少覆盖前 30 章；不足 30 章按实际篇幅标为部分回答，跨书结论另行汇总。",
     ),
     "2.2": _contract(
-        "主角双层欲望卡、最小完整集交代节奏表（要素、首次展示章节、展示事件）和弧光转折时间轴；配角仅做轻量版。",
+        "主角双层欲望卡、最小完整集交代节奏表（要素、首次展示章节、展示事件）和弧光转折时间轴。",
         "分别定位表层欲望、深层欲望、动机、性格反差、行为底线和核心能力的首次事件；统计两层欲望发生冲突的节点。",
         "每个‘立住’判断必须引用主角通过行动或选择表现该要素的原文；人物简介或模型标签不能单独作证。",
         "重点覆盖前三章、前 30 章和全书转折点；只看到早期片段时不得推断完整人物弧光。",
@@ -285,9 +375,9 @@ LEARNING_QUESTION_CONTRACTS = {
     ),
     "4.9": _contract(
         "章末钩类型表、逐章标注统计、类型轮换与强弱节律、无钩章分析，并为每种类型提供带出处原文实例。",
-        "逐章或抽样至少 50 章；统计类型占比、连续强钩和同类钩上限、无钩比例及回应距离。",
-        "必须保存每个样本章的最后有效段落及后续回应证据；剧情阶段悬念和普通场景分析不能替代章末证据。",
-        "少于 50 章的作品覆盖全部章节；更长作品可全量或采用覆盖开中后、各卷边界的 50 章以上预注册样本。",
+        "正式答案逐章统计类型数量与占比、连续强钩、同类钩上限、类型轮换次数和无钩比例；不统计后续回应距离。",
+        "必须保存每章最后有效段落；剧情阶段悬念、普通场景分析和后续回应证据都不能替代章末证据。",
+        "正式模式按连续窗口覆盖全书并精确合并相邻节律；快速预览只能使用预注册连续块并明确标为估算，不能冒充正式答案。",
     ),
     "4.10": _contract(
         "悬念账本（埋设、兑现、跨度、档位）和悬念存量随章节变化曲线。",
@@ -472,6 +562,28 @@ class LearningContractItemDefinition:
 LEARNING_QUESTION_ITEM_CONTRACTS: dict[
     str, tuple[LearningContractItemDefinition, ...]
 ] = {
+    "1.4": (
+        LearningContractItemDefinition(
+            "selling_point_card",
+            "一句话卖点卡",
+            "用一句话同时说明主角起点、核心异常或机制、以及它把主角推入的主要矛盾，并引用开篇原文。",
+        ),
+        LearningContractItemDefinition(
+            "opening_promise_sources",
+            "开篇承诺来源",
+            "分别说明当前材料能确认的书名、简介、故事前提和前三章承诺；以源文件前置内容为准，缺失来源必须明确标出。",
+        ),
+        LearningContractItemDefinition(
+            "first_payoff_location",
+            "首次兑现位置与方式",
+            "按开篇事件时序排除更早候选，定位首次兑现章、章节标题、段落、源文件累计字符、兑现事件和原文，并计算承诺到兑现的章距与字符距离；不能用简介或全书摘要代替兑现现场。",
+        ),
+        LearningContractItemDefinition(
+            "cross_book_comparison",
+            "同类书卖点对比",
+            "只有同品类、同商业模式多书使用同一口径后才能回答；当前缺少对照时必须标为证据不足。",
+        ),
+    ),
     "2.1": (
         LearningContractItemDefinition(
             "opening_character_counts",
@@ -514,6 +626,85 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "只有同品类、同商业模式多书使用同一口径后才能回答。",
         ),
     ),
+    "2.2": (
+        LearningContractItemDefinition(
+            "surface_desire",
+            "表层欲望",
+            "给出表层欲望、首次由行动或选择展示的章节和事件，并引用该现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "deep_desire",
+            "深层欲望",
+            "给出深层欲望、首次由行动或选择展示的章节和事件，并引用该现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "motivation",
+            "核心动机",
+            "给出推动主角关键选择的核心动机、首次展示章节和事件，并引用该现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "contrast",
+            "性格反差",
+            "给出稳定性格反差、首次通过行动展示的章节和事件，并引用该现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "boundary",
+            "行为底线",
+            "给出主角不能接受或必然越线的底线、首次由选择展示的章节和事件，并引用该现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "core_ability",
+            "核心能力",
+            "给出核心能力、首次真实使用的章节和事件，并引用该现场原文；设定说明不能替代真实使用。",
+        ),
+        LearningContractItemDefinition(
+            "desire_conflicts",
+            "双层欲望冲突节点",
+            "统计表层与深层欲望发生冲突的节点，并说明主角的选择与弧光变化。",
+        ),
+        LearningContractItemDefinition(
+            "arc_timeline",
+            "弧光转折时间轴",
+            "按章节顺序汇总已核验冲突节点形成的转折；当前来源未覆盖后续作品时必须限定范围。",
+        ),
+    ),
+    "4.9": (
+        LearningContractItemDefinition(
+            "chapter_coverage",
+            "全书逐章覆盖",
+            "说明正式账本覆盖的章节数、窗口数和是否连续不重不漏。",
+        ),
+        LearningContractItemDefinition(
+            "type_distribution",
+            "钩子类型配比",
+            "按程序账本给出每种章末钩的数量与占比，不能由剧情阶段或场景摘要估算。",
+        ),
+        LearningContractItemDefinition(
+            "strength_rhythm",
+            "强弱节律",
+            "给出强、中、轻、无钩分布和最长连续强钩章数。",
+        ),
+        LearningContractItemDefinition(
+            "type_rotation",
+            "类型轮换",
+            "给出相邻章节类型切换次数和同类钩连续上限，并说明可观察的轮换方式。",
+        ),
+        LearningContractItemDefinition(
+            "no_hook_analysis",
+            "无钩章分析",
+            "给出无钩章数量与比例，并只分析书内结构位置，不推断读者流失或留存。",
+        ),
+        LearningContractItemDefinition(
+            "representative_examples",
+            "各类型原文实例",
+            "每种实际出现的钩子类型至少引用一章最后有效段落；不得引用后续回应冒充章末证据。",
+        ),
+        LearningContractItemDefinition(
+            "scope_boundary",
+            "与 3.4、4.10 的职责边界",
+            "明确 4.9 不追踪逐章后续回应；前三章首次回应属于 3.4，重要悬念生命周期属于 4.10。",
+        ),
+    ),
 }
 
 # 2.1 的八项最终合同仍全部保留，但模型只负责其中的语义分类。
@@ -533,7 +724,7 @@ class LearningMetricProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(min_length=1, max_length=160)
-    value: str = Field(min_length=1, max_length=160)
+    value: str = Field(min_length=1, max_length=2000)
     unit: str = Field(default="", max_length=60)
     method: str = Field(min_length=1, max_length=500)
     evidence_ids: list[str] = Field(default_factory=list, max_length=16)
@@ -559,6 +750,28 @@ class LearningContractClassificationProposal(BaseModel):
     ]
 
 
+class LearningPayoffClassificationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence_no: int = Field(ge=1, le=OPENING_PAYOFF_CANDIDATE_LIMIT)
+    matched_facet_ids: list[Literal["F1", "F2", "F3"]] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    exclusion_code: Literal[
+        "NONE",
+        "PROMISE_SOURCE",
+        "PROMISE_RESTATEMENT",
+        "IDENTITY_GRANT",
+        "DREAM_OR_HISTORY",
+        "STATIC_EVIDENCE",
+        "SIMULATION",
+        "PARTIAL_ONLY",
+        "UNRELATED",
+    ]
+    anchor_evidence_no: int = Field(ge=1, le=16)
+
+
 class LearningContractItemProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -571,6 +784,10 @@ class LearningContractItemProposal(BaseModel):
     classifications: list[LearningContractClassificationProposal] = Field(
         default_factory=list,
         max_length=200,
+    )
+    payoff_classifications: list[LearningPayoffClassificationProposal] = Field(
+        default_factory=list,
+        max_length=OPENING_PAYOFF_CANDIDATE_LIMIT,
     )
 
 
@@ -736,6 +953,24 @@ def _request_budget(profile: Any) -> dict[str, int | float | str]:
     }
 
 
+def _chapter_index_by_unit_id(
+    session: Session,
+    source_version_id: str,
+) -> dict[str, dict[str, object]]:
+    chapter_units = list(session.scalars(
+        select(SourceUnit)
+        .where(
+            SourceUnit.source_version_id == source_version_id,
+            SourceUnit.unit_type == "CHAPTER",
+        )
+        .order_by(SourceUnit.ordinal)
+    ))
+    return {
+        unit.id: {"ordinal": ordinal, "title": unit.title}
+        for ordinal, unit in enumerate(chapter_units, start=1)
+    }
+
+
 def _evidence_records(
     evidence_ids: set[str],
     evidence_by_id: dict[str, EvidenceSpan],
@@ -751,9 +986,299 @@ def _evidence_records(
             "id": evidence.id,
             "chapter_ordinal": chapter.get("ordinal"),
             "chapter_title": chapter.get("title"),
+            "paragraph_number": evidence.paragraph_index + 1,
+            "source_char_start": evidence.start_char + 1,
+            "source_char_end": evidence.end_char,
             "text": evidence.text_snapshot,
         })
     return records
+
+
+_FRONT_MATTER_LABEL = re.compile(
+    r"^(?:内容简介|内容提要|作品简介|简介)\s*[:：]?\s*$"
+)
+_NARRATIVE_HEADING = re.compile(
+    r"^(?:序幕|楔子|引子|尾声|后记|"
+    r"第[0-9一二三四五六七八九十百千万零〇两]+"
+    r"(?:卷|部|篇|幕|章|回|节))"
+)
+_TITLE_NOISE = re.compile(
+    r"^(?:作者|编者|译者|来源|正文前内容)\s*[:：]?"
+)
+
+
+def _opening_promise_source_artifact(
+    session: Session,
+    settings: Settings,
+    version: SourceVersion,
+) -> dict[str, object]:
+    units = list(session.scalars(
+        select(SourceUnit)
+        .where(SourceUnit.source_version_id == version.id)
+        .order_by(SourceUnit.ordinal)
+    ))
+    first_chapter = next(
+        (unit for unit in units if unit.unit_type == "CHAPTER"),
+        None,
+    )
+    if first_chapter is None:
+        return {
+            "preferred_title": "",
+            "title_candidates": [],
+            "description_present": False,
+            "description_text": "",
+            "description_evidence_ids": [],
+            "chapter_numbering_policy": (
+                "只对 CHAPTER 类型来源单元按顺序从 1 编号；"
+                "PREFACE 等前置内容不计入章节序号。"
+            ),
+        }
+    text = source_text(settings, version)
+    excerpt_end = min(
+        len(text),
+        first_chapter.end_char,
+        first_chapter.start_char + 12_000,
+    )
+    excerpt = text[:excerpt_end]
+    line_records: list[tuple[str, int, int]] = []
+    cursor = 0
+    for raw_line in excerpt.splitlines(keepends=True):
+        line = raw_line.strip()
+        line_start = cursor
+        cursor += len(raw_line)
+        line_records.append((line, line_start, cursor))
+    if cursor < len(excerpt):
+        line_records.append((excerpt[cursor:].strip(), cursor, len(excerpt)))
+
+    description_marker_index = next(
+        (
+            index
+            for index, (line, _start, _end) in enumerate(line_records)
+            if _FRONT_MATTER_LABEL.fullmatch(line)
+        ),
+        None,
+    )
+    first_narrative_index = next(
+        (
+            index
+            for index, (line, _start, _end) in enumerate(line_records)
+            if line and _NARRATIVE_HEADING.match(line)
+        ),
+        None,
+    )
+    if description_marker_index is not None:
+        title_scan_end = description_marker_index
+    elif first_narrative_index is not None:
+        title_scan_end = first_narrative_index
+    else:
+        title_scan_end = min(24, len(line_records))
+    title_candidates = [
+        line
+        for line, _start, _end in line_records[:title_scan_end]
+        if (
+            1 < len(line) <= 80
+            and not _TITLE_NOISE.match(line)
+            and not _NARRATIVE_HEADING.match(line)
+            and not _FRONT_MATTER_LABEL.fullmatch(line)
+            and "验收样本" not in line
+        )
+    ]
+    preferred_title = title_candidates[-1] if title_candidates else ""
+
+    description_lines: list[str] = []
+    description_start: int | None = None
+    description_end: int | None = None
+    if description_marker_index is not None:
+        for line, line_start, line_end in line_records[
+            description_marker_index + 1:
+        ]:
+            if not line and not description_lines:
+                continue
+            if line and _NARRATIVE_HEADING.match(line):
+                break
+            if line:
+                if description_start is None:
+                    description_start = line_start + (
+                        len(excerpt[line_start:line_end])
+                        - len(excerpt[line_start:line_end].lstrip())
+                    )
+                description_lines.append(line)
+                description_end = line_end
+            elif description_lines:
+                description_lines.append("")
+    description_text = "\n".join(description_lines).strip()
+    if description_start is not None and description_end is not None:
+        description_evidence_ids = list(session.scalars(
+            select(EvidenceSpan.id)
+            .where(
+                EvidenceSpan.source_version_id == version.id,
+                EvidenceSpan.start_char < description_end,
+                EvidenceSpan.end_char > description_start,
+            )
+            .order_by(EvidenceSpan.start_char)
+        ))
+    else:
+        description_evidence_ids = []
+    front_matter_end = (
+        description_end
+        if description_end is not None
+        else min(excerpt_end, first_chapter.start_char + 2_000)
+    )
+    return {
+        "preferred_title": preferred_title,
+        "title_candidates": list(dict.fromkeys(title_candidates)),
+        "front_matter_text": text[:front_matter_end].strip(),
+        "description_present": bool(description_text),
+        "description_text": description_text,
+        "description_source_char_start": (
+            description_start + 1 if description_start is not None else None
+        ),
+        "description_source_char_end": description_end,
+        "description_evidence_ids": description_evidence_ids,
+        "evidence_ids": description_evidence_ids,
+        "chapter_numbering_policy": (
+            "只对 CHAPTER 类型来源单元按顺序从 1 编号；"
+            "PREFACE 等前置内容不计入章节序号。"
+        ),
+        "promise_chapter_position": 0,
+    }
+
+
+def _opening_payoff_candidate_artifact(
+    projection: dict,
+    evidence_by_id: dict[str, EvidenceSpan],
+    chapter_by_unit_id: dict[str, dict[str, object]],
+    opening_promise_sources: dict[str, object],
+) -> dict[str, object]:
+    description_evidence_ids = {
+        str(evidence_id)
+        for evidence_id in opening_promise_sources.get(
+            "description_evidence_ids",
+            [],
+        )
+        if evidence_id
+    }
+    sortable_events: list[tuple[int, int, str, dict, list[EvidenceSpan]]] = []
+    for event in projection.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        chapters = [
+            int(value)
+            for value in event.get("chapter_ordinals", [])
+            if int(value) > 0
+        ]
+        evidence = sorted(
+            (
+                evidence_by_id[str(evidence_id)]
+                for evidence_id in event.get("evidence_ids", [])
+                if str(evidence_id) in evidence_by_id
+            ),
+            key=lambda item: (item.start_char, item.end_char, item.id),
+        )
+        if not chapters or not evidence:
+            continue
+        sortable_events.append((
+            min(chapters),
+            min(item.start_char for item in evidence),
+            str(event.get("id") or ""),
+            event,
+            evidence,
+        ))
+    sortable_events.sort(key=lambda item: item[:3])
+    selected_events = sortable_events[:OPENING_PAYOFF_CANDIDATE_LIMIT]
+    candidates: list[dict[str, object]] = []
+    for sequence_no, (
+        event_chapter,
+        _event_start,
+        event_id,
+        event,
+        evidence,
+    ) in enumerate(selected_events, start=1):
+        evidence_options: list[dict[str, object]] = []
+        for evidence_no, item in enumerate(evidence[:16], start=1):
+            chapter = chapter_by_unit_id.get(item.source_unit_id, {})
+            evidence_options.append({
+                "evidence_no": evidence_no,
+                "evidence_id": item.id,
+                "chapter_ordinal": int(
+                    chapter.get("ordinal") or event_chapter
+                ),
+                "chapter_title": str(
+                    chapter.get("title") or item.source_unit.title
+                ),
+                "paragraph_number": item.paragraph_index + 1,
+                "source_char_start": item.start_char + 1,
+                "text": item.text_snapshot[:360],
+            })
+        event_evidence_ids = {
+            str(item.id) for item in evidence
+        }
+        candidates.append({
+            "sequence_no": sequence_no,
+            "event_id": event_id,
+            "event_title": str(event.get("title") or "未命名事件"),
+            "event_summary": str(
+                event.get("summary")
+                or event.get("process")
+                or event.get("outcome")
+                or ""
+            )[:600],
+            "narrative_mode": str(
+                event.get("narrative_mode") or "UNKNOWN"
+            ),
+            "program_exclusion_code": (
+                "PROMISE_SOURCE"
+                if (
+                    event_evidence_ids
+                    and event_evidence_ids.issubset(
+                        description_evidence_ids
+                    )
+                )
+                else ""
+            ),
+            "evidence_options": evidence_options,
+        })
+    return {
+        "facet_definitions": [
+            {
+                "facet_id": "F1",
+                "definition": (
+                    "一句话卖点中的核心异常、机制或主要矛盾已经在正文中"
+                    "作为正在发生的实体、力量或行动出现；简介、口述、"
+                    "身份授予、梦境、历史讲述和静态物证不算。"
+                ),
+            },
+            {
+                "facet_id": "F2",
+                "definition": (
+                    "主角在现场直接遭遇该异常、被其作用，或已经被它"
+                    "实际推入一句话卖点所说的主要矛盾。"
+                ),
+            },
+            {
+                "facet_id": "F3",
+                "definition": (
+                    "事件发生在正文现实行动层，不是前置简介、梦境、"
+                    "历史转述、模拟演示或纯设定说明。"
+                ),
+            },
+        ],
+        "classification_policy": (
+            "从 sequence_no=1 连续分类；同时命中 F1/F2/F3 且 "
+            "exclusion_code=NONE 才是完整兑现。程序选择第一条完整兑现，"
+            "并从 anchor_evidence_no 对应原文编译所有位置数字。"
+        ),
+        "coverage": {
+            "source_event_count": len(sortable_events),
+            "candidate_count": len(candidates),
+            "candidate_limit": OPENING_PAYOFF_CANDIDATE_LIMIT,
+            "source_sequence_contiguous": True,
+            "all_source_events_in_window": (
+                len(sortable_events) <= OPENING_PAYOFF_CANDIDATE_LIMIT
+            ),
+        },
+        "candidates": candidates,
+    }
 
 
 def _material_bundle(
@@ -823,49 +1348,26 @@ def _source_materials(
         materials.append((126, "opening_hook_payoffs_summary", payoff_metadata))
         for item in opening_hook_payoffs.get("hooks", []):
             materials.append((125, "opening_hook_payoff", item))
-    if "1.4" in question_ids:
-        for item in _opening_action_counts(projection):
-            materials.append((117, "opening_action_program_count", {
-                **item,
-                "evidence_ids": item.get("evidence_ids", [])[:12],
-            }))
-        opening_events = []
-        for item in projection.get("events", []):
-            chapter_ordinals = [
-                int(value)
-                for value in item.get("chapter_ordinals", [])
-                if int(value) > 0
+    if question_ids == ("1.4",):
+        protagonist = str((overview or {}).get("protagonist") or "").strip()
+        normalized_protagonist = _normalized_person_name(protagonist)
+        for item in projection.get("characters", []):
+            names = [
+                item.get("name"),
+                *item.get("aliases", []),
             ]
-            if chapter_ordinals and min(chapter_ordinals) <= 30:
-                opening_events.append(item)
-        event_groups = (
-            (1, 3, 40),
-            (4, 10, 30),
-            (11, 30, 30),
-        )
-        for start, end, limit in event_groups:
-            group = [
-                item
-                for item in opening_events
-                if any(
-                    start <= int(chapter) <= end
-                    for chapter in item.get("chapter_ordinals", [])
+            is_named_protagonist = bool(
+                normalized_protagonist
+                and any(
+                    _normalized_person_name(name) == normalized_protagonist
+                    for name in names
                 )
-            ]
-            for item in group[:limit]:
-                materials.append((110, "opening_event", {
-                    key: item.get(key)
-                    for key in (
-                        "id",
-                        "title",
-                        "chapter_ordinals",
-                        "people",
-                        "trigger",
-                        "process",
-                        "outcome",
-                        "evidence_ids",
-                    )
-                }))
+            )
+            if is_named_protagonist:
+                materials.append((117, "protagonist", item))
+            elif item.get("role") == "PROTAGONIST":
+                materials.append((112, "protagonist", item))
+        return materials
     if "2.1" in question_ids:
         opening_artifact = _opening_character_program_artifact(projection)
         first_event_ids = {
@@ -1176,7 +1678,8 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         gaps=(
             selling_point_gaps
             or [
-                "当前只能依据故事前提与前三章回答，书名、简介承诺和同类书对照仍需补充。"
+                "当前只能形成单书部分回答；书名与简介须按源文件前置内容核对，"
+                "同品类同商业模式的多书对照仍缺失。"
             ]
         ),
         required_artifact="开篇承诺与首次兑现证据表",
@@ -1271,6 +1774,8 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         "core_ability": "核心能力",
     }
     character_gaps: list[str] = []
+    character_limitations: list[str] = []
+    insufficient_character_fields: list[str] = []
     if protagonist is None:
         character_gaps.append("尚未确认主角。")
     if character_design and character_design.get("is_current") is False:
@@ -1280,19 +1785,46 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         character_gaps.append("主角证据表没有覆盖当前运行的全部主角事件。")
     for key, label in required_character_fields.items():
         item = character_design_by_field.get(key)
-        if (
-            not isinstance(item, dict)
-            or item.get("status", "SUPPORTED") != "SUPPORTED"
-            or not item.get("first_display_chapter_ordinal")
-            or not item.get("first_display_event_id")
-            or not item.get("evidence_ids")
-        ):
+        if not isinstance(item, dict):
             character_gaps.append(f"缺少{label}的首次展示事件与原文。")
+            continue
+        status = item.get("status", "SUPPORTED")
+        if status == "SUPPORTED":
+            if (
+                not str(item.get("value") or "").strip()
+                or not item.get("first_display_chapter_ordinal")
+                or not item.get("first_display_event_id")
+                or not str(item.get("display_event") or "").strip()
+                or not item.get("evidence_ids")
+            ):
+                character_gaps.append(f"缺少{label}的首次展示事件与原文。")
+        elif status == "INSUFFICIENT_EVIDENCE":
+            if (
+                str(item.get("value") or "").strip()
+                or item.get("first_display_chapter_ordinal") is not None
+                or str(item.get("first_display_event_id") or "").strip()
+                or str(item.get("display_event") or "").strip()
+                or item.get("evidence_ids")
+                or not str(item.get("explanation") or "").strip()
+            ):
+                character_gaps.append(f"{label}的证据不足记录格式无效，需要重新生成。")
+            else:
+                insufficient_character_fields.append(label)
+                character_limitations.append(
+                    f"当前全书主角事件账本未找到可核验的{label}首次展示事件与原文。"
+                )
+        else:
+            character_gaps.append(f"{label}使用了未知证据状态，需要重新生成。")
     if character_design and not str(character_design.get("arc_summary") or "").strip():
         character_gaps.append("主角证据表缺少全书人物弧光总结。")
     checks["2.2"] = _readiness_check(
         "2.2",
         ready=not character_gaps,
+        answer_scope=(
+            "PARTIAL"
+            if not character_gaps and insufficient_character_fields
+            else None
+        ),
         observed={
             "protagonist": protagonist_name,
             "existing_goal_count": len((protagonist or {}).get("goals", [])),
@@ -1304,12 +1836,25 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
                 and character_design_by_field[key].get("status", "SUPPORTED") == "SUPPORTED"
                 and character_design_by_field[key].get("evidence_ids")
             ),
+            "contract_field_insufficient_count": len(
+                insufficient_character_fields
+            ),
+            "contract_field_assessed_count": sum(
+                1
+                for key in required_character_fields
+                if isinstance(character_design_by_field.get(key), dict)
+                and character_design_by_field[key].get(
+                    "status",
+                    "SUPPORTED",
+                )
+                in {"SUPPORTED", "INSUFFICIENT_EVIDENCE"}
+            ),
             "desire_conflict_count": len(character_design.get("desire_conflicts", []))
             if isinstance(character_design, dict)
             else 0,
             "event_coverage_complete": coverage.get("event_coverage_complete"),
         },
-        gaps=character_gaps,
+        gaps=character_gaps or character_limitations,
         required_artifact="主角双层欲望与最小完整集证据表",
         source_material=character_design,
     )
@@ -1554,6 +2099,18 @@ def _report_uses_current_contract(report: LearningReport) -> bool:
     return payload.get("catalog_version") == LEARNING_QUESTION_CATALOG_VERSION
 
 
+def _answer_uses_current_contract(
+    payload: dict[str, object],
+    question_id: str,
+) -> bool:
+    versions = payload.get("question_contract_versions") or {}
+    if not isinstance(versions, dict):
+        return False
+    return versions.get(question_id, "1.0.0") == (
+        LEARNING_QUESTION_CONTRACT_VERSIONS.get(question_id, "1.0.0")
+    )
+
+
 def provider_payload_for_learning_report(
     session: Session,
     settings: Settings,
@@ -1603,23 +2160,29 @@ def provider_payload_for_learning_report(
         settings,
         str(task_payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID),
     )
-    chapter_units = list(session.scalars(
-        select(SourceUnit)
-        .where(
-            SourceUnit.source_version_id == version.id,
-            SourceUnit.unit_type == "CHAPTER",
-        )
-        .order_by(SourceUnit.ordinal)
-    ))
-    chapter_by_unit_id = {
-        unit.id: {"ordinal": ordinal, "title": unit.title}
-        for ordinal, unit in enumerate(chapter_units, start=1)
-    }
+    chapter_by_unit_id = _chapter_index_by_unit_id(session, version.id)
     source_materials = _source_materials(projection, requested_question_ids)
+    opening_promise_sources: dict[str, object] | None = None
+    if requested_question_ids == ("1.4",):
+        opening_promise_sources = _opening_promise_source_artifact(
+            session,
+            settings,
+            version,
+        )
+        source_materials.append((
+            130,
+            "opening_promise_sources",
+            opening_promise_sources,
+        ))
     all_evidence_ids = _evidence_ids({
         "story_overview": projection.get("story_overview"),
         "characters": projection.get("characters", []),
         "materials": [item for _priority, _kind, item in source_materials],
+        "opening_payoff_events": (
+            projection.get("events", [])
+            if requested_question_ids == ("1.4",)
+            else []
+        ),
     })
     evidence_by_id = {
         item.id: item
@@ -1686,9 +2249,28 @@ def provider_payload_for_learning_report(
     }
     if include_chapter_catalog:
         fixed_input["chapter_catalog"] = [
-            {"ordinal": ordinal, "title": unit.title}
-            for ordinal, unit in enumerate(chapter_units, start=1)
+            {
+                "ordinal": int(item.get("ordinal") or 0),
+                "title": item.get("title"),
+            }
+            for item in sorted(
+                chapter_by_unit_id.values(),
+                key=lambda item: int(item.get("ordinal") or 0),
+            )
         ]
+    if question_id == "1.4":
+        if opening_promise_sources is None:
+            raise ValueError("LEARNING_REPORT_1_4_PROMISE_SOURCE_MISSING")
+        fixed_input["program_artifacts"] = {
+            "opening_payoff_candidate_ledger": (
+                _opening_payoff_candidate_artifact(
+                    projection,
+                    evidence_by_id,
+                    chapter_by_unit_id,
+                    opening_promise_sources,
+                )
+            ),
+        }
     if question_id == "2.1":
         opening_character_artifact = _opening_character_program_artifact(projection)
         fixed_input["program_metrics"] = {
@@ -1762,10 +2344,154 @@ def provider_payload_for_learning_report(
     }
 
 
+def _answer_user_visible_texts(
+    answer: LearningAnswerProposal,
+) -> list[str]:
+    return [
+        answer.conclusion,
+        *answer.limitations,
+        *answer.reusable_lessons,
+        *answer.do_not_copy,
+        *(
+            text
+            for item in answer.contract_items
+            for text in (
+                item.finding,
+                *item.limitations,
+                *(
+                    value
+                    for metric in item.metrics
+                    for value in (
+                        metric.label,
+                        metric.value,
+                        metric.unit,
+                        metric.method,
+                    )
+                ),
+            )
+        ),
+        *(
+            value
+            for metric in answer.metrics
+            for value in (
+                metric.label,
+                metric.value,
+                metric.unit,
+                metric.method,
+            )
+        ),
+    ]
+
+
+def _split_user_text_clauses(text: str) -> list[str]:
+    return [
+        clause.strip()
+        for clause in _USER_TEXT_CLAUSE_BREAK.split(text)
+        if clause.strip()
+    ]
+
+
+def _clause_marks_external_effect_uncertainty(clause: str) -> bool:
+    return bool(
+        _EXTERNAL_EFFECT_UNCERTAINTY.search(clause)
+        or _EXTERNAL_EFFECT_QUESTION.search(clause)
+    )
+
+
+def _has_unsupported_external_effect_claim(text: str) -> bool:
+    clauses = _split_user_text_clauses(text)
+    for index, clause in enumerate(clauses):
+        if _UNSUPPORTED_EXTERNAL_MAGNITUDE.search(clause):
+            return True
+        has_causal_claim = bool(
+            _UNSUPPORTED_EXTERNAL_CAUSALITY.search(clause)
+            or _UNSUPPORTED_EXTERNAL_EFFECT_ASSERTION.search(clause)
+            or _READER_BEHAVIOR_OR_PSYCHOLOGY.search(clause)
+        )
+        if not has_causal_claim and not _EXTERNAL_EFFECT_TERM.search(clause):
+            continue
+        if _clause_marks_external_effect_uncertainty(clause):
+            continue
+        if has_causal_claim:
+            return True
+        adjacent_clauses = clauses[max(0, index - 1):index] + clauses[
+            index + 1:index + 2
+        ]
+        if any(
+            _clause_marks_external_effect_uncertainty(adjacent)
+            for adjacent in adjacent_clauses
+        ):
+            continue
+        return True
+    return False
+
+
+def _has_out_of_scope_4_9_response_distance(
+    answer: LearningAnswerProposal,
+) -> bool:
+    return any(
+        _CHAPTER_END_RESPONSE_DISTANCE.search(clause)
+        and not _CHAPTER_END_RESPONSE_SCOPE_DENIAL.search(clause)
+        for text in _answer_user_visible_texts(answer)
+        for clause in _split_user_text_clauses(text)
+    )
+
+
+def _validate_answer_user_text_boundaries(
+    answer: LearningAnswerProposal,
+) -> None:
+    answer_texts = _answer_user_visible_texts(answer)
+    if any(_PROHIBITED_PRICING_TERM.search(text) for text in answer_texts):
+        raise LearningReportValidationError(
+            "LEARNING_REPORT_PRICING_OUT_OF_SCOPE",
+            [{
+                "path": ["answers", answer.question_id],
+                "type": "value_error",
+                "message": (
+                    "创作学习答案只记录 Token、调用、重试、耗时和失败，"
+                    "不得出现价格、币种、金额、单价或费用字段。"
+                ),
+            }],
+        )
+    unsupported_claims = [
+        text
+        for text in answer_texts
+        if _has_unsupported_external_effect_claim(text)
+    ]
+    if unsupported_claims:
+        raise LearningReportValidationError(
+            "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED",
+            [{
+                "path": ["answers", answer.question_id],
+                "type": "value_error",
+                "message": (
+                    "书内结构证据不能证明读者流失、留存、销量、"
+                    "口碑或市场表现的因果；请改写为结构观察或待外部数据验证。"
+                ),
+            }],
+        )
+    if (
+        answer.question_id == "4.9"
+        and _has_out_of_scope_4_9_response_distance(answer)
+    ):
+        raise LearningReportValidationError(
+            "LEARNING_REPORT_4_9_RESPONSE_METRIC_OUT_OF_SCOPE",
+            [{
+                "path": ["answers", answer.question_id],
+                "type": "value_error",
+                "message": (
+                    "4.9 只回答章末钩类型和节律，不得在用户答案中"
+                    "记录回应、兑现或回收距离。"
+                ),
+            }],
+        )
+
+
 def parse_learning_report(
     value: dict,
     *,
     expected_question_ids: tuple[str, ...] | list[str] | None = None,
+    defer_user_text_checks_for: set[str] | None = None,
 ) -> LearningReportOutput:
     try:
         output = LearningReportOutput.model_validate(value)
@@ -1798,40 +2524,10 @@ def parse_learning_report(
                 "message": "首组逐问答案不得提前生成作者决策或方法候选汇总",
             }],
         )
+    deferred = defer_user_text_checks_for or set()
     for answer in output.answers:
-        answer_texts = [
-            answer.conclusion,
-            *answer.limitations,
-            *answer.reusable_lessons,
-            *answer.do_not_copy,
-        ]
-        unsupported_claims = [
-            text
-            for text in answer_texts
-            if (
-                _UNSUPPORTED_EXTERNAL_MAGNITUDE.search(text)
-                or (
-                    _UNSUPPORTED_EXTERNAL_CAUSALITY.search(text)
-                    or _EXTERNAL_EFFECT_TERM.search(text)
-                )
-                and (
-                    _UNSUPPORTED_EXTERNAL_MAGNITUDE.search(text)
-                    or not _EXTERNAL_EFFECT_UNCERTAINTY.search(text)
-                )
-            )
-        ]
-        if unsupported_claims:
-            raise LearningReportValidationError(
-                "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED",
-                [{
-                    "path": ["answers", answer.question_id],
-                    "type": "value_error",
-                    "message": (
-                        "书内结构证据不能证明读者流失、留存、销量、"
-                        "口碑或市场表现的因果；请改写为结构观察或待外部数据验证。"
-                    ),
-                }],
-            )
+        if answer.question_id not in deferred:
+            _validate_answer_user_text_boundaries(answer)
         definitions = LEARNING_QUESTION_MODEL_ITEM_CONTRACTS.get(
             answer.question_id,
             LEARNING_QUESTION_ITEM_CONTRACTS.get(answer.question_id),
@@ -1860,6 +2556,37 @@ def parse_learning_report(
             for item in answer.contract_items
             if item.status == "INSUFFICIENT_EVIDENCE"
         ]
+        unsupported_items_without_support = [
+            item.item_id
+            for item in answer.contract_items
+            if (
+                item.status == "SUPPORTED"
+                and not item.evidence_ids
+                and not item.metrics
+                and not item.classifications
+                and not item.payoff_classifications
+                and item.item_id not in {
+                    "first_scene_functions",
+                    "scope_boundary",
+                }
+            )
+        ]
+        if unsupported_items_without_support:
+            raise LearningReportValidationError(
+                "LEARNING_REPORT_CONTRACT_ITEM_SUPPORT_MISSING",
+                [{
+                    "path": [
+                        "answers",
+                        answer.question_id,
+                        "contract_items",
+                    ],
+                    "type": "value_error",
+                    "message": (
+                        "标为已支持的合同项目必须带原文、可核查指标或程序分类："
+                        f"{'、'.join(unsupported_items_without_support)}"
+                    ),
+                }],
+            )
         if insufficient_items and answer.status == "ANSWERED":
             raise LearningReportValidationError(
                 "LEARNING_REPORT_CONTRACT_STATUS_INCONSISTENT",
@@ -1872,6 +2599,86 @@ def parse_learning_report(
                     ),
                 }],
             )
+        if answer.question_id == "1.4":
+            item_by_id = {
+                item.item_id: item for item in answer.contract_items
+            }
+            if answer.status != "PARTIAL":
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_1_4_SCOPE_INVALID",
+                    [{
+                        "path": ["answers", answer.question_id, "status"],
+                        "type": "value_error",
+                        "message": (
+                            "当前缺少同口径多书对照，1.4 必须标为部分回答。"
+                        ),
+                    }],
+                )
+            if (
+                item_by_id["cross_book_comparison"].status
+                != "INSUFFICIENT_EVIDENCE"
+            ):
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_1_4_CROSS_BOOK_SCOPE_INVALID",
+                    [{
+                        "path": [
+                            "answers",
+                            answer.question_id,
+                            "contract_items",
+                            "cross_book_comparison",
+                        ],
+                        "type": "value_error",
+                        "message": "没有同口径多书数据时不得生成同类书卖点对比。",
+                    }],
+                )
+            payoff_item = item_by_id["first_payoff_location"]
+            if (
+                payoff_item.status != "SUPPORTED"
+                or not payoff_item.payoff_classifications
+            ):
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATIONS_MISSING",
+                    [{
+                        "path": [
+                            "answers",
+                            answer.question_id,
+                            "contract_items",
+                            "first_payoff_location",
+                            "payoff_classifications",
+                        ],
+                        "type": "value_error",
+                        "message": (
+                            "1.4 必须从第 1 个候选起连续返回兑现要素分类，"
+                            "由程序决定第一条完整兑现。"
+                        ),
+                    }],
+                )
+        if answer.question_id == "2.2":
+            expected_status = (
+                "PARTIAL" if insufficient_items else "ANSWERED"
+            )
+            if answer.status != expected_status:
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_2_2_CONTRACT_STATUS_INVALID",
+                    [{
+                        "path": ["answers", answer.question_id, "status"],
+                        "type": "value_error",
+                        "message": (
+                            "2.2 有证据不足项目时整问必须标为部分回答；"
+                            "八项均有证据时才可标为完整回答。"
+                        ),
+                    }],
+                )
+        if answer.question_id == "4.9":
+            if answer.status != "ANSWERED" or insufficient_items:
+                raise LearningReportValidationError(
+                    "LEARNING_REPORT_4_9_CONTRACT_INCOMPLETE",
+                    [{
+                        "path": ["answers", answer.question_id, "status"],
+                        "type": "value_error",
+                        "message": "专项原料已完整，必须逐项回答全部合同。",
+                    }],
+                )
         if answer.question_id == "2.1":
             item_by_id = {
                 item.item_id: item for item in answer.contract_items
@@ -2227,9 +3034,1721 @@ def _program_2_1_reading_fields(
     }
 
 
+def _contract_item_by_id(
+    answer: LearningAnswerProposal,
+) -> dict[str, LearningContractItemProposal]:
+    return {item.item_id: item for item in answer.contract_items}
+
+
+def _metric_blob(item: LearningContractItemProposal) -> str:
+    return "；".join(
+        f"{metric.label}={metric.value}{metric.unit}（{metric.method}）"
+        for metric in item.metrics
+    )
+
+
+def _metric_mentions_number(
+    item: LearningContractItemProposal,
+    value: int,
+) -> bool:
+    return re.search(
+        rf"(?<!\d){re.escape(str(value))}(?!\d)",
+        _metric_blob(item),
+    ) is not None
+
+
+def _metrics_with_label(
+    item: LearningContractItemProposal,
+    aliases: tuple[str, ...],
+) -> list[LearningMetricProposal]:
+    return [
+        metric
+        for metric in item.metrics
+        if any(alias.casefold() in metric.label.casefold() for alias in aliases)
+    ]
+
+
+def _metric_value_matches_number(
+    metric: LearningMetricProposal,
+    value: int,
+) -> bool:
+    return re.search(
+        rf"(?<!\d){re.escape(str(value))}(?!\d)",
+        metric.value,
+    ) is not None
+
+
+def _metric_group_matches_count(
+    item: LearningContractItemProposal,
+    aliases: tuple[str, ...],
+    count: int,
+) -> bool:
+    return any(
+        _metric_value_matches_number(metric, count)
+        for metric in _metrics_with_label(item, aliases)
+    )
+
+
+def _metric_group_matches_ratio(
+    item: LearningContractItemProposal,
+    aliases: tuple[str, ...],
+    ratio: float,
+) -> bool:
+    decimal_markers = {
+        str(ratio),
+        f"{ratio:.4f}",
+        f"{ratio:.2f}",
+        f"{ratio:.4f}".rstrip("0").rstrip("."),
+        f"{ratio:.2f}".rstrip("0").rstrip("."),
+    }
+    percent_markers = {
+        f"{ratio * 100:.2f}",
+        f"{ratio * 100:.1f}",
+        f"{ratio * 100:.2f}".rstrip("0").rstrip("."),
+        f"{ratio * 100:.1f}".rstrip("0").rstrip("."),
+    }
+    for metric in _metrics_with_label(item, aliases):
+        ratio_text = "；".join((metric.value, metric.unit, metric.method))
+        decimal_text = (
+            ratio_text
+            if re.search(r"(?:占比|比例)", metric.label)
+            else "；".join((metric.unit, metric.method))
+        )
+        if any(
+            re.search(rf"(?<!\d){re.escape(marker)}\s*%", ratio_text)
+            for marker in percent_markers
+            if marker
+        ) or any(
+            re.search(
+                rf"(?<![\d.]){re.escape(marker)}(?![\d.])",
+                decimal_text,
+            )
+            for marker in decimal_markers
+            if marker
+        ):
+            return True
+    return False
+
+
+def _validate_answer_evidence_subset(
+    answer: LearningAnswerProposal,
+    allowed_evidence_ids: set[str],
+    *,
+    error_code: str,
+) -> None:
+    referenced = _evidence_ids(answer.model_dump(mode="json"))
+    if not referenced or not referenced.issubset(allowed_evidence_ids):
+        raise ValueError(error_code)
+
+
+_PAYOFF_EXCLUSION_LABELS = {
+    "PROMISE_SOURCE": "前置承诺来源",
+    "PROMISE_RESTATEMENT": "承诺重述",
+    "IDENTITY_GRANT": "身份授予",
+    "DREAM_OR_HISTORY": "梦境或历史讲述",
+    "STATIC_EVIDENCE": "静态物证或演示",
+    "SIMULATION": "模拟场面",
+    "PARTIAL_ONLY": "只部分兑现",
+    "UNRELATED": "与核心承诺无关",
+}
+
+
+def _opening_promise_metric_by_source(
+    item: LearningContractItemProposal,
+) -> dict[str, LearningMetricProposal]:
+    aliases = {
+        "title": {"书名"},
+        "description": {"简介", "内容提要"},
+        "premise": {"故事前提", "前提"},
+        "opening_chapters": {"前三章", "前 3 章", "前3章"},
+    }
+    by_source: dict[str, LearningMetricProposal] = {}
+    for metric in item.metrics:
+        label = metric.label.strip()
+        source = next(
+            (
+                source
+                for source, allowed_labels in aliases.items()
+                if label in allowed_labels
+            ),
+            None,
+        )
+        if source is None or source in by_source:
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PROMISE_SOURCE_METRICS_INVALID"
+            )
+        by_source[source] = metric
+    if set(by_source) != set(aliases) or len(item.metrics) != len(aliases):
+        raise ValueError(
+            "LEARNING_REPORT_1_4_PROMISE_SOURCE_METRICS_INVALID"
+        )
+    return by_source
+
+
+def _program_1_4_promise_sources(
+    item: LearningContractItemProposal,
+    projection: dict,
+    opening_promise_sources: dict[str, object],
+    opening_promise_rows: list[dict[str, object]],
+) -> dict[str, object]:
+    if item.status != "SUPPORTED":
+        raise ValueError("LEARNING_REPORT_1_4_PROMISE_SOURCE_INVALID")
+    metrics = _opening_promise_metric_by_source(item)
+    preferred_title = str(
+        opening_promise_sources.get("preferred_title") or ""
+    ).strip()
+    if preferred_title and preferred_title not in metrics["title"].value:
+        raise ValueError("LEARNING_REPORT_1_4_TITLE_SOURCE_INVALID")
+
+    description_evidence = {
+        str(evidence_id)
+        for evidence_id in opening_promise_sources.get(
+            "description_evidence_ids",
+            [],
+        )
+        if evidence_id
+    }
+    description_metric_evidence = set(metrics["description"].evidence_ids)
+    if opening_promise_sources.get("description_present"):
+        if (
+            not description_metric_evidence.intersection(
+                description_evidence
+            )
+            or re.search(
+                r"(?:缺失|未提供|无法确认|不能确认)",
+                metrics["description"].value,
+            )
+        ):
+            raise ValueError(
+                "LEARNING_REPORT_1_4_DESCRIPTION_SOURCE_INVALID"
+            )
+
+    overview = projection.get("story_overview") or {}
+    overview_premise = str(overview.get("premise") or "").strip()
+    overview_evidence = _evidence_ids(overview)
+    premise_evidence = set(metrics["premise"].evidence_ids)
+    if (
+        not overview_premise
+        or not overview_evidence
+        or not premise_evidence
+        or not premise_evidence.intersection(overview_evidence)
+    ):
+        raise ValueError(
+            "LEARNING_REPORT_1_4_PREMISE_SOURCE_INVALID"
+        )
+
+    opening_events = [
+        event
+        for event in projection.get("events", [])
+        if isinstance(event, dict)
+    ]
+    first_three_events = [
+        event
+        for event in opening_events
+        if any(
+            1 <= int(chapter) <= 3
+            for chapter in event.get("chapter_ordinals", [])
+        )
+    ]
+    first_three_evidence = _evidence_ids(first_three_events)
+    first_three_body_evidence = (
+        first_three_evidence - description_evidence
+    )
+    opening_metric_evidence = set(
+        metrics["opening_chapters"].evidence_ids
+    )
+    authoritative_opening_evidence = {
+        str(row.get("anchor_evidence_id") or "")
+        for row in opening_promise_rows
+        if row.get("anchor_evidence_id")
+    }
+    if (
+        not opening_promise_rows
+        or not authoritative_opening_evidence
+        or not opening_metric_evidence
+        or not opening_metric_evidence.issubset(
+            first_three_evidence
+        )
+        or not opening_metric_evidence.intersection(
+            first_three_body_evidence
+        )
+        or not opening_metric_evidence.intersection(
+            authoritative_opening_evidence
+        )
+    ):
+        raise ValueError(
+            "LEARNING_REPORT_1_4_OPENING_CHAPTER_SOURCE_INVALID"
+        )
+
+    description_value = str(
+        opening_promise_sources.get("description_text")
+        or metrics["description"].value
+    ).strip()
+    description_ids = (
+        sorted(description_evidence)
+        if opening_promise_sources.get("description_present")
+        else list(metrics["description"].evidence_ids)
+    )
+    opening_value = "；".join(
+        (
+            f"第 {int(row['chapter_ordinal'])} 章"
+            f"“{str(row['chapter_title'])}”："
+            f"{str(row['event_title'])}"
+        )
+        for row in opening_promise_rows
+    )
+    opening_evidence_ids = list(dict.fromkeys(
+        str(row["anchor_evidence_id"])
+        for row in opening_promise_rows
+    ))
+    compiled_metrics = [
+        LearningMetricProposal(
+            label="书名",
+            value=preferred_title or metrics["title"].value,
+            unit="",
+            method="程序核对源文件前置书名。",
+            evidence_ids=[],
+        ),
+        LearningMetricProposal(
+            label="简介",
+            value=description_value,
+            unit="",
+            method="程序直接读取源文件前置简介原文。",
+            evidence_ids=description_ids,
+        ),
+        LearningMetricProposal(
+            label="故事前提",
+            value=overview_premise,
+            unit="",
+            method="程序读取当前故事总览前提及其完整依据。",
+            evidence_ids=sorted(overview_evidence)[:16],
+        ),
+        LearningMetricProposal(
+            label="前三章",
+            value=opening_value,
+            unit="",
+            method="程序汇总前三章中命中 F1 的卖点候选及现场原文。",
+            evidence_ids=opening_evidence_ids[:16],
+        ),
+    ]
+    item.finding = "；".join(
+        f"{metric.label}：{metric.value}"
+        for metric in compiled_metrics
+    )
+    item.metrics = compiled_metrics
+    item.evidence_ids = list(dict.fromkeys(
+        evidence_id
+        for metric in compiled_metrics
+        for evidence_id in metric.evidence_ids
+    ))[:32]
+    item.limitations = []
+    item.classifications = []
+    item.payoff_classifications = []
+    return {
+        "title": {
+            "value": compiled_metrics[0].value,
+            "evidence_ids": [],
+        },
+        "description": {
+            "value": compiled_metrics[1].value,
+            "evidence_ids": compiled_metrics[1].evidence_ids,
+        },
+        "story_premise": {
+            "value": compiled_metrics[2].value,
+            "evidence_ids": compiled_metrics[2].evidence_ids,
+        },
+        "opening_chapters": {
+            "value": compiled_metrics[3].value,
+            "evidence_ids": compiled_metrics[3].evidence_ids,
+            "allowed_first_three_evidence_count": len(
+                first_three_body_evidence
+            ),
+        },
+        "contract_validation": {
+            "four_sources_compiled_by_program": True,
+            "description_evidence_matched": bool(
+                not opening_promise_sources.get("description_present")
+                or description_metric_evidence.intersection(
+                    description_evidence
+                )
+            ),
+            "opening_chapters_use_non_description_evidence": True,
+            "story_premise_compiled_from_overview": True,
+            "opening_chapters_compiled_from_f1_candidates": True,
+        },
+    }
+
+
+def _program_1_4_answer(
+    answer: LearningAnswerProposal,
+    projection: dict,
+    *,
+    opening_promise_sources: dict[str, object] | None = None,
+    evidence_by_id: dict[str, EvidenceSpan] | None = None,
+    chapter_by_unit_id: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    opening_promise_sources = opening_promise_sources or {}
+    evidence_by_id = evidence_by_id or {}
+    chapter_by_unit_id = chapter_by_unit_id or {}
+    overview = projection.get("story_overview") or {}
+    allowed = _evidence_ids({
+        "story_overview": overview,
+        "opening_events": projection.get("events", []),
+        "opening_promise_sources": opening_promise_sources,
+    })
+    _validate_answer_evidence_subset(
+        answer,
+        allowed,
+        error_code="LEARNING_REPORT_1_4_EVIDENCE_SCOPE_INVALID",
+    )
+    items = _contract_item_by_id(answer)
+    selling_point = items["selling_point_card"]
+    promise_sources = items["opening_promise_sources"]
+    promise_source_text = "；".join((
+        promise_sources.finding,
+        _metric_blob(promise_sources),
+    ))
+    preferred_title = str(
+        opening_promise_sources.get("preferred_title") or ""
+    ).strip()
+    if (
+        preferred_title
+        and (
+            preferred_title not in promise_source_text
+            or re.search(
+                r"(?:书名|标题).{0,12}"
+                r"(?:缺失|未提供|无法确认|不能确认|不是|并非|不叫)",
+                promise_source_text,
+            )
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_TITLE_SOURCE_INVALID")
+    description_evidence = {
+        str(evidence_id)
+        for evidence_id in opening_promise_sources.get(
+            "description_evidence_ids",
+            [],
+        )
+        if evidence_id
+    }
+    actual_promise_evidence = _evidence_ids(
+        promise_sources.model_dump(mode="json")
+    )
+    if (
+        opening_promise_sources.get("description_present")
+        and (
+            not actual_promise_evidence.intersection(description_evidence)
+            or re.search(
+                r"(?:简介|内容提要).{0,12}"
+                r"(?:缺失|未提供|无法确认|不能确认)",
+                promise_source_text,
+            )
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_DESCRIPTION_SOURCE_INVALID")
+    required_source_labels = (
+        ("书名",),
+        ("简介", "内容提要"),
+        ("故事前提", "前提"),
+        ("前三章", "前 3 章", "前3章"),
+    )
+    if any(
+        not any(label in promise_source_text for label in aliases)
+        for aliases in required_source_labels
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_PROMISE_SOURCE_INCOMPLETE")
+
+    candidate_artifact = _opening_payoff_candidate_artifact(
+        projection,
+        evidence_by_id,
+        chapter_by_unit_id,
+        opening_promise_sources,
+    )
+    candidates = [
+        item
+        for item in candidate_artifact.get("candidates", [])
+        if isinstance(item, dict)
+    ]
+    candidate_by_sequence = {
+        int(item["sequence_no"]): item for item in candidates
+    }
+    payoff = items["first_payoff_location"]
+    classifications = payoff.payoff_classifications
+    if not classifications:
+        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATIONS_MISSING")
+    sequence_numbers = [
+        classification.sequence_no for classification in classifications
+    ]
+    if (
+        len(sequence_numbers) != len(set(sequence_numbers))
+        or sequence_numbers != list(range(1, len(sequence_numbers) + 1))
+        or any(
+            sequence_no not in candidate_by_sequence
+            for sequence_no in sequence_numbers
+        )
+    ):
+        raise ValueError(
+            "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATION_COVERAGE_INVALID"
+        )
+
+    selected_classification: LearningPayoffClassificationProposal | None = None
+    selected_candidate: dict[str, object] | None = None
+    selected_evidence: dict[str, object] | None = None
+    classified_rows: list[dict[str, object]] = []
+    for classification in classifications:
+        candidate = candidate_by_sequence[classification.sequence_no]
+        evidence_options = {
+            int(item["evidence_no"]): item
+            for item in candidate.get("evidence_options", [])
+            if isinstance(item, dict)
+        }
+        anchor = evidence_options.get(classification.anchor_evidence_no)
+        if anchor is None:
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_EVIDENCE_REFERENCE_INVALID"
+            )
+        program_exclusion = str(
+            candidate.get("program_exclusion_code") or ""
+        )
+        if (
+            program_exclusion
+            and classification.exclusion_code != program_exclusion
+        ):
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_PROGRAM_EXCLUSION_INVALID"
+            )
+        is_complete = (
+            set(classification.matched_facet_ids) == {"F1", "F2", "F3"}
+            and classification.exclusion_code == "NONE"
+        )
+        classified_rows.append({
+            **classification.model_dump(mode="json"),
+            "event_id": candidate.get("event_id"),
+            "event_title": candidate.get("event_title"),
+            "event_summary": candidate.get("event_summary"),
+            "anchor_evidence_id": anchor.get("evidence_id"),
+            "chapter_ordinal": anchor.get("chapter_ordinal"),
+            "chapter_title": anchor.get("chapter_title"),
+            "program_complete_payoff": is_complete,
+        })
+        if is_complete and selected_classification is None:
+            selected_classification = classification
+            selected_candidate = candidate
+            selected_evidence = anchor
+    if (
+        selected_classification is None
+        or selected_candidate is None
+        or selected_evidence is None
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_COMPLETE_PAYOFF_MISSING")
+
+    opening_promise_rows = [
+        row
+        for row in classified_rows
+        if (
+            "F1" in row.get("matched_facet_ids", [])
+            and "F3" in row.get("matched_facet_ids", [])
+            and 1 <= int(row.get("chapter_ordinal") or 0) <= 3
+        )
+    ]
+    promise_source_artifact = _program_1_4_promise_sources(
+        promise_sources,
+        projection,
+        opening_promise_sources,
+        opening_promise_rows,
+    )
+
+    selected_sequence = selected_classification.sequence_no
+    description_start = int(
+        opening_promise_sources.get("description_source_char_start") or 0
+    )
+    promise_chapter = int(
+        opening_promise_sources.get("promise_chapter_position") or 0
+    )
+    chapter = int(selected_evidence.get("chapter_ordinal") or 0)
+    paragraph_number = int(
+        selected_evidence.get("paragraph_number") or 0
+    )
+    source_char_start = int(
+        selected_evidence.get("source_char_start") or 0
+    )
+    chapter_title = str(
+        selected_evidence.get("chapter_title") or ""
+    )
+    selected_evidence_id = str(
+        selected_evidence.get("evidence_id") or ""
+    )
+    if description_start <= 0:
+        promise_anchor_ids = {
+            *selling_point.evidence_ids,
+            *promise_sources.evidence_ids,
+        }
+        promise_anchor_options = [
+            option
+            for candidate in candidates
+            for option in candidate.get("evidence_options", [])
+            if (
+                isinstance(option, dict)
+                and str(option.get("evidence_id") or "")
+                in promise_anchor_ids
+            )
+        ]
+        promise_anchor = min(
+            promise_anchor_options,
+            key=lambda item: int(item.get("source_char_start") or 0),
+            default=selected_evidence,
+        )
+        description_start = int(
+            promise_anchor.get("source_char_start") or source_char_start
+        )
+        promise_chapter = int(
+            promise_anchor.get("chapter_ordinal") or chapter
+        )
+    if (
+        chapter <= 0
+        or paragraph_number <= 0
+        or source_char_start <= 0
+        or not chapter_title
+        or not selected_evidence_id
+        or description_start <= 0
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_POSITION_INVALID")
+
+    metrics = [
+        LearningMetricProposal(
+            label="首次兑现章节",
+            value=str(chapter),
+            unit="章",
+            method="程序按连续候选分类选择第一条完整兑现。",
+            evidence_ids=[selected_evidence_id],
+        ),
+        LearningMetricProposal(
+            label="兑现段落",
+            value=str(paragraph_number),
+            unit="段",
+            method="程序读取选中原文依据的一基段落号。",
+            evidence_ids=[selected_evidence_id],
+        ),
+        LearningMetricProposal(
+            label="兑现位置累计字符",
+            value=str(source_char_start),
+            unit="字符",
+            method="程序读取选中原文依据的一基源文件字符起点。",
+            evidence_ids=[selected_evidence_id],
+        ),
+        LearningMetricProposal(
+            label="承诺到兑现章距",
+            value=str(chapter - promise_chapter),
+            unit="章",
+            method="首次兑现章节减去前置简介所在位置 0。",
+            evidence_ids=[selected_evidence_id],
+        ),
+        LearningMetricProposal(
+            label="承诺到兑现字符距离",
+            value=str(source_char_start - description_start),
+            unit="字符",
+            method="兑现原文起点减去简介承诺起点。",
+            evidence_ids=[
+                *sorted(description_evidence)[:1],
+                selected_evidence_id,
+            ],
+        ),
+    ]
+    earlier_rows = classified_rows[
+        max(0, selected_sequence - 4):selected_sequence - 1
+    ]
+    earlier_summary = "；".join(
+        (
+            f"第{row['sequence_no']}项“{row['event_title']}”"
+            f"为{_PAYOFF_EXCLUSION_LABELS.get(str(row['exclusion_code']), '仅部分命中')}"
+        )
+        for row in earlier_rows
+    )
+    payoff.finding = (
+        f"程序按源文件顺序连续核对前 {selected_sequence} 个事件候选，"
+        f"第一条同时命中 F1、F2、F3 的完整兑现是第 {chapter} 章"
+        f"“{chapter_title}”第 {paragraph_number} 段、源文件第 "
+        f"{source_char_start} 个字符处的“"
+        f"{selected_candidate.get('event_title')}”。"
+        + (
+            f"紧邻的更早候选中，{earlier_summary}，因此不算首次完整兑现。"
+            if earlier_summary
+            else ""
+        )
+    )
+    payoff.metrics = metrics
+    payoff.evidence_ids = [selected_evidence_id]
+    payoff.limitations = []
+    payoff.status = "SUPPORTED"
+
+    cross_book = items["cross_book_comparison"]
+    cross_book.status = "INSUFFICIENT_EVIDENCE"
+    cross_book.finding = (
+        "当前缺少同品类、同商业模式作品的同口径数据，"
+        "不能生成跨书卖点优劣结论。"
+    )
+    cross_book.metrics = []
+    cross_book.evidence_ids = []
+    cross_book.limitations = ["当前只能形成单书观察。"]
+
+    answer.status = "PARTIAL"
+    answer.conclusion = (
+        f"{selling_point.finding} 程序按连续候选账本确定，首次完整兑现"
+        f"位于第 {chapter} 章“{chapter_title}”的“"
+        f"{selected_candidate.get('event_title')}”。"
+    )
+    answer.metrics = metrics
+    answer.evidence_ids = list(dict.fromkeys([
+        *selling_point.evidence_ids,
+        *promise_sources.evidence_ids,
+        selected_evidence_id,
+    ]))[:24]
+    answer.limitations = [
+        "缺少同品类、同商业模式作品的同口径数据，不能形成跨书比较。",
+        (
+            f"程序已连续核对选中位置之前的 {selected_sequence - 1} "
+            "个候选；后续更强场面不改变“首次”位置。"
+        ),
+    ]
+    answer.reusable_lessons = [
+        (
+            "先明确一句话卖点的核心异常与主要矛盾，再按原文顺序寻找"
+            "第一次同时出现真实机制、主角直接卷入和现实行动的场面；"
+            "后续场面更强，不能反向改写首次兑现位置。"
+        ),
+    ]
+    answer.do_not_copy = [
+        "不能照搬本书的专有设定、人物、事件或原文表达。",
+        (
+            f"不能把本书第 {chapter} 章的兑现位置当成通用写作阈值；"
+            "其他作品必须按自己的承诺与事件顺序重新核对。"
+        ),
+    ]
+
+    candidate_artifact["classifications"] = classified_rows
+    candidate_artifact["selected_sequence_no"] = selected_sequence
+    candidate_artifact["selected_event_id"] = selected_candidate.get(
+        "event_id"
+    )
+    candidate_artifact["selected_evidence_id"] = selected_evidence_id
+    candidate_artifact["program_position"] = {
+        "chapter_ordinal": chapter,
+        "chapter_title": chapter_title,
+        "paragraph_number": paragraph_number,
+        "source_char_start": source_char_start,
+        "promise_chapter_position": promise_chapter,
+        "description_source_char_start": description_start,
+        "chapter_distance": chapter - promise_chapter,
+        "character_distance": source_char_start - description_start,
+    }
+    candidate_artifact["candidates"] = candidates[:len(classifications)]
+    candidate_artifact["contract_validation"] = {
+        "classification_sequence_contiguous": True,
+        "first_complete_selected_by_program": True,
+        "position_compiled_by_program": True,
+    }
+    candidate_artifact["promise_source_contract"] = (
+        promise_source_artifact
+    )
+    return candidate_artifact
+
+
+def _validate_1_4_answer_against_projection(
+    answer: LearningAnswerProposal,
+    projection: dict,
+    *,
+    opening_promise_sources: dict[str, object] | None = None,
+    evidence_by_id: dict[str, EvidenceSpan] | None = None,
+    chapter_by_unit_id: dict[str, dict[str, object]] | None = None,
+) -> None:
+    _program_1_4_answer(
+        answer,
+        projection,
+        opening_promise_sources=opening_promise_sources,
+        evidence_by_id=evidence_by_id,
+        chapter_by_unit_id=chapter_by_unit_id,
+    )
+
+
+def _normalized_2_2_text(value: object) -> str:
+    return re.sub(
+        r"[，,。；;！？!?：:“”‘’\"']+",
+        "",
+        "".join(str(value or "").split()).casefold(),
+    )
+
+
+def _trim_2_2_sentence(value: object) -> str:
+    return str(value or "").strip().rstrip("，,。；;！？!?：:")
+
+
+def _2_2_metric_matches_with_evidence(
+    item: LearningContractItemProposal,
+    aliases: tuple[str, ...],
+    value: int,
+    expected_evidence: set[str],
+) -> bool:
+    return any(
+        _metric_value_matches_number(metric, value)
+        and set(metric.evidence_ids) == expected_evidence
+        for metric in _metrics_with_label(item, aliases)
+    )
+
+
+def _2_2_ordered_nodes_match(
+    finding: str,
+    nodes: list[dict],
+    *,
+    detail_keys: tuple[str, ...],
+) -> bool:
+    chapter_positions: list[int] = []
+    cursor = 0
+    for node in nodes:
+        chapter = int(node.get("chapter_ordinal") or 0)
+        if chapter <= 0:
+            return False
+        match = re.search(
+            rf"第\s*{re.escape(str(chapter))}\s*章",
+            finding[cursor:],
+        )
+        if match is None:
+            return False
+        chapter_start = cursor + match.start()
+        chapter_positions.append(chapter_start)
+        cursor += match.end()
+
+    for index, node in enumerate(nodes):
+        segment_end = (
+            chapter_positions[index + 1]
+            if index + 1 < len(chapter_positions)
+            else len(finding)
+        )
+        segment = _normalized_2_2_text(
+            finding[chapter_positions[index]:segment_end]
+        )
+        for key in detail_keys:
+            expected = _normalized_2_2_text(node.get(key))
+            if expected and expected not in segment:
+                return False
+    return True
+
+
+def _program_2_2_contract_items(
+    ledger: dict,
+) -> list[LearningContractItemProposal]:
+    field_order = (
+        "surface_desire",
+        "deep_desire",
+        "motivation",
+        "contrast",
+        "boundary",
+        "core_ability",
+    )
+    fields = {
+        str(item.get("field") or ""): item
+        for item in ledger.get("fields", [])
+        if isinstance(item, dict)
+    }
+    compiled: list[LearningContractItemProposal] = []
+    for field_id in field_order:
+        source = fields.get(field_id)
+        if not isinstance(source, dict):
+            raise ValueError("LEARNING_REPORT_2_2_SOURCE_FIELD_MISSING")
+        status = str(source.get("status") or "")
+        explanation = _trim_2_2_sentence(source.get("explanation"))
+        chapter = int(source.get("first_display_chapter_ordinal") or 0)
+        value = _trim_2_2_sentence(source.get("value"))
+        display_event = _trim_2_2_sentence(source.get("display_event"))
+        evidence_ids = list(dict.fromkeys(
+            str(evidence_id)
+            for evidence_id in source.get("evidence_ids", [])
+            if evidence_id
+        ))
+        if status == "INSUFFICIENT_EVIDENCE":
+            if (
+                chapter > 0
+                or value
+                or display_event
+                or evidence_ids
+                or source.get("first_display_event_id") is not None
+                or not explanation
+            ):
+                raise ValueError(
+                    f"LEARNING_REPORT_2_2_{field_id.upper()}_SOURCE_INVALID"
+                )
+            compiled.append(LearningContractItemProposal.model_validate({
+                "item_id": field_id,
+                "status": "INSUFFICIENT_EVIDENCE",
+                "finding": explanation,
+                "metrics": [],
+                "evidence_ids": [],
+                "limitations": [explanation],
+                "classifications": [],
+            }))
+            continue
+        if (
+            status != "SUPPORTED"
+            or chapter <= 0
+            or not value
+            or not display_event
+            or not evidence_ids
+        ):
+            raise ValueError(
+                f"LEARNING_REPORT_2_2_{field_id.upper()}_SOURCE_INVALID"
+            )
+        compiled.append(LearningContractItemProposal.model_validate({
+            "item_id": field_id,
+            "status": "SUPPORTED",
+            "finding": f"第 {chapter} 章，{display_event}：{value}。",
+            "metrics": [{
+                "label": "首次展示章节",
+                "value": str(chapter),
+                "unit": "章",
+                "method": "由主角专项证据账本确定性定位。",
+                "evidence_ids": evidence_ids,
+            }],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        }))
+
+    conflicts = [
+        item
+        for item in ledger.get("desire_conflicts", [])
+        if isinstance(item, dict)
+    ]
+    conflicts = [
+        item
+        for _index, item in sorted(
+            enumerate(conflicts),
+            key=lambda pair: (
+                int(pair[1].get("chapter_ordinal") or 0),
+                pair[0],
+            ),
+        )
+    ]
+    conflict_evidence_ids = list(dict.fromkeys(
+        str(evidence_id)
+        for conflict in conflicts
+        for evidence_id in conflict.get("evidence_ids", [])
+        if evidence_id
+    ))
+    if any(
+        int(conflict.get("chapter_ordinal") or 0) <= 0
+        or not str(conflict.get("surface_desire") or "").strip()
+        or not str(conflict.get("deep_desire") or "").strip()
+        or not str(conflict.get("motive") or "").strip()
+        or not str(conflict.get("choice") or "").strip()
+        or not str(conflict.get("result") or "").strip()
+        or conflict.get("sacrificed_desire") not in {"SURFACE", "DEEP"}
+        or not str(conflict.get("sacrifice") or "").strip()
+        or not str(conflict.get("arc_change") or "").strip()
+        or not conflict.get("motive_evidence_ids")
+        or not conflict.get("choice_evidence_ids")
+        or not conflict.get("result_evidence_ids")
+        or not conflict.get("sacrifice_evidence_ids")
+        or not conflict.get("evidence_ids")
+        for conflict in conflicts
+    ):
+        raise ValueError("LEARNING_REPORT_2_2_CONFLICT_SOURCE_INVALID")
+
+    conflict_finding = (
+        "".join(
+            (
+                f"第 {int(conflict['chapter_ordinal'])} 章，"
+                f"表层欲望“{_trim_2_2_sentence(conflict['surface_desire'])}”与"
+                f"深层欲望“{_trim_2_2_sentence(conflict['deep_desire'])}”发生冲突；"
+                f"现场动机原文是“{_trim_2_2_sentence(conflict['motive'])}”；"
+                f"主角选择原文是“{_trim_2_2_sentence(conflict['choice'])}”；"
+                f"现场结果是{_trim_2_2_sentence(conflict['result'])}，"
+                f"并付出代价“{_trim_2_2_sentence(conflict['sacrifice'])}”。"
+            )
+            for conflict in conflicts
+        )
+        or "当前专项账本未发现双层欲望冲突节点。"
+    )
+    arc_finding = (
+        "".join(
+            (
+                f"第 {int(conflict['chapter_ordinal'])} 章，"
+                f"{_trim_2_2_sentence(conflict['arc_change'])}。"
+            )
+            for conflict in conflicts
+        )
+        or "当前没有已核验冲突节点可形成弧光转折时间轴。"
+    )
+    for item_id, finding, label in (
+        ("desire_conflicts", conflict_finding, "冲突节点"),
+        ("arc_timeline", arc_finding, "转折节点"),
+    ):
+        compiled.append(LearningContractItemProposal.model_validate({
+            "item_id": item_id,
+            "status": "SUPPORTED",
+            "finding": finding,
+            "metrics": [{
+                "label": label,
+                "value": str(len(conflicts)),
+                "unit": "个",
+                "method": "由主角专项证据账本按章节顺序确定性汇总。",
+                "evidence_ids": conflict_evidence_ids,
+            }],
+            "evidence_ids": conflict_evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        }))
+    return compiled
+
+
+def _apply_program_2_2_answer(
+    answer: LearningAnswerProposal,
+    ledger: dict,
+) -> None:
+    field_labels = (
+        ("surface_desire", "表层欲望"),
+        ("deep_desire", "深层欲望"),
+        ("motivation", "动机"),
+        ("contrast", "反差"),
+        ("boundary", "边界"),
+        ("core_ability", "核心能力"),
+    )
+    answer.contract_items = _program_2_2_contract_items(ledger)
+    fields = {
+        str(item.get("field") or ""): item
+        for item in ledger.get("fields", [])
+        if isinstance(item, dict)
+    }
+    field_summaries: list[str] = []
+    insufficient_field_summaries: list[str] = []
+    metrics: list[LearningMetricProposal] = []
+    representative_evidence: list[str] = []
+    for field_id, label in field_labels:
+        source = fields[field_id]
+        if source.get("status") == "INSUFFICIENT_EVIDENCE":
+            explanation = _trim_2_2_sentence(source.get("explanation"))
+            insufficient_field_summaries.append(
+                f"{label}：{explanation}"
+            )
+            field_summaries.append(f"{label}证据不足：{explanation}")
+            continue
+        chapter = int(source["first_display_chapter_ordinal"])
+        value = _trim_2_2_sentence(source["value"])
+        evidence_ids = list(dict.fromkeys(
+            str(evidence_id)
+            for evidence_id in source.get("evidence_ids", [])
+            if evidence_id
+        ))
+        field_summaries.append(f"{label}第 {chapter} 章立住：{value}")
+        metrics.append(LearningMetricProposal(
+            label=f"{label}首次展示章节",
+            value=str(chapter),
+            unit="章",
+            method="由主角专项证据账本确定性定位。",
+            evidence_ids=evidence_ids[:16],
+        ))
+        representative_evidence.extend(evidence_ids)
+
+    conflicts = [
+        item
+        for item in ledger.get("desire_conflicts", [])
+        if isinstance(item, dict)
+    ]
+    conflicts = [
+        item
+        for _index, item in sorted(
+            enumerate(conflicts),
+            key=lambda pair: (
+                int(pair[1].get("chapter_ordinal") or 0),
+                pair[0],
+            ),
+        )
+    ]
+    conflict_evidence = list(dict.fromkeys(
+        str(evidence_id)
+        for conflict in conflicts
+        for evidence_id in conflict.get("evidence_ids", [])
+        if evidence_id
+    ))
+    representative_evidence.extend(conflict_evidence)
+    metrics.append(LearningMetricProposal(
+        label="双层欲望冲突节点",
+        value=str(len(conflicts)),
+        unit="个",
+        method="由主角专项证据账本按章节顺序确定性汇总。",
+        evidence_ids=conflict_evidence[:16],
+    ))
+    conflict_summary = (
+        "、".join(
+            f"第 {int(item['chapter_ordinal'])} 章"
+            for item in conflicts
+        )
+        if conflicts
+        else "当前专项账本未发现"
+    )
+
+    answer.status = (
+        "PARTIAL" if insufficient_field_summaries else "ANSWERED"
+    )
+    answer.conclusion = (
+        (
+            f"主角双层欲望与最小完整集已有 "
+            f"{len(field_labels) - len(insufficient_field_summaries)}/"
+            f"{len(field_labels)} 项按首次行动证据定位；"
+            f"{len(insufficient_field_summaries)} 项证据不足。"
+            if insufficient_field_summaries
+            else "主角双层欲望与最小完整集均已按首次行动证据定位。"
+        )
+        + "；".join(field_summaries)
+        + (
+            f"。另有 {len(conflicts)} 个双层欲望冲突与弧光转折节点，"
+            f"位于{conflict_summary}。"
+            if conflicts
+            else "。当前专项账本未发现双层欲望冲突与弧光转折节点。"
+        )
+    )
+    answer.metrics = metrics
+    answer.evidence_ids = list(dict.fromkeys(
+        representative_evidence
+    ))[:24]
+    answer.counter_evidence_ids = []
+    answer.limitations = [
+        *insufficient_field_summaries,
+        "本结论只覆盖当前单书的主角专项账本，不能外推为其他作品的通用章节阈值。",
+    ]
+    answer.reusable_lessons = [
+        "先分别记录表层欲望、深层欲望、动机、反差、边界和核心能力的首次行动证据，再按冲突节点观察弧光变化。"
+    ]
+    answer.do_not_copy = [
+        "不能照搬本书的欲望内容、人物选择或首次展示章节；其他作品必须按自己的原文证据重新定位。"
+    ]
+
+
+def _program_ratio_text(ratio: float) -> str:
+    value = f"{ratio * 100:.2f}".rstrip("0").rstrip(".")
+    return f"{value}%"
+
+
+def _program_hook_label(
+    aliases_by_code: dict[str, tuple[str, ...]],
+    code: str,
+) -> str:
+    aliases = aliases_by_code.get(code, (code,))
+    return aliases[1] if len(aliases) > 1 else aliases[0]
+
+
+def _apply_program_4_9_answer(
+    answer: LearningAnswerProposal,
+    ledger: dict,
+) -> None:
+    chapters = [
+        item
+        for item in ledger.get("chapters", [])
+        if isinstance(item, dict)
+    ]
+    coverage = ledger.get("coverage") or {}
+    summary = ledger.get("summary") or {}
+    all_evidence = list(dict.fromkeys(
+        str(evidence_id)
+        for chapter in chapters
+        for evidence_id in chapter.get("ending_evidence_ids", [])
+        if evidence_id
+    ))
+    source_chapter_count = int(coverage.get("source_chapter_count") or 0)
+    window_count = int(coverage.get("window_count") or 0)
+    coverage_metrics = [
+        LearningMetricProposal(
+            label="全书章节",
+            value=str(source_chapter_count),
+            unit="章",
+            method="由全书连续章末钩账本确定性统计。",
+            evidence_ids=all_evidence[:16],
+        ),
+        LearningMetricProposal(
+            label="连续窗口",
+            value=str(window_count),
+            unit="个",
+            method="由全书章末钩账本的窗口覆盖记录确定性统计。",
+            evidence_ids=all_evidence[:16],
+        ),
+    ]
+    metrics = list(coverage_metrics)
+
+    type_fragments: list[str] = []
+    type_metrics: list[LearningMetricProposal] = []
+    for row in summary.get("type_distribution", []):
+        if not isinstance(row, dict):
+            continue
+        hook_type = str(row.get("hook_type") or "")
+        count = int(row.get("count") or 0)
+        ratio = float(row.get("ratio") or 0)
+        label = _program_hook_label(
+            _CHAPTER_END_HOOK_TYPE_LABELS,
+            hook_type,
+        )
+        evidence_ids = list(dict.fromkeys(
+            str(evidence_id)
+            for chapter in chapters
+            if str(chapter.get("hook_type") or "") == hook_type
+            for evidence_id in chapter.get("ending_evidence_ids", [])
+            if evidence_id
+        ))
+        ratio_text = _program_ratio_text(ratio)
+        type_fragments.append(f"{label} {count} 章（{ratio_text}）")
+        metric = LearningMetricProposal(
+            label=label,
+            value=str(count),
+            unit=f"章，占比 {ratio_text}",
+            method="由逐章钩类型账本确定性汇总。",
+            evidence_ids=evidence_ids[:16],
+        )
+        type_metrics.append(metric)
+        metrics.append(metric)
+
+    strength_fragments: list[str] = []
+    strength_metrics: list[LearningMetricProposal] = []
+    for row in summary.get("strength_distribution", []):
+        if not isinstance(row, dict):
+            continue
+        strength = str(row.get("strength") or "")
+        count = int(row.get("count") or 0)
+        ratio = float(row.get("ratio") or 0)
+        label = _program_hook_label(
+            _CHAPTER_END_HOOK_STRENGTH_LABELS,
+            strength,
+        )
+        evidence_ids = list(dict.fromkeys(
+            str(evidence_id)
+            for chapter in chapters
+            if str(chapter.get("strength") or "") == strength
+            for evidence_id in chapter.get("ending_evidence_ids", [])
+            if evidence_id
+        ))
+        ratio_text = _program_ratio_text(ratio)
+        strength_fragments.append(f"{label} {count} 章（{ratio_text}）")
+        metric = LearningMetricProposal(
+            label=label,
+            value=str(count),
+            unit=f"章，占比 {ratio_text}",
+            method="由逐章钩强度账本确定性汇总。",
+            evidence_ids=evidence_ids[:16],
+        )
+        strength_metrics.append(metric)
+        metrics.append(metric)
+
+    max_consecutive_strong = int(
+        summary.get("max_consecutive_strong") or 0
+    )
+    type_transition_count = int(
+        summary.get("type_transition_count") or 0
+    )
+    max_consecutive_same_type = int(
+        summary.get("max_consecutive_same_type") or 0
+    )
+    no_hook_count = int(summary.get("no_hook_count") or 0)
+    no_hook_ratio = float(summary.get("no_hook_ratio") or 0)
+    no_hook_evidence = list(dict.fromkeys(
+        str(evidence_id)
+        for chapter in chapters
+        if str(chapter.get("hook_type") or "") == "NONE"
+        for evidence_id in chapter.get("ending_evidence_ids", [])
+        if evidence_id
+    ))
+    strong_run_metric = LearningMetricProposal(
+        label="最长连续强钩",
+        value=str(max_consecutive_strong),
+        unit="章",
+        method="由连续章节强度序列确定性合并。",
+        evidence_ids=all_evidence[:16],
+    )
+    transition_metric = LearningMetricProposal(
+        label="类型切换",
+        value=str(type_transition_count),
+        unit="次",
+        method="由相邻章节钩类型序列确定性比较。",
+        evidence_ids=all_evidence[:16],
+    )
+    same_type_metric = LearningMetricProposal(
+        label="同类连续上限",
+        value=str(max_consecutive_same_type),
+        unit="章",
+        method="由连续章节钩类型序列确定性合并。",
+        evidence_ids=all_evidence[:16],
+    )
+    no_hook_metric = LearningMetricProposal(
+        label="无钩章",
+        value=str(no_hook_count),
+        unit=f"章，占比 {_program_ratio_text(no_hook_ratio)}",
+        method="由逐章 NONE 分类确定性统计。",
+        evidence_ids=no_hook_evidence[:16],
+    )
+    strength_metrics.append(strong_run_metric)
+    metrics.extend([
+        strong_run_metric,
+        transition_metric,
+        same_type_metric,
+        no_hook_metric,
+    ])
+
+    example_fragments: list[str] = []
+    example_evidence: list[str] = []
+    examples_by_type = summary.get("examples_by_type") or {}
+    for row in summary.get("type_distribution", []):
+        if not isinstance(row, dict) or int(row.get("count") or 0) <= 0:
+            continue
+        hook_type = str(row.get("hook_type") or "")
+        examples = [
+            item
+            for item in examples_by_type.get(hook_type, [])
+            if isinstance(item, dict)
+        ]
+        if not examples:
+            raise ValueError("LEARNING_REPORT_4_9_TYPE_EXAMPLES_INCOMPLETE")
+        example = examples[0]
+        evidence_ids = [
+            str(evidence_id)
+            for evidence_id in example.get("ending_evidence_ids", [])
+            if evidence_id
+        ]
+        if not evidence_ids:
+            raise ValueError("LEARNING_REPORT_4_9_TYPE_EXAMPLES_INCOMPLETE")
+        label = _program_hook_label(
+            _CHAPTER_END_HOOK_TYPE_LABELS,
+            hook_type,
+        )
+        example_fragments.append(
+            f"{label}：第 {int(example.get('chapter_ordinal') or 0)} 章"
+            f"“{str(example.get('chapter_title') or '')}”"
+        )
+        example_evidence.extend(evidence_ids)
+    example_evidence = list(dict.fromkeys(example_evidence))
+
+    answer.contract_items = [
+        LearningContractItemProposal(
+            item_id="chapter_coverage",
+            status="SUPPORTED",
+            finding=(
+                f"全书 {source_chapter_count} 章由 {window_count} 个连续窗口"
+                "不重不漏覆盖。"
+            ),
+            metrics=coverage_metrics,
+            evidence_ids=all_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="type_distribution",
+            status="SUPPORTED",
+            finding=f"类型配比：{'；'.join(type_fragments)}。",
+            metrics=type_metrics,
+            evidence_ids=all_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="strength_rhythm",
+            status="SUPPORTED",
+            finding=(
+                f"强弱配比：{'；'.join(strength_fragments)}；"
+                f"最长连续强钩 {max_consecutive_strong} 章。"
+            ),
+            metrics=strength_metrics,
+            evidence_ids=all_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="type_rotation",
+            status="SUPPORTED",
+            finding=(
+                f"相邻章节共切换类型 {type_transition_count} 次，"
+                f"同类连续上限为 {max_consecutive_same_type} 章。"
+            ),
+            metrics=[transition_metric, same_type_metric],
+            evidence_ids=all_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="no_hook_analysis",
+            status="SUPPORTED",
+            finding=(
+                f"无钩章共 {no_hook_count} 章，占全书"
+                f" {_program_ratio_text(no_hook_ratio)}。"
+            ),
+            metrics=[no_hook_metric],
+            evidence_ids=no_hook_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="representative_examples",
+            status="SUPPORTED",
+            finding=(
+                "每种实际出现类型均保留一条章末原文实例："
+                + "；".join(example_fragments)
+                + "。"
+            ),
+            metrics=[],
+            evidence_ids=example_evidence[:32],
+            limitations=[],
+        ),
+        LearningContractItemProposal(
+            item_id="scope_boundary",
+            status="SUPPORTED",
+            finding=(
+                "4.9 只统计全书章末钩类型与强弱节律，不追踪后续回应；"
+                "前三章首次回应属于 3.4，重要悬念生命周期属于 4.10。"
+            ),
+            metrics=[],
+            evidence_ids=[],
+            limitations=[],
+        ),
+    ]
+
+    answer.status = "ANSWERED"
+    answer.conclusion = (
+        f"全书 {source_chapter_count} 章由 {window_count} 个连续窗口"
+        f"不重不漏覆盖。类型配比：{'；'.join(type_fragments)}。"
+        f"强弱配比：{'；'.join(strength_fragments)}。"
+        f"最长连续强钩 {max_consecutive_strong} 章，"
+        f"类型切换 {type_transition_count} 次，"
+        f"同类连续上限 {max_consecutive_same_type} 章，"
+        f"无钩章 {no_hook_count} 章"
+        f"（{_program_ratio_text(no_hook_ratio)}）。"
+    )
+    answer.metrics = metrics
+    answer.evidence_ids = all_evidence[:24]
+    answer.counter_evidence_ids = []
+    answer.limitations = [
+        "4.9 只统计全书章末钩类型与强弱节律，不追踪后续回应；前三章首次回应属于 3.4，重要悬念生命周期属于 4.10。"
+    ]
+    answer.reusable_lessons = [
+        "先把章末类型与强度分开逐章记账，再核对类型切换、连续强钩、同类连续段和无钩章，不用单个强场面代替全书节律。"
+    ]
+    answer.do_not_copy = [
+        "不能照搬本书的类型比例、强度序列或具体章末表达；其他作品必须按自己的全书章节重新统计。"
+    ]
+
+
+def _validate_2_2_answer_against_projection(
+    answer: LearningAnswerProposal,
+    projection: dict,
+) -> None:
+    ledger = projection.get("character_design_evidence") or {}
+    allowed = _evidence_ids(ledger)
+    _validate_answer_evidence_subset(
+        answer,
+        allowed,
+        error_code="LEARNING_REPORT_2_2_EVIDENCE_SCOPE_INVALID",
+    )
+    items = _contract_item_by_id(answer)
+    fields = {
+        str(item.get("field") or ""): item
+        for item in ledger.get("fields", [])
+        if isinstance(item, dict)
+    }
+    for field_id in (
+        "surface_desire",
+        "deep_desire",
+        "motivation",
+        "contrast",
+        "boundary",
+        "core_ability",
+    ):
+        source = fields.get(field_id)
+        item = items[field_id]
+        if not isinstance(source, dict):
+            raise ValueError("LEARNING_REPORT_2_2_SOURCE_FIELD_MISSING")
+        source_status = str(source.get("status") or "")
+        expected_evidence = _evidence_ids(source)
+        actual_evidence = set(item.evidence_ids)
+        if source_status == "INSUFFICIENT_EVIDENCE":
+            explanation = _normalized_2_2_text(source.get("explanation"))
+            if (
+                source.get("first_display_chapter_ordinal") is not None
+                or source.get("first_display_event_id") is not None
+                or str(source.get("value") or "").strip()
+                or str(source.get("display_event") or "").strip()
+                or expected_evidence
+                or not explanation
+            ):
+                raise ValueError(
+                    f"LEARNING_REPORT_2_2_{field_id.upper()}_SOURCE_INVALID"
+                )
+            if (
+                item.status != "INSUFFICIENT_EVIDENCE"
+                or actual_evidence
+                or item.metrics
+                or item.classifications
+                or item.payoff_classifications
+                or _normalized_2_2_text(item.finding) != explanation
+                or [_normalized_2_2_text(value) for value in item.limitations]
+                != [explanation]
+            ):
+                raise ValueError(
+                    f"LEARNING_REPORT_2_2_{field_id.upper()}_REFERENCE_INVALID"
+                )
+            continue
+        expected_chapter = int(
+            source.get("first_display_chapter_ordinal") or 0
+        )
+        finding = _normalized_2_2_text(item.finding)
+        expected_value = _normalized_2_2_text(source.get("value"))
+        expected_event = _normalized_2_2_text(source.get("display_event"))
+        if (
+            source_status != "SUPPORTED"
+            or item.status != "SUPPORTED"
+            or not actual_evidence
+            or actual_evidence != expected_evidence
+            or expected_chapter <= 0
+            or re.search(
+                rf"第\s*{re.escape(str(expected_chapter))}\s*章",
+                item.finding,
+            )
+            is None
+            or (expected_value and expected_value not in finding)
+            or (expected_event and expected_event not in finding)
+            or not _2_2_metric_matches_with_evidence(
+                item,
+                ("首次展示章节", "展示章节"),
+                expected_chapter,
+                expected_evidence,
+            )
+        ):
+            raise ValueError(
+                f"LEARNING_REPORT_2_2_{field_id.upper()}_REFERENCE_INVALID"
+            )
+    conflicts = [
+        item
+        for item in ledger.get("desire_conflicts", [])
+        if isinstance(item, dict)
+    ]
+    conflicts = [
+        item
+        for _index, item in sorted(
+            enumerate(conflicts),
+            key=lambda pair: (
+                int(pair[1].get("chapter_ordinal") or 0),
+                pair[0],
+            ),
+        )
+    ]
+    conflict_evidence = _evidence_ids(conflicts)
+    conflict_item = items["desire_conflicts"]
+    if (
+        conflict_item.status != "SUPPORTED"
+        or not _metric_group_matches_count(
+            conflict_item,
+            ("冲突节点", "转折节点"),
+            len(conflicts),
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_2_2_CONFLICT_COUNT_INVALID")
+    if (
+        set(conflict_item.evidence_ids) != conflict_evidence
+        or not _2_2_metric_matches_with_evidence(
+            conflict_item,
+            ("冲突节点", "转折节点"),
+            len(conflicts),
+            conflict_evidence,
+        )
+        or not _2_2_ordered_nodes_match(
+            conflict_item.finding,
+            conflicts,
+            detail_keys=(
+                "surface_desire",
+                "deep_desire",
+                "motive",
+                "choice",
+                "result",
+                "sacrifice",
+            ),
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_2_2_CONFLICT_NODES_INVALID")
+    arc_item = items["arc_timeline"]
+    if (
+        arc_item.status != "SUPPORTED"
+        or set(arc_item.evidence_ids) != conflict_evidence
+        or not _2_2_metric_matches_with_evidence(
+            arc_item,
+            ("冲突节点", "转折节点"),
+            len(conflicts),
+            conflict_evidence,
+        )
+        or not _2_2_ordered_nodes_match(
+            arc_item.finding,
+            conflicts,
+            detail_keys=("arc_change",),
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_2_2_ARC_TIMELINE_INVALID")
+
+
+def _validate_4_9_answer_against_projection(
+    answer: LearningAnswerProposal,
+    projection: dict,
+) -> None:
+    ledger = projection.get("chapter_end_hooks_evidence") or {}
+    chapters = [
+        item
+        for item in ledger.get("chapters", [])
+        if isinstance(item, dict)
+    ]
+    ending_evidence = {
+        str(evidence_id)
+        for item in chapters
+        for evidence_id in item.get("ending_evidence_ids", [])
+        if evidence_id
+    }
+    _validate_answer_evidence_subset(
+        answer,
+        ending_evidence,
+        error_code="LEARNING_REPORT_4_9_EVIDENCE_SCOPE_INVALID",
+    )
+    items = _contract_item_by_id(answer)
+    summary = ledger.get("summary") or {}
+    coverage = ledger.get("coverage") or {}
+    chapter_coverage = items["chapter_coverage"]
+    source_chapter_count = int(coverage.get("source_chapter_count") or 0)
+    window_count = int(coverage.get("window_count") or 0)
+    if (
+        not _metric_group_matches_count(
+            chapter_coverage,
+            ("全书章节", "覆盖章节", "章节覆盖"),
+            source_chapter_count,
+        )
+        or not _metric_group_matches_count(
+            chapter_coverage,
+            ("连续窗口", "窗口数"),
+            window_count,
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_COVERAGE_METRIC_INVALID")
+
+    type_distribution = items["type_distribution"]
+    type_rows = [
+        row
+        for row in summary.get("type_distribution", [])
+        if isinstance(row, dict)
+    ]
+    if not type_rows or any(
+        not _metric_group_matches_count(
+            type_distribution,
+            _CHAPTER_END_HOOK_TYPE_LABELS.get(
+                str(row.get("hook_type") or ""),
+                (str(row.get("hook_type") or ""),),
+            ),
+            int(row.get("count") or 0),
+        )
+        or not _metric_group_matches_ratio(
+            type_distribution,
+            _CHAPTER_END_HOOK_TYPE_LABELS.get(
+                str(row.get("hook_type") or ""),
+                (str(row.get("hook_type") or ""),),
+            ),
+            float(row.get("ratio") or 0),
+        )
+        for row in type_rows
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_TYPE_DISTRIBUTION_INVALID")
+
+    strength_rhythm = items["strength_rhythm"]
+    strength_rows = [
+        row
+        for row in summary.get("strength_distribution", [])
+        if isinstance(row, dict)
+    ]
+    max_consecutive_strong = int(
+        summary.get("max_consecutive_strong") or 0
+    )
+    if any(
+        not _metric_group_matches_count(
+            strength_rhythm,
+            _CHAPTER_END_HOOK_STRENGTH_LABELS.get(
+                str(row.get("strength") or ""),
+                (str(row.get("strength") or ""),),
+            ),
+            int(row.get("count") or 0),
+        )
+        for row in strength_rows
+    ) or not _metric_group_matches_count(
+        strength_rhythm,
+        ("最长连续强钩",),
+        max_consecutive_strong,
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_STRENGTH_RHYTHM_INVALID")
+
+    type_rotation = items["type_rotation"]
+    if not _metric_group_matches_count(
+        type_rotation,
+        ("类型切换", "切换次数"),
+        int(summary.get("type_transition_count") or 0),
+    ) or not _metric_group_matches_count(
+        type_rotation,
+        ("同类连续上限", "同类型连续上限"),
+        int(summary.get("max_consecutive_same_type") or 0),
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_TYPE_ROTATION_INVALID")
+
+    no_hook = items["no_hook_analysis"]
+    no_hook_ratio = float(summary.get("no_hook_ratio") or 0)
+    if (
+        not _metric_group_matches_count(
+            no_hook,
+            ("无钩章", "无钩"),
+            int(summary.get("no_hook_count") or 0),
+        )
+        or not _metric_group_matches_ratio(
+            no_hook,
+            ("无钩章", "无钩"),
+            no_hook_ratio,
+        )
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_NO_HOOK_METRIC_INVALID")
+
+    examples = items["representative_examples"]
+    example_evidence = _evidence_ids(examples.model_dump(mode="json"))
+    examples_by_type = summary.get("examples_by_type") or {}
+    if any(
+        not example_evidence.intersection(_evidence_ids(type_examples))
+        for type_examples in examples_by_type.values()
+        if type_examples
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_TYPE_EXAMPLES_INCOMPLETE")
+
+    scope_finding = items["scope_boundary"].finding
+    if (
+        "3.4" not in scope_finding
+        or "4.10" not in scope_finding
+        or not re.search(r"(?:不|不得|不再).{0,8}(?:回应|回收|追踪)", scope_finding)
+    ):
+        raise ValueError("LEARNING_REPORT_4_9_SCOPE_BOUNDARY_INVALID")
+    if _has_out_of_scope_4_9_response_distance(answer):
+        raise ValueError("LEARNING_REPORT_4_9_RESPONSE_METRIC_OUT_OF_SCOPE")
+
+
+def _validate_selected_answers_against_projection(
+    output: LearningReportOutput,
+    projection: dict,
+    *,
+    opening_promise_sources: dict[str, object] | None = None,
+    evidence_by_id: dict[str, EvidenceSpan] | None = None,
+    chapter_by_unit_id: dict[str, dict[str, object]] | None = None,
+) -> None:
+    for answer in output.answers:
+        if answer.question_id == "1.4":
+            _validate_1_4_answer_against_projection(
+                answer,
+                projection,
+                opening_promise_sources=opening_promise_sources,
+                evidence_by_id=evidence_by_id,
+                chapter_by_unit_id=chapter_by_unit_id,
+            )
+        elif answer.question_id == "2.2":
+            _validate_2_2_answer_against_projection(answer, projection)
+        elif answer.question_id == "4.9":
+            _validate_4_9_answer_against_projection(answer, projection)
+
+
 def persist_learning_report(
     session: Session,
     *,
+    settings: Settings,
     task: Task,
     attempt_id: str,
     task_payload: dict,
@@ -2256,6 +4775,82 @@ def persist_learning_report(
             and answer.status == "ANSWERED"
         ):
             raise ValueError("LEARNING_REPORT_PARTIAL_SCOPE_VIOLATION")
+        if (
+            selected_scopes.get(answer.question_id) == "COMPLETE"
+            and answer.status != "ANSWERED"
+        ):
+            raise ValueError("LEARNING_REPORT_COMPLETE_SCOPE_VIOLATION")
+
+    projection: dict | None = None
+    program_1_4_artifact: dict[str, object] | None = None
+    if set(selected_question_ids).intersection({"1.4", "2.1", "2.2", "4.9"}):
+        from .workbench import build_workbench_projection
+
+        projection = build_workbench_projection(session, run.id)
+    if projection is not None:
+        opening_promise_sources: dict[str, object] | None = None
+        validation_evidence_by_id: dict[str, EvidenceSpan] = {}
+        validation_chapter_by_unit_id: dict[
+            str, dict[str, object]
+        ] = {}
+        if "1.4" in selected_question_ids:
+            opening_promise_sources = _opening_promise_source_artifact(
+                session,
+                settings,
+                run.source_version,
+            )
+            validation_evidence_ids = _evidence_ids({
+                "opening_promise_sources": opening_promise_sources,
+                "opening_events": projection.get("events", []),
+            })
+            validation_evidence_by_id = {
+                evidence.id: evidence
+                for evidence in session.scalars(
+                    select(EvidenceSpan).where(
+                        EvidenceSpan.source_version_id == run.source_version_id,
+                        EvidenceSpan.id.in_(validation_evidence_ids),
+                    )
+                )
+            }
+            validation_chapter_by_unit_id = _chapter_index_by_unit_id(
+                session,
+                run.source_version_id,
+            )
+            answer_1_4 = next(
+                answer
+                for answer in output.answers
+                if answer.question_id == "1.4"
+            )
+            program_1_4_artifact = _program_1_4_answer(
+                answer_1_4,
+                projection,
+                opening_promise_sources=opening_promise_sources,
+                evidence_by_id=validation_evidence_by_id,
+                chapter_by_unit_id=validation_chapter_by_unit_id,
+            )
+        if "2.2" in selected_question_ids:
+            character_design = (
+                projection.get("character_design_evidence") or {}
+            )
+            for answer in output.answers:
+                if answer.question_id == "2.2":
+                    _apply_program_2_2_answer(answer, character_design)
+        if "4.9" in selected_question_ids:
+            chapter_end_hooks = (
+                projection.get("chapter_end_hooks_evidence") or {}
+            )
+            for answer in output.answers:
+                if answer.question_id == "4.9":
+                    _apply_program_4_9_answer(answer, chapter_end_hooks)
+        _validate_selected_answers_against_projection(
+            output,
+            projection,
+            opening_promise_sources=opening_promise_sources,
+            evidence_by_id=validation_evidence_by_id,
+            chapter_by_unit_id=validation_chapter_by_unit_id,
+        )
+    for answer in output.answers:
+        _validate_answer_user_text_boundaries(answer)
 
     existing = session.scalar(
         select(LearningReport).where(LearningReport.created_by_task_id == task.id)
@@ -2283,6 +4878,10 @@ def persist_learning_report(
         if (
             isinstance(item, dict)
             and item.get("question_id") not in selected_question_ids
+            and _answer_uses_current_contract(
+                previous_payload,
+                str(item.get("question_id")),
+            )
             and previous_fingerprints.get(str(item.get("question_id")))
             == current_fingerprints.get(str(item.get("question_id")))
         )
@@ -2300,10 +4899,20 @@ def persist_learning_report(
         "author_decisions": output.model_dump(mode="json")["author_decisions"],
         "method_candidates": output.model_dump(mode="json")["method_candidates"],
     }
+    if "1.4" in selected_question_ids:
+        if program_1_4_artifact is None:
+            raise ValueError("LEARNING_REPORT_PROGRAM_PROJECTION_MISSING")
+        persisted_answer = next(
+            answer
+            for answer in payload["answers"]
+            if answer["question_id"] == "1.4"
+        )
+        persisted_answer["program_artifacts"] = {
+            "opening_payoff_candidate_ledger": program_1_4_artifact,
+        }
     if "2.1" in selected_question_ids:
-        from .workbench import build_workbench_projection
-
-        projection = build_workbench_projection(session, run.id)
+        if projection is None:
+            raise ValueError("LEARNING_REPORT_PROGRAM_PROJECTION_MISSING")
         answer_model = next(
             answer for answer in output.answers if answer.question_id == "2.1"
         )
@@ -2457,6 +5066,10 @@ def enqueue_learning_report(
             for item in latest_payload.get("answers", [])
             if (
                 isinstance(item, dict)
+                and _answer_uses_current_contract(
+                    latest_payload,
+                    str(item.get("question_id")),
+                )
                 and report_fingerprints.get(str(item.get("question_id")))
                 == current_fingerprints.get(str(item.get("question_id")))
             )
@@ -2577,6 +5190,10 @@ def build_learning_report_projection(
         if (
             report_base_is_current
             and isinstance(item, dict)
+            and _answer_uses_current_contract(
+                payload,
+                str(item.get("question_id")),
+            )
             and report_fingerprints.get(str(item.get("question_id")))
             == readiness_by_id.get(str(item.get("question_id")), {}).get(
                 "source_fingerprint"

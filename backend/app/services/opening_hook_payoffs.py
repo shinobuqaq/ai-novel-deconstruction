@@ -285,7 +285,11 @@ def _chapter_response_records(
         spans = list(session.scalars(
             select(EvidenceSpan)
             .where(EvidenceSpan.source_unit_id == unit.id)
-            .order_by(EvidenceSpan.paragraph_index, EvidenceSpan.start_char)
+            .order_by(
+                EvidenceSpan.start_char,
+                EvidenceSpan.end_char,
+                EvidenceSpan.paragraph_index,
+            )
         ))
         body_spans = [
             span
@@ -294,11 +298,12 @@ def _chapter_response_records(
         ]
         ignored_total += len(spans) - len(body_spans)
         paragraphs: list[dict[str, object]] = []
-        for span in body_spans:
+        for paragraph_index, span in enumerate(body_spans, start=1):
             evidence_by_id[span.id] = span
             paragraphs.append({
                 "evidence_id": span.id,
-                "paragraph_index": span.paragraph_index,
+                "paragraph_index": paragraph_index,
+                "source_start_char": span.start_char,
                 "text": span.text_snapshot,
             })
         chapters.append({
@@ -324,8 +329,9 @@ def _all_response_chapter_sizes(
         .where(EvidenceSpan.source_unit_id.in_([unit.id for unit in later_units]))
         .order_by(
             EvidenceSpan.source_unit_id,
-            EvidenceSpan.paragraph_index,
             EvidenceSpan.start_char,
+            EvidenceSpan.end_char,
+            EvidenceSpan.paragraph_index,
         )
     ):
         spans_by_unit.setdefault(span.source_unit_id, []).append(span)

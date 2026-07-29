@@ -33,6 +33,16 @@ def test_safe_json_repairs(raw_text: str, expected_repairs: tuple[str, ...]) -> 
     assert result.repairs == expected_repairs
 
 
+def test_multiple_complete_objects_use_the_last_result() -> None:
+    result = parse_json_text(
+        '```json\n{"properties": {"title": "schema"}}\n'
+        '{"entities": [], "events": []}\n```'
+    )
+
+    assert result.value == {"entities": [], "events": []}
+    assert "extract_complete_json_object" in result.repairs
+
+
 def test_does_not_guess_truncated_json_content() -> None:
     with pytest.raises(JsonTextParseError) as caught:
         parse_json_text('{"entities": [{"name": "林舟"}], "events": [')

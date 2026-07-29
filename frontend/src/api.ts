@@ -579,10 +579,19 @@ export type WorkbenchCharacterDesignField = {
 export type WorkbenchDesireConflict = {
   chapter_ordinal: number;
   event_id: string;
+  surface_desire_stage: "INITIAL" | "EVOLVED";
   surface_desire: string;
   deep_desire: string;
+  motive: string;
   choice: string;
+  result: string;
+  sacrificed_desire: "SURFACE" | "DEEP";
+  sacrifice: string;
   arc_change: string;
+  motive_evidence_ids: string[];
+  choice_evidence_ids: string[];
+  result_evidence_ids: string[];
+  sacrifice_evidence_ids: string[];
   evidence_ids: string[];
 };
 

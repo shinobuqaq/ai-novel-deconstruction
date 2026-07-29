@@ -17,6 +17,10 @@ from app.db import create_db_engine, create_session_factory  # noqa: E402
 from app.models import AnalysisRun, AnalysisRunTask, Task, TaskStatus  # noqa: E402
 from app.providers import create_default_provider_registry  # noqa: E402
 from app.repositories import claim_next_task, get_task  # noqa: E402
+from app.services.character_design import (  # noqa: E402
+    CHARACTER_DESIGN_TASK_KIND,
+    enqueue_character_design_evidence,
+)
 from app.services.chapter_end_hooks import (  # noqa: E402
     CHAPTER_END_HOOKS_TASK_KIND,
     enqueue_chapter_end_hooks,
@@ -56,10 +60,17 @@ def _active_task_ids(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="生成指定北极星问题的专项证据账本，并顺序执行本批全部连续窗口。"
+        description=(
+            "生成指定北极星问题的专项证据账本；"
+            "2.2 执行单个全书任务，3.4/4.9 顺序执行全部连续窗口。"
+        )
     )
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--question-id", required=True, choices=("3.4", "4.9"))
+    parser.add_argument(
+        "--question-id",
+        required=True,
+        choices=("2.2", "3.4", "4.9"),
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -67,16 +78,16 @@ def main() -> int:
     settings.ensure_directories()
     engine = create_db_engine(settings)
     session_factory = create_session_factory(engine)
-    task_kind = (
-        OPENING_HOOK_PAYOFFS_TASK_KIND
-        if args.question_id == "3.4"
-        else CHAPTER_END_HOOKS_TASK_KIND
-    )
-    enqueue = (
-        enqueue_opening_hook_payoffs
-        if args.question_id == "3.4"
-        else enqueue_chapter_end_hooks
-    )
+    task_kind = {
+        "2.2": CHARACTER_DESIGN_TASK_KIND,
+        "3.4": OPENING_HOOK_PAYOFFS_TASK_KIND,
+        "4.9": CHAPTER_END_HOOKS_TASK_KIND,
+    }[args.question_id]
+    enqueue = {
+        "2.2": enqueue_character_design_evidence,
+        "3.4": enqueue_opening_hook_payoffs,
+        "4.9": enqueue_chapter_end_hooks,
+    }[args.question_id]
     try:
         with Session(engine) as session:
             run = session.get(AnalysisRun, args.run_id)
@@ -93,9 +104,10 @@ def main() -> int:
             print("没有创建任务：原料未就绪，或当前账本已经是最新版。")
             return 2
 
+        unit_name = "专项任务" if args.question_id == "2.2" else "连续窗口"
         print(
             f"开始生成北极星 {args.question_id}："
-            f"本批 {len(active_ids)} 个连续窗口。"
+            f"本批 {len(active_ids)} 个{unit_name}。"
         )
         registry = create_default_provider_registry(settings)
         completed_count = 0
@@ -125,12 +137,15 @@ def main() -> int:
                 )
                 return 3
             task_payload = json.loads(claim.payload_json)
-            print(
-                f"窗口 {task_payload.get('window_index', 1)}/"
-                f"{task_payload.get('window_count', 1)}："
-                f"第 {task_payload.get('chapter_start')}—"
-                f"{task_payload.get('chapter_end')} 章"
-            )
+            if args.question_id == "2.2":
+                print("执行主角双层欲望与最小完整集全书证据任务")
+            else:
+                print(
+                    f"窗口 {task_payload.get('window_index', 1)}/"
+                    f"{task_payload.get('window_count', 1)}："
+                    f"第 {task_payload.get('chapter_start')}—"
+                    f"{task_payload.get('chapter_end')} 章"
+                )
             accepted = execute_task_sync(
                 session_factory,
                 settings,
@@ -160,7 +175,8 @@ def main() -> int:
             completed_count += 1
 
         print(
-            f"北极星 {args.question_id} 完成：{completed_count} 个窗口；"
+            f"北极星 {args.question_id} 完成："
+            f"{completed_count} 个{unit_name}；"
             f"Token（令牌）输入 {prompt_tokens}，输出 {completion_tokens}。"
         )
         return 0

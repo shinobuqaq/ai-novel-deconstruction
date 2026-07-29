@@ -8,8 +8,17 @@ from app.services.learning_report import (
     LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS,
     LEARNING_QUESTION_CATALOG,
     LEARNING_QUESTION_CONTRACTS,
+    LEARNING_QUESTION_ITEM_CONTRACTS,
+    LearningAnswerProposal,
     LearningReportValidationError,
+    LearningReportOutput,
+    _answer_uses_current_contract,
+    _apply_program_2_2_answer,
+    _apply_program_4_9_answer,
     _request_budget,
+    _source_materials,
+    _validate_answer_user_text_boundaries,
+    _validate_selected_answers_against_projection,
     assess_learning_report_readiness,
     parse_learning_report,
 )
@@ -145,6 +154,45 @@ def test_every_core_question_has_full_fable_contract() -> None:
         assert item.external_data_policy
 
 
+def test_refreshed_questions_have_independent_item_contracts() -> None:
+    assert [
+        item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["1.4"]
+    ] == [
+        "selling_point_card",
+        "opening_promise_sources",
+        "first_payoff_location",
+        "cross_book_comparison",
+    ]
+    assert [
+        item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["2.2"]
+    ] == [
+        "surface_desire",
+        "deep_desire",
+        "motivation",
+        "contrast",
+        "boundary",
+        "core_ability",
+        "desire_conflicts",
+        "arc_timeline",
+    ]
+    assert [
+        item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["4.9"]
+    ] == [
+        "chapter_coverage",
+        "type_distribution",
+        "strength_rhythm",
+        "type_rotation",
+        "no_hook_analysis",
+        "representative_examples",
+        "scope_boundary",
+    ]
+    hook_contract = LEARNING_QUESTION_CONTRACTS["4.9"]
+    assert "不统计后续回应距离" in hook_contract.measurement_requirements
+    assert "后续回应证据都不能替代章末证据" in (
+        hook_contract.evidence_requirements
+    )
+
+
 def test_sparse_deep_analysis_only_unlocks_independently_supported_questions() -> None:
     readiness = assess_learning_report_readiness(
         _projection(complete_specialized_ledgers=False)
@@ -252,7 +300,558 @@ def _answer(question_id: str) -> dict:
                 }],
             }
         ]
+    elif question_id in LEARNING_QUESTION_ITEM_CONTRACTS:
+        if question_id in {"2.2", "4.9"}:
+            answer["status"] = "ANSWERED"
+        answer["contract_items"] = [
+            {
+                "item_id": definition.item_id,
+                "status": (
+                    "INSUFFICIENT_EVIDENCE"
+                    if (
+                        question_id == "1.4"
+                        and definition.item_id == "cross_book_comparison"
+                    )
+                    else "SUPPORTED"
+                ),
+                "finding": (
+                    "4.9 不追踪后续回应；前三章首次回应属于 3.4，"
+                    "重要悬念生命周期属于 4.10。"
+                    if definition.item_id == "scope_boundary"
+                    else "当前材料支持该合同项目。"
+                ),
+                "metrics": (
+                    []
+                    if (
+                        question_id == "1.4"
+                        and definition.item_id == "cross_book_comparison"
+                    )
+                    else [{
+                        "label": "测试指标",
+                        "value": "1",
+                        "unit": "项",
+                        "method": "按固定测试夹具统计。",
+                        "evidence_ids": [],
+                    }]
+                ),
+                "evidence_ids": (
+                    []
+                    if definition.item_id in {
+                        "cross_book_comparison",
+                        "scope_boundary",
+                    }
+                    else ["evd_test"]
+                ),
+                "limitations": (
+                    ["缺少同口径跨书数据。"]
+                    if definition.item_id == "cross_book_comparison"
+                    else []
+                ),
+                "classifications": [],
+            }
+            for definition in LEARNING_QUESTION_ITEM_CONTRACTS[question_id]
+        ]
+        if question_id == "1.4":
+            payoff_item = next(
+                item
+                for item in answer["contract_items"]
+                if item["item_id"] == "first_payoff_location"
+            )
+            payoff_item["payoff_classifications"] = [{
+                "sequence_no": 1,
+                "matched_facet_ids": ["F1", "F2", "F3"],
+                "exclusion_code": "NONE",
+                "anchor_evidence_no": 1,
+            }]
     return answer
+
+
+def _validated_2_2_answer() -> tuple[LearningAnswerProposal, dict]:
+    fields = []
+    contract_items = []
+    for chapter, field in enumerate((
+        "surface_desire",
+        "deep_desire",
+        "motivation",
+        "contrast",
+        "boundary",
+        "core_ability",
+    ), start=1):
+        evidence_id = f"evd_{field}"
+        fields.append({
+            "field": field,
+            "status": "SUPPORTED",
+            "first_display_chapter_ordinal": chapter,
+            "evidence_ids": [evidence_id],
+        })
+        contract_items.append({
+            "item_id": field,
+            "status": "SUPPORTED",
+            "finding": f"第 {chapter} 章通过行动展示该要素。",
+            "metrics": [{
+                "label": "首次展示章节",
+                "value": str(chapter),
+                "unit": "章",
+                "method": "按主角专项证据账本定位。",
+                "evidence_ids": [evidence_id],
+            }],
+            "evidence_ids": [evidence_id],
+            "limitations": [],
+            "classifications": [],
+        })
+    conflicts = [
+        {
+            "chapter_ordinal": chapter,
+            "surface_desire": "尽快找到寄信人。",
+            "deep_desire": "掌握自己的处境。",
+            "motive": f"第 {chapter} 章现场动机原文",
+            "choice": f"第 {chapter} 章实际选择原文",
+            "result": f"第 {chapter} 章现场结果原文",
+            "sacrificed_desire": "SURFACE",
+            "sacrifice": f"第 {chapter} 章付出代价原文",
+            "arc_change": f"第 {chapter} 章弧光发生变化",
+            "motive_evidence_ids": [f"evd_conflict_{index}"],
+            "choice_evidence_ids": [f"evd_conflict_{index}"],
+            "result_evidence_ids": [f"evd_conflict_{index}"],
+            "sacrifice_evidence_ids": [f"evd_conflict_{index}"],
+            "evidence_ids": [f"evd_conflict_{index}"],
+        }
+        for index, chapter in enumerate((7, 8), start=1)
+    ]
+    conflict_evidence_ids = [
+        evidence_id
+        for conflict in conflicts
+        for evidence_id in conflict["evidence_ids"]
+    ]
+    contract_items.extend([
+        {
+            "item_id": "desire_conflicts",
+            "status": "SUPPORTED",
+            "finding": "第 7 章和第 8 章各有一个双层欲望冲突节点。",
+            "metrics": [{
+                "label": "冲突节点",
+                "value": "2",
+                "unit": "个",
+                "method": "按专项账本逐项统计。",
+                "evidence_ids": conflict_evidence_ids,
+            }],
+            "evidence_ids": conflict_evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "arc_timeline",
+            "status": "SUPPORTED",
+            "finding": "第 7 章发生第一次转折，第 8 章发生第二次转折。",
+            "metrics": [{
+                "label": "转折节点",
+                "value": "2",
+                "unit": "个",
+                "method": "按章节顺序汇总专项账本。",
+                "evidence_ids": conflict_evidence_ids,
+            }],
+            "evidence_ids": conflict_evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+    ])
+    all_evidence_ids = [
+        evidence_id
+        for field in fields
+        for evidence_id in field["evidence_ids"]
+    ] + conflict_evidence_ids
+    return LearningAnswerProposal.model_validate({
+        "question_id": "2.2",
+        "status": "ANSWERED",
+        "conclusion": "六项人物要素和两个冲突节点均有行动原文支持。",
+        "metrics": [{
+            "label": "已核验人物要素",
+            "value": "6",
+            "unit": "项",
+            "method": "按专项账本统计。",
+            "evidence_ids": all_evidence_ids[:1],
+        }],
+        "evidence_ids": all_evidence_ids,
+        "counter_evidence_ids": [],
+        "limitations": ["结论只覆盖当前单书。"],
+        "reusable_lessons": ["用具体选择展示人物要素。"],
+        "do_not_copy": ["不能照搬人物和事件。"],
+        "contract_items": contract_items,
+    }), {
+        "character_design_evidence": {
+            "fields": fields,
+            "desire_conflicts": conflicts,
+        },
+    }
+
+
+def _validated_1_4_answer() -> tuple[
+    LearningAnswerProposal,
+    dict,
+    dict,
+    dict,
+]:
+    payload = _answer("1.4")
+    payload["metrics"] = [{
+        "label": "首次兑现章节",
+        "value": "2",
+        "unit": "章",
+        "method": "按开篇事件时序定位。",
+        "evidence_ids": ["evd_payoff"],
+    }]
+    payload["evidence_ids"] = ["evd_intro", "evd_payoff"]
+    item_by_id = {
+        item["item_id"]: item for item in payload["contract_items"]
+    }
+    item_by_id["selling_point_card"]["evidence_ids"] = ["evd_intro"]
+    item_by_id["opening_promise_sources"].update({
+        "finding": (
+            "书名为《测试书》；简介承诺主角将进入未知世界；"
+            "故事前提是林舟追查旧宅秘密；前三章持续建立未知世界承诺。"
+        ),
+        "metrics": [
+            {
+                "label": "书名",
+                "value": "测试书",
+                "unit": "",
+                "method": "核对源文件书名。",
+                "evidence_ids": [],
+            },
+            {
+                "label": "简介",
+                "value": "主角将进入未知世界。",
+                "unit": "",
+                "method": "核对前置简介。",
+                "evidence_ids": ["evd_intro"],
+            },
+            {
+                "label": "故事前提",
+                "value": "林舟追查旧宅秘密。",
+                "unit": "",
+                "method": "核对故事总览。",
+                "evidence_ids": ["evd_intro"],
+            },
+            {
+                "label": "前三章",
+                "value": "第 2 章未知力量在现实中出现。",
+                "unit": "",
+                "method": "核对前三章现场事件。",
+                "evidence_ids": ["evd_payoff"],
+            },
+        ],
+        "evidence_ids": ["evd_intro", "evd_payoff"],
+    })
+    item_by_id["first_payoff_location"].update({
+        "finding": (
+            "首次兑现位于第一幕 新世界；更早候选只是简介承诺重述，"
+            "尚未发生正文行动。"
+        ),
+        "metrics": [
+            {
+                "label": "首次兑现章节",
+                "value": "2",
+                "unit": "章",
+                "method": "按开篇事件时序定位。",
+                "evidence_ids": ["evd_payoff"],
+            },
+            {
+                "label": "兑现段落",
+                "value": "4",
+                "unit": "段",
+                "method": "按原文依据段落序号定位。",
+                "evidence_ids": ["evd_payoff"],
+            },
+            {
+                "label": "兑现位置累计字符",
+                "value": "101",
+                "unit": "字符",
+                "method": "按源文件一基字符位置定位。",
+                "evidence_ids": ["evd_payoff"],
+            },
+            {
+                "label": "承诺到兑现章距",
+                "value": "2",
+                "unit": "章",
+                "method": "从前置简介位置 0 计算。",
+                "evidence_ids": ["evd_intro", "evd_payoff"],
+            },
+            {
+                "label": "承诺到兑现字符距离",
+                "value": "90",
+                "unit": "字符",
+                "method": "以两条原文依据的起点相减。",
+                "evidence_ids": ["evd_intro", "evd_payoff"],
+            },
+        ],
+        "evidence_ids": ["evd_payoff"],
+        "payoff_classifications": [{
+            "sequence_no": 1,
+            "matched_facet_ids": ["F1", "F2", "F3"],
+            "exclusion_code": "NONE",
+            "anchor_evidence_no": 1,
+        }],
+    })
+    projection = {
+        "story_overview": {
+            "premise": "林舟追查旧宅秘密。",
+            "evidence_ids": ["evd_intro"],
+        },
+        "events": [{
+            "id": "evt_payoff",
+            "title": "林舟进入未知世界",
+            "summary": "未知力量在现实中出现并把林舟卷入冲突。",
+            "narrative_mode": "ACTUAL",
+            "start_char": 100,
+            "chapter_ordinals": [2],
+            "evidence_ids": ["evd_payoff"],
+        }],
+    }
+    opening_sources = {
+        "preferred_title": "测试书",
+        "description_present": True,
+        "description_text": "简介承诺主角将进入未知世界。",
+        "description_source_char_start": 11,
+        "description_evidence_ids": ["evd_intro"],
+        "evidence_ids": ["evd_intro"],
+        "promise_chapter_position": 0,
+    }
+    evidence_by_id = {
+        "evd_intro": SimpleNamespace(
+            id="evd_intro",
+            paragraph_index=0,
+            start_char=10,
+            end_char=20,
+            source_unit_id="unit_preface",
+            text_snapshot="简介承诺主角将进入未知世界。",
+            source_unit=SimpleNamespace(title="正文前内容"),
+        ),
+        "evd_payoff": SimpleNamespace(
+            id="evd_payoff",
+            paragraph_index=3,
+            start_char=100,
+            end_char=130,
+            source_unit_id="unit_2",
+            text_snapshot="未知力量在现实中出现并把林舟卷入冲突。",
+            source_unit=SimpleNamespace(title="第一幕 新世界"),
+        ),
+    }
+    return (
+        LearningAnswerProposal.model_validate(payload),
+        projection,
+        opening_sources,
+        evidence_by_id,
+    )
+
+
+def _validated_4_9_answer() -> tuple[LearningAnswerProposal, dict]:
+    type_rows = [
+        ("CRISIS_SUSPENSION", 1, 0.5),
+        ("NEW_INFORMATION", 0, 0.0),
+        ("PAYOFF_PRIMING", 0, 0.0),
+        ("REVERSAL", 0, 0.0),
+        ("EMOTIONAL_FREEZE", 0, 0.0),
+        ("NONE", 1, 0.5),
+    ]
+    strength_rows = [
+        ("STRONG", 1, 0.5),
+        ("MEDIUM", 0, 0.0),
+        ("LIGHT", 0, 0.0),
+        ("NONE", 1, 0.5),
+    ]
+    evidence_ids = ["evd_end_1", "evd_end_2"]
+    contract_items = [
+        {
+            "item_id": "chapter_coverage",
+            "status": "SUPPORTED",
+            "finding": "两个章节由一个连续窗口不重不漏覆盖。",
+            "metrics": [
+                {
+                    "label": "全书章节",
+                    "value": "2",
+                    "unit": "章",
+                    "method": "按正式来源章节统计。",
+                    "evidence_ids": [],
+                },
+                {
+                    "label": "连续窗口",
+                    "value": "1",
+                    "unit": "个",
+                    "method": "按正式窗口账本统计。",
+                    "evidence_ids": [],
+                },
+            ],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "type_distribution",
+            "status": "SUPPORTED",
+            "finding": "逐类统计章末钩数量与比例。",
+            "metrics": [
+                {
+                    "label": hook_type,
+                    "value": str(count),
+                    "unit": f"章，占比 {ratio * 100:.0f}%",
+                    "method": "按逐章类型分类统计。",
+                    "evidence_ids": [],
+                }
+                for hook_type, count, ratio in type_rows
+            ],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "strength_rhythm",
+            "status": "SUPPORTED",
+            "finding": "逐档统计钩子强度。",
+            "metrics": [
+                {
+                    "label": strength,
+                    "value": str(count),
+                    "unit": "章",
+                    "method": "按逐章强度分类统计。",
+                    "evidence_ids": [],
+                }
+                for strength, count, _ratio in strength_rows
+            ] + [{
+                "label": "最长连续强钩",
+                "value": "1",
+                "unit": "章",
+                "method": "按连续章节精确合并。",
+                "evidence_ids": [],
+            }],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "type_rotation",
+            "status": "SUPPORTED",
+            "finding": "相邻两章发生一次类型切换。",
+            "metrics": [
+                {
+                    "label": "类型切换",
+                    "value": "1",
+                    "unit": "次",
+                    "method": "比较相邻章节类型。",
+                    "evidence_ids": [],
+                },
+                {
+                    "label": "同类连续上限",
+                    "value": "1",
+                    "unit": "章",
+                    "method": "按连续章节精确合并。",
+                    "evidence_ids": [],
+                },
+            ],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "no_hook_analysis",
+            "status": "SUPPORTED",
+            "finding": "第二章是无钩章。",
+            "metrics": [{
+                "label": "无钩章",
+                "value": "1",
+                "unit": "章，占比 50%",
+                "method": "按逐章 NONE 分类统计。",
+                "evidence_ids": ["evd_end_2"],
+            }],
+            "evidence_ids": ["evd_end_2"],
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "representative_examples",
+            "status": "SUPPORTED",
+            "finding": "危机悬置和无钩均引用对应章末原文。",
+            "metrics": [{
+                "label": "已覆盖类型",
+                "value": "2",
+                "unit": "种",
+                "method": "每种实际出现类型取一条章末原文。",
+                "evidence_ids": evidence_ids,
+            }],
+            "evidence_ids": evidence_ids,
+            "limitations": [],
+            "classifications": [],
+        },
+        {
+            "item_id": "scope_boundary",
+            "status": "SUPPORTED",
+            "finding": "4.9 不追踪后续回应；3.4 管前三章首次回应，4.10 管重要悬念生命周期。",
+            "metrics": [],
+            "evidence_ids": [],
+            "limitations": [],
+            "classifications": [],
+        },
+    ]
+    return LearningAnswerProposal.model_validate({
+        "question_id": "4.9",
+        "status": "ANSWERED",
+        "conclusion": "两章章末类型和强弱节律已完整统计。",
+        "metrics": [{
+            "label": "全书章末分类覆盖",
+            "value": "2",
+            "unit": "章",
+            "method": "按连续窗口逐章分类。",
+            "evidence_ids": ["evd_end_1"],
+        }],
+        "evidence_ids": evidence_ids,
+        "counter_evidence_ids": [],
+        "limitations": ["结论只覆盖当前单书。"],
+        "reusable_lessons": ["章末类型和强度分开统计。"],
+        "do_not_copy": ["不能照搬具体章末表达。"],
+        "contract_items": contract_items,
+    }), {
+        "chapter_end_hooks_evidence": {
+            "chapters": [
+                {
+                    "chapter_ordinal": 1,
+                    "hook_type": "CRISIS_SUSPENSION",
+                    "strength": "STRONG",
+                    "ending_evidence_ids": ["evd_end_1"],
+                },
+                {
+                    "chapter_ordinal": 2,
+                    "hook_type": "NONE",
+                    "strength": "NONE",
+                    "ending_evidence_ids": ["evd_end_2"],
+                },
+            ],
+            "coverage": {
+                "source_chapter_count": 2,
+                "window_count": 1,
+            },
+            "summary": {
+                "type_distribution": [
+                    {"hook_type": hook_type, "count": count, "ratio": ratio}
+                    for hook_type, count, ratio in type_rows
+                ],
+                "strength_distribution": [
+                    {"strength": strength, "count": count, "ratio": ratio}
+                    for strength, count, ratio in strength_rows
+                ],
+                "type_transition_count": 1,
+                "max_consecutive_strong": 1,
+                "max_consecutive_same_type": 1,
+                "no_hook_count": 1,
+                "no_hook_ratio": 0.5,
+                "examples_by_type": {
+                    "CRISIS_SUSPENSION": [{
+                        "ending_evidence_ids": ["evd_end_1"],
+                    }],
+                    "NONE": [{
+                        "ending_evidence_ids": ["evd_end_2"],
+                    }],
+                },
+            },
+        },
+    }
 
 
 def test_parser_accepts_exact_incremental_question_selection() -> None:
@@ -280,6 +879,762 @@ def test_parser_rejects_missing_incremental_question() -> None:
         )
 
     assert error.value.code == "LEARNING_REPORT_QUESTION_COVERAGE_INVALID"
+
+
+def test_parser_rejects_1_4_with_missing_contract_item() -> None:
+    answer = _answer("1.4")
+    answer["contract_items"] = answer["contract_items"][:-1]
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["1.4"],
+        )
+
+    assert error.value.code == "LEARNING_REPORT_CONTRACT_ITEM_COVERAGE_INVALID"
+
+
+def test_parser_accepts_2_2_with_valid_partial_contract() -> None:
+    answer = _answer("2.2")
+    contrast = next(
+        item
+        for item in answer["contract_items"]
+        if item["item_id"] == "contrast"
+    )
+    contrast.update({
+        "status": "INSUFFICIENT_EVIDENCE",
+        "finding": "全书主角事件中没有可核验的性格反差首次展示。",
+        "metrics": [],
+        "evidence_ids": [],
+        "limitations": ["全书主角事件中没有可核验的性格反差首次展示。"],
+    })
+    answer["status"] = "PARTIAL"
+
+    output = parse_learning_report(
+        {
+            "answers": [answer],
+            "author_decisions": [],
+            "method_candidates": [],
+        },
+        expected_question_ids=["2.2"],
+    )
+
+    assert output.answers[0].status == "PARTIAL"
+    assert output.answers[0].contract_items[3].status == "INSUFFICIENT_EVIDENCE"
+
+
+def test_2_2_readiness_accepts_full_book_insufficient_contrast() -> None:
+    projection = _projection(complete_specialized_ledgers=True)
+    contrast = next(
+        item
+        for item in projection["character_design_evidence"]["fields"]
+        if item["field"] == "contrast"
+    )
+    contrast.update({
+        "status": "INSUFFICIENT_EVIDENCE",
+        "value": "",
+        "first_display_chapter_ordinal": None,
+        "first_display_event_id": None,
+        "display_event": "",
+        "evidence_ids": [],
+        "explanation": "全书主角事件中没有可核验的性格反差首次展示。",
+    })
+
+    readiness = assess_learning_report_readiness(projection)
+
+    checks = {item["question_id"]: item for item in readiness["checks"]}
+    assert checks["2.2"]["ready"] is True
+    assert checks["2.2"]["answer_scope"] == "PARTIAL"
+    assert checks["2.2"]["observed"]["contract_field_evidence_count"] == 5
+    assert checks["2.2"]["observed"]["contract_field_insufficient_count"] == 1
+    assert "2.2" in readiness["generation_ready_question_ids"]
+
+
+def test_program_compiles_2_2_insufficient_field_without_fake_support() -> None:
+    projection = _projection(complete_specialized_ledgers=True)
+    ledger = projection["character_design_evidence"]
+    contrast = next(
+        item
+        for item in ledger["fields"]
+        if item["field"] == "contrast"
+    )
+    contrast.update({
+        "status": "INSUFFICIENT_EVIDENCE",
+        "value": "",
+        "first_display_chapter_ordinal": None,
+        "first_display_event_id": None,
+        "display_event": "",
+        "evidence_ids": [],
+        "explanation": "全书主角事件中没有可核验的性格反差首次展示。",
+    })
+    answer = LearningAnswerProposal.model_validate(_answer("2.2"))
+
+    _apply_program_2_2_answer(answer, ledger)
+    _validate_selected_answers_against_projection(
+        LearningReportOutput(
+            answers=[answer],
+            author_decisions=[],
+            method_candidates=[],
+        ),
+        projection,
+    )
+
+    compiled = next(
+        item
+        for item in answer.contract_items
+        if item.item_id == "contrast"
+    )
+    assert answer.status == "PARTIAL"
+    assert compiled.status == "INSUFFICIENT_EVIDENCE"
+    assert compiled.metrics == []
+    assert compiled.evidence_ids == []
+    assert compiled.finding == (
+        "全书主角事件中没有可核验的性格反差首次展示"
+    )
+
+
+def test_program_rejects_fake_support_for_2_2_insufficient_field() -> None:
+    projection = _projection(complete_specialized_ledgers=True)
+    ledger = projection["character_design_evidence"]
+    contrast = next(
+        item
+        for item in ledger["fields"]
+        if item["field"] == "contrast"
+    )
+    contrast.update({
+        "status": "INSUFFICIENT_EVIDENCE",
+        "value": "",
+        "first_display_chapter_ordinal": None,
+        "first_display_event_id": None,
+        "display_event": "",
+        "evidence_ids": [],
+        "explanation": "全书主角事件中没有可核验的性格反差首次展示。",
+    })
+    answer = LearningAnswerProposal.model_validate(_answer("2.2"))
+    _apply_program_2_2_answer(answer, ledger)
+    compiled = next(
+        item
+        for item in answer.contract_items
+        if item.item_id == "contrast"
+    )
+    compiled.status = "SUPPORTED"
+    compiled.metrics = [answer.metrics[0]]
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[answer],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+        )
+
+    assert str(error.value) == (
+        "LEARNING_REPORT_2_2_CONTRAST_REFERENCE_INVALID"
+    )
+
+
+def test_parser_rejects_pricing_text_in_contract_items() -> None:
+    answer = _answer("4.9")
+    answer["contract_items"][0]["finding"] = "本次模型费用为若干金额。"
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["4.9"],
+        )
+
+    assert error.value.code == "LEARNING_REPORT_PRICING_OUT_OF_SCOPE"
+
+
+def test_program_validation_rejects_wrong_2_2_conflict_count() -> None:
+    answer, projection = _validated_2_2_answer()
+    payload = answer.model_dump(mode="json")
+    conflict_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "desire_conflicts"
+    )
+    conflict_item["metrics"][0]["value"] = "1"
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+        )
+
+    assert str(error.value) == "LEARNING_REPORT_2_2_CONFLICT_COUNT_INVALID"
+
+
+def test_program_validation_rejects_missing_1_4_title_that_exists_in_source() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    promise_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "opening_promise_sources"
+    )
+    title_metric = next(
+        metric
+        for metric in promise_item["metrics"]
+        if metric["label"] == "书名"
+    )
+    title_metric["value"] = "书名缺失"
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+            opening_promise_sources=opening_sources,
+            evidence_by_id=evidence_by_id,
+        )
+
+    assert str(error.value) == "LEARNING_REPORT_1_4_TITLE_SOURCE_INVALID"
+
+
+def test_program_rejects_intro_evidence_as_first_three_chapter_evidence() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    promise_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "opening_promise_sources"
+    )
+    opening_metric = next(
+        metric
+        for metric in promise_item["metrics"]
+        if metric["label"] == "前三章"
+    )
+    opening_metric["evidence_ids"] = ["evd_intro"]
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+            opening_promise_sources=opening_sources,
+            evidence_by_id=evidence_by_id,
+        )
+
+    assert str(error.value) == (
+        "LEARNING_REPORT_1_4_OPENING_CHAPTER_SOURCE_INVALID"
+    )
+
+
+def test_old_refreshed_contract_versions_are_not_current() -> None:
+    oldest_payload = {
+        "question_contract_versions": {
+            "1.4": "2.0.0",
+            "2.2": "2.0.0",
+        },
+    }
+    previous_payload = {
+        "question_contract_versions": {
+            "1.4": "2.1.0",
+            "2.2": "2.0.0",
+        },
+    }
+    current_payload = {
+        "question_contract_versions": {
+            "1.4": "2.3.0",
+            "2.2": "2.1.0",
+        },
+    }
+
+    assert not _answer_uses_current_contract(oldest_payload, "1.4")
+    assert not _answer_uses_current_contract(previous_payload, "1.4")
+    assert not _answer_uses_current_contract(previous_payload, "2.2")
+    assert _answer_uses_current_contract(current_payload, "1.4")
+    assert _answer_uses_current_contract(current_payload, "2.2")
+
+
+def test_program_compiles_1_4_promise_sources_from_authoritative_material() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    promise_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "opening_promise_sources"
+    )
+    metric_by_label = {
+        metric["label"]: metric
+        for metric in promise_item["metrics"]
+    }
+    metric_by_label["简介"]["value"] = "模型补写的简介承诺"
+    metric_by_label["故事前提"]["value"] = "模型补写的故事前提"
+    metric_by_label["前三章"]["value"] = "普通生活起点"
+    output = LearningReportOutput(
+        answers=[LearningAnswerProposal.model_validate(payload)],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    compiled = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "opening_promise_sources"
+    )
+    compiled_by_label = {
+        metric.label: metric
+        for metric in compiled.metrics
+    }
+    assert compiled_by_label["简介"].value == opening_sources["description_text"]
+    assert compiled_by_label["故事前提"].value == (
+        projection["story_overview"]["premise"]
+    )
+    assert "林舟进入未知世界" in compiled_by_label["前三章"].value
+    assert "普通生活起点" not in compiled.finding
+
+
+def test_program_keeps_complete_long_1_4_description() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    long_description = (
+        "这段简介明确交代主角将被卷入未知世界，并需要在现实行动中"
+        "面对异常机制和主要矛盾。"
+    ) * 6
+    opening_sources["description_text"] = long_description
+    output = LearningReportOutput(
+        answers=[answer],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    compiled = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "opening_promise_sources"
+    )
+    description_metric = next(
+        metric for metric in compiled.metrics
+        if metric.label == "简介"
+    )
+    assert len(long_description) > 160
+    assert description_metric.value == long_description
+
+
+def test_1_4_prioritizes_story_overview_protagonist_material() -> None:
+    projection = _projection(complete_specialized_ledgers=False)
+    projection["story_overview"]["protagonist"] = "路明非"
+    projection["characters"] = [
+        {
+            "name": "楚子航",
+            "role": "PROTAGONIST",
+            "evidence_ids": ["evd_chu"],
+        },
+        {
+            "name": "路明非",
+            "role": "PROTAGONIST",
+            "evidence_ids": ["evd_lu"],
+        },
+    ]
+
+    materials = _source_materials(projection, ("1.4",))
+    priorities = {
+        str(item.get("name")): priority
+        for priority, kind, item in materials
+        if kind == "protagonist"
+    }
+
+    assert priorities["路明非"] > priorities["楚子航"]
+
+
+def test_program_uses_chapter_only_index_for_1_4_position() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    evidence_by_id["evd_payoff"].source_unit.ordinal = 3
+    output = LearningReportOutput(
+        answers=[answer],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+        chapter_by_unit_id={
+            "unit_2": {
+                "ordinal": 2,
+                "title": "第一幕 新世界",
+            },
+        },
+    )
+
+    payoff = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "first_payoff_location"
+    )
+    metric_by_label = {
+        metric.label: metric.value
+        for metric in payoff.metrics
+    }
+    assert metric_by_label["首次兑现章节"] == "2"
+    assert metric_by_label["承诺到兑现章距"] == "2"
+
+
+def test_program_compiles_1_4_position_instead_of_trusting_model_number() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    payoff_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "first_payoff_location"
+    )
+    paragraph_metric = next(
+        metric
+        for metric in payoff_item["metrics"]
+        if metric["label"] == "兑现段落"
+    )
+    paragraph_metric["value"] = "5"
+
+    output = LearningReportOutput(
+        answers=[LearningAnswerProposal.model_validate(payload)],
+        author_decisions=[],
+        method_candidates=[],
+    )
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    compiled_payoff = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "first_payoff_location"
+    )
+    compiled_paragraph = next(
+        metric
+        for metric in compiled_payoff.metrics
+        if metric.label == "兑现段落"
+    )
+    assert compiled_paragraph.value == "4"
+
+
+def test_program_rejects_1_4_classification_that_skips_earlier_candidates() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    payoff_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "first_payoff_location"
+    )
+    payoff_item["payoff_classifications"][0]["sequence_no"] = 2
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+            opening_promise_sources=opening_sources,
+            evidence_by_id=evidence_by_id,
+        )
+
+    assert str(error.value) == (
+        "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATION_COVERAGE_INVALID"
+    )
+
+
+def test_program_chooses_first_complete_1_4_classification() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    projection["events"].append({
+        "id": "evt_late",
+        "title": "更晚的强场面",
+        "summary": "更晚的强场面也完整展示同一承诺。",
+        "narrative_mode": "ACTUAL",
+        "start_char": 200,
+        "chapter_ordinals": [3],
+        "evidence_ids": ["evd_late"],
+    })
+    evidence_by_id["evd_late"] = SimpleNamespace(
+        id="evd_late",
+        paragraph_index=8,
+        start_char=200,
+        end_char=240,
+        source_unit_id="unit_3",
+        text_snapshot="更晚的强场面也完整展示同一承诺。",
+        source_unit=SimpleNamespace(title="第二幕 更强场面"),
+    )
+    payload = answer.model_dump(mode="json")
+    payoff_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "first_payoff_location"
+    )
+    payoff_item["payoff_classifications"].append({
+        "sequence_no": 2,
+        "matched_facet_ids": ["F1", "F2", "F3"],
+        "exclusion_code": "NONE",
+        "anchor_evidence_no": 1,
+    })
+    output = LearningReportOutput(
+        answers=[LearningAnswerProposal.model_validate(payload)],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    payoff = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "first_payoff_location"
+    )
+    assert payoff.evidence_ids == ["evd_payoff"]
+    assert "第一幕 新世界" in payoff.finding
+    assert "第二幕 更强场面" not in payoff.finding
+
+
+def test_program_excludes_non_scene_f1_from_opening_promise_sources() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    projection["events"].insert(0, {
+        "id": "evt_oral",
+        "title": "导师口述异常世界",
+        "summary": "导师只用语言说明异常世界和任务。",
+        "narrative_mode": "ACTUAL",
+        "start_char": 50,
+        "chapter_ordinals": [1],
+        "evidence_ids": ["evd_oral"],
+    })
+    evidence_by_id["evd_oral"] = SimpleNamespace(
+        id="evd_oral",
+        paragraph_index=1,
+        start_char=50,
+        end_char=80,
+        source_unit_id="unit_1",
+        text_snapshot="导师说世界存在异常力量，主角将承担任务。",
+        source_unit=SimpleNamespace(title="第一章 口述"),
+    )
+    payload = answer.model_dump(mode="json")
+    payoff_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "first_payoff_location"
+    )
+    payoff_item["payoff_classifications"] = [
+        {
+            "sequence_no": 1,
+            "matched_facet_ids": ["F1", "F2"],
+            "exclusion_code": "PARTIAL_ONLY",
+            "anchor_evidence_no": 1,
+        },
+        {
+            "sequence_no": 2,
+            "matched_facet_ids": ["F1", "F2", "F3"],
+            "exclusion_code": "NONE",
+            "anchor_evidence_no": 1,
+        },
+    ]
+    output = LearningReportOutput(
+        answers=[LearningAnswerProposal.model_validate(payload)],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    promise_item = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "opening_promise_sources"
+    )
+    opening_metric = next(
+        metric for metric in promise_item.metrics
+        if metric.label == "前三章"
+    )
+    assert opening_metric.evidence_ids == ["evd_payoff"]
+    assert "导师口述异常世界" not in opening_metric.value
+
+
+def test_program_validation_rejects_wrong_4_9_type_count_by_label() -> None:
+    answer, projection = _validated_4_9_answer()
+    payload = answer.model_dump(mode="json")
+    type_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "type_distribution"
+    )
+    crisis_metric = next(
+        metric
+        for metric in type_item["metrics"]
+        if metric["label"] == "CRISIS_SUSPENSION"
+    )
+    crisis_metric["value"] = "0"
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+        )
+
+    assert str(error.value) == "LEARNING_REPORT_4_9_TYPE_DISTRIBUTION_INVALID"
+
+
+def test_program_replaces_unverified_4_9_top_level_numbers() -> None:
+    answer, projection = _validated_4_9_answer()
+    answer.conclusion = "错误地声称全书共有 99 章。"
+    answer.metrics[0].value = "99"
+
+    _apply_program_4_9_answer(
+        answer,
+        projection["chapter_end_hooks_evidence"],
+    )
+
+    metric_values = {
+        metric.label: metric.value
+        for metric in answer.metrics
+    }
+    assert "99" not in answer.conclusion
+    assert answer.conclusion.startswith(
+        "全书 2 章由 1 个连续窗口不重不漏覆盖"
+    )
+    assert metric_values["全书章节"] == "2"
+    assert metric_values["危机悬置"] == "1"
+    assert metric_values["最长连续强钩"] == "1"
+    assert metric_values["无钩章"] == "1"
+
+
+def test_program_compiles_4_9_before_final_text_boundary_checks() -> None:
+    answer, projection = _validated_4_9_answer()
+    payload = answer.model_dump(mode="json")
+    payload["reusable_lessons"] = ["这种节律会提升读者留存率。"]
+    payload["contract_items"][0]["finding"] = (
+        "这种覆盖方式会避免读者疲劳。"
+    )
+
+    output = parse_learning_report(
+        {
+            "answers": [payload],
+            "author_decisions": [],
+            "method_candidates": [],
+        },
+        expected_question_ids=["4.9"],
+        defer_user_text_checks_for={"4.9"},
+    )
+    compiled = output.answers[0]
+    _apply_program_4_9_answer(
+        compiled,
+        projection["chapter_end_hooks_evidence"],
+    )
+
+    _validate_answer_user_text_boundaries(compiled)
+
+    assert [item.item_id for item in compiled.contract_items] == [
+        "chapter_coverage",
+        "type_distribution",
+        "strength_rhythm",
+        "type_rotation",
+        "no_hook_analysis",
+        "representative_examples",
+        "scope_boundary",
+    ]
+    compiled_text = "".join([
+        compiled.conclusion,
+        *compiled.reusable_lessons,
+        *(item.finding for item in compiled.contract_items),
+    ])
+    assert "读者留存" not in compiled_text
+    assert "读者疲劳" not in compiled_text
+
+
+def test_program_validation_rejects_4_9_response_distance_metric() -> None:
+    answer, projection = _validated_4_9_answer()
+    payload = answer.model_dump(mode="json")
+    scope_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "scope_boundary"
+    )
+    scope_item["metrics"] = [{
+        "label": "回应距离",
+        "value": "1",
+        "unit": "章",
+        "method": "错误地追踪后续回应。",
+        "evidence_ids": [],
+    }]
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+        )
+
+    assert str(error.value) == "LEARNING_REPORT_4_9_RESPONSE_METRIC_OUT_OF_SCOPE"
 
 
 def test_parser_rejects_2_1_that_only_returns_counts() -> None:
@@ -363,6 +1718,28 @@ def test_parser_rejects_invented_external_effect_magnitude() -> None:
     answer = _answer("1.4")
     answer["do_not_copy"] = [
         "这种写法存在较大概率的弃书风险，需待市场数据验证。"
+    ]
+
+    with pytest.raises(LearningReportValidationError) as error:
+        parse_learning_report(
+            {
+                "answers": [answer],
+                "author_decisions": [],
+                "method_candidates": [],
+            },
+            expected_question_ids=["1.4"],
+        )
+
+    assert (
+        error.value.code
+        == "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED"
+    )
+
+
+def test_parser_rejects_unverified_reader_trust_or_resonance_effect() -> None:
+    answer = _answer("1.4")
+    answer["reusable_lessons"] = [
+        "这种铺垫有助于建立读者信任与共鸣。"
     ]
 
     with pytest.raises(LearningReportValidationError) as error:
