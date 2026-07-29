@@ -195,6 +195,25 @@ def test_refreshed_questions_have_independent_item_contracts() -> None:
         "arc_timeline",
     ]
     assert [
+        item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["3.1"]
+    ] == [
+        "opening_scene_type",
+        "protagonist_entrance",
+        "first_sentence_and_paragraph",
+        "opening_scene_card",
+        "cross_book_opening_distribution",
+    ]
+    assert [
+        item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["3.2"]
+    ] == [
+        "chapter_tasks",
+        "paragraph_task_sequence",
+        "key_event_positions",
+        "information_loading_timeline",
+        "core_ability_first_appearance",
+        "cross_book_rhythm_range",
+    ]
+    assert [
         item.item_id for item in LEARNING_QUESTION_ITEM_CONTRACTS["4.9"]
     ] == [
         "chapter_coverage",
@@ -230,7 +249,7 @@ def test_sparse_deep_analysis_only_unlocks_independently_supported_questions() -
     assert checks["4.9"]["observed"]["generic_scene_analysis_count"] == 1
     assert checks["4.9"]["observed"]["valid_chapter_end_sample_count"] == 0
     assert checks["3.4"]["ready"] is False
-    assert readiness["next_required_artifacts"][0] == "主角双层欲望与最小完整集证据表"
+    assert readiness["next_required_artifacts"][0] == "前三章逐段任务与信息装载共享账本"
 
 
 def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() -> None:
@@ -249,6 +268,7 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
         "4.9",
     ]
     assert readiness["next_required_artifacts"] == [
+        "前三章逐段任务与信息装载共享账本",
         "前三章章末钩兑现追踪表（独立于 4.9）"
     ]
 
@@ -285,10 +305,72 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
     assert readiness["complete_question_count"] == 3
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
+        "3.4",
         "2.1",
         "2.2",
-        "3.4",
         "4.9",
+    ]
+
+
+def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
+    projection = _projection(complete_specialized_ledgers=False)
+    projection["opening_structure_status"] = "READY"
+    projection["opening_structure_evidence"] = {
+        "is_current": True,
+        "opening_scene": {
+            "opening_type": "日常被打破",
+            "story_start_paragraph": 2,
+            "protagonist_first_paragraph": 3,
+            "protagonist_action": "正在查看陌生来信",
+            "initial_trouble": "信中要求他立刻离开旧宅",
+            "first_sentence_function": "先制造异常",
+            "first_paragraph_function": "建立悬念",
+            "evidence_ids": ["evd_opening"],
+        },
+        "chapter_tasks": [
+            {
+                "chapter_ordinal": ordinal,
+                "tasks": [f"完成第 {ordinal} 章任务"],
+            }
+            for ordinal in range(1, 4)
+        ],
+        "paragraph_segments": [
+            {
+                "chapter_ordinal": ordinal,
+                "paragraph_start": 1,
+                "paragraph_end": 3,
+            }
+            for ordinal in range(1, 4)
+        ],
+        "information_timeline": [
+            {"module": module, "status": "NOT_OBSERVED"}
+            for module in (
+                "主角困境",
+                "主角性格",
+                "核心能力",
+                "世界观规则",
+                "威胁",
+                "短期目标",
+            )
+        ],
+        "coverage": {
+            "paragraph_coverage_complete": True,
+            "paragraph_sequence_contiguous": True,
+            "story_character_count": 1200,
+        },
+    }
+
+    readiness = assess_learning_report_readiness(projection)
+    checks = {item["question_id"]: item for item in readiness["checks"]}
+
+    assert checks["3.1"]["ready"] is True
+    assert checks["3.1"]["answer_scope"] == "PARTIAL"
+    assert checks["3.2"]["ready"] is True
+    assert checks["3.2"]["answer_scope"] == "PARTIAL"
+    assert readiness["generation_ready_question_ids"][:3] == [
+        "1.4",
+        "3.1",
+        "3.2",
     ]
 
 
@@ -328,8 +410,12 @@ def _answer(question_id: str) -> dict:
                 "status": (
                     "INSUFFICIENT_EVIDENCE"
                     if (
-                        question_id == "1.4"
-                        and definition.item_id == "cross_book_comparison"
+                        definition.item_id
+                        in {
+                            "cross_book_comparison",
+                            "cross_book_opening_distribution",
+                            "cross_book_rhythm_range",
+                        }
                     )
                     else "SUPPORTED"
                 ),

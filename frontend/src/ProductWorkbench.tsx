@@ -354,6 +354,7 @@ type FormalWorkbenchProps = {
   onStartCharacterDesign: (force: boolean) => void;
   onStartChapterEndHooks: (force: boolean) => void;
   onStartOpeningHookPayoffs: (force: boolean) => void;
+  onStartOpeningStructure: (force: boolean) => void;
   onStartLearningReport: () => void;
   onConfirmAnalysis: () => void;
 }
@@ -378,6 +379,7 @@ function FormalWorkbench({
   onStartCharacterDesign,
   onStartChapterEndHooks,
   onStartOpeningHookPayoffs,
+  onStartOpeningStructure,
   onStartLearningReport,
   onConfirmAnalysis,
 }: FormalWorkbenchProps) {
@@ -727,16 +729,24 @@ function FormalWorkbench({
   const chapterEndHooksReadiness = learningReadiness.checks.find((item) => item.question_id === "4.9");
   const openingHookPayoffs = viewData.opening_hook_payoffs_evidence;
   const openingHookPayoffsReadiness = learningReadiness.checks.find((item) => item.question_id === "3.4");
+  const openingStructureReadiness = learningReadiness.checks.filter(
+    (item) => item.question_id === "3.1" || item.question_id === "3.2",
+  );
+  const openingStructureReady = openingStructureReadiness.length === 2
+    && openingStructureReadiness.every((item) => item.ready);
   const learningQuestionById = new Map(
     learningReport.questions.map((question) => [question.question_id, question]),
   );
   const recommendedLearningQuestions = learningReport.recommended_question_ids
     .map((questionId) => learningQuestionById.get(questionId))
     .filter((question) => question !== undefined);
-  const learningRouteQuestions = learningReport.questions.filter(
-    (question) => question.has_current_answer
-      || learningReport.recommended_question_ids.includes(question.question_id),
-  );
+  const learningRouteQuestions = [
+    ...recommendedLearningQuestions,
+    ...learningReport.questions.filter(
+      (question) => question.has_current_answer
+        && !learningReport.recommended_question_ids.includes(question.question_id),
+    ),
+  ];
   const activeLearningQuestionIndex = Math.max(
     0,
     learningRouteQuestions.findIndex(
@@ -1136,6 +1146,11 @@ function FormalWorkbench({
                         <i>{LEARNING_ANSWER_STATUS_LABELS[activeLearningQuestion.status] ?? "状态未知"}</i>
                       </header>
                       <h4>{activeLearningQuestion.question}</h4>
+                      <div className="learning-progress-columns" aria-label="问题三栏进度">
+                        <span><b>合同</b>{activeLearningQuestion.contract_status === "COMPLETE" ? "已完成" : "未完成"}</span>
+                        <span><b>原料</b>{activeLearningQuestion.material_status === "READY" ? "已就绪" : activeLearningQuestion.material_status === "GENERATING" ? "生成中" : activeLearningQuestion.material_status === "OUTDATED" ? "已过期" : activeLearningQuestion.material_status === "FAILED" ? "失败" : activeLearningQuestion.material_status === "NOT_ASSESSED" ? "未审计" : "未就绪"}</span>
+                        <span><b>正式答案</b>{activeLearningQuestion.has_current_answer ? "当前有效" : activeLearningQuestion.answer_status === "OUTDATED" ? "已过期" : "尚无"}</span>
+                      </div>
                       <p>{activeLearningQuestion.conclusion || (viewData.learning_report_status === "GENERATING" ? "系统正在根据拆解证据生成这项答案。" : "这项专项答案尚未生成。")}</p>
                       {activeLearningQuestion.metrics.length > 0 && (
                         <div className="learning-metric-row">
@@ -1226,6 +1241,60 @@ function FormalWorkbench({
                             ))}
                           </ul>
                         </div>
+                      )}
+                      {activeLearningQuestion.program_artifacts.opening_structure_ledger && (
+                        <details className="learning-contract-details opening-structure-ledger">
+                          <summary>
+                            <strong>查看前三章逐段分析原料</strong>
+                            <span>
+                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.coverage.paragraph_count} 个原文段落，
+                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.paragraph_segments.length} 个连续功能段，默认收起
+                            </span>
+                          </summary>
+                          <div className="opening-structure-ledger-list">
+                            <section>
+                              <h5>每章承担的任务</h5>
+                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.chapter_tasks.map((item) => (
+                                <article key={`opening-task-${item.chapter_ordinal}`}>
+                                  <strong>第 {item.chapter_ordinal} 章</strong>
+                                  <p>{item.tasks.join("；")}</p>
+                                  <small>{item.explanation}</small>
+                                </article>
+                              ))}
+                            </section>
+                            <section>
+                              <h5>六类信息首次位置</h5>
+                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.information_timeline.map((item) => (
+                                <article key={`opening-module-${item.module}`} className={item.status === "SUPPORTED" ? "" : "insufficient"}>
+                                  <strong>{item.module}</strong>
+                                  <p>
+                                    {item.status === "SUPPORTED" && item.first_chapter_ordinal && item.first_paragraph
+                                      ? `首次见于第 ${item.first_chapter_ordinal} 章第 ${item.first_paragraph} 段，相关内容约 ${item.character_count} 字。`
+                                      : "前三章没有足够依据确认已经出现。"}
+                                  </p>
+                                  <small>{item.finding}</small>
+                                </article>
+                              ))}
+                            </section>
+                            <section className="opening-structure-segments">
+                              <h5>逐段功能分组</h5>
+                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.paragraph_segments.map((item) => (
+                                <article key={`opening-segment-${item.chapter_ordinal}-${item.paragraph_start}-${item.paragraph_end}`}>
+                                  <header>
+                                    <strong>
+                                      第 {item.chapter_ordinal} 章 · 第 {item.paragraph_start}
+                                      {item.paragraph_end === item.paragraph_start ? "" : `—${item.paragraph_end}`} 段
+                                    </strong>
+                                    <i>{item.scope === "STORY" ? "正文" : "正文外信息"}</i>
+                                  </header>
+                                  <p>{item.function}</p>
+                                  {item.information_modules.length > 0 && <small>承载信息：{item.information_modules.join("、")}</small>}
+                                  <small>{item.explanation}</small>
+                                </article>
+                              ))}
+                            </section>
+                          </div>
+                        </details>
                       )}
                       {activeLearningQuestion.reusable_lessons.length > 0 && (
                         <div className="learning-answer-block">
@@ -1822,6 +1891,8 @@ function FormalWorkbench({
           <><div><strong>{viewData.narrative_status === "INCOMPLETE" ? "人物和剧情结构需要补全" : "完整故事结构尚未完成"}</strong><span>{viewData.narrative_status === "INCOMPLETE" ? "系统检测到人物角色覆盖不完整，在重新整理完成前不能确认本次拆解。" : "当前内容仅供内部检查，不能作为正式拆解结果确认。"}</span></div>{viewData.narrative_status === "INCOMPLETE" && <button type="button" disabled={busy === "repair-narrative"} onClick={onRepairNarrative}>{busy === "repair-narrative" ? "正在准备重新整理" : "重新整理人物和剧情"}</button>}</>
         ) : viewData.deep_status !== "READY" ? (
           <><div><strong>{viewData.deep_status === "OUTDATED" ? "故事结构已经更新" : "第一阶段结果可以确认"}</strong><span>{viewData.deep_status === "OUTDATED" ? "当前深层拆解仍对应上一版故事结构，请基于最新总览、人物、剧情和关系重新生成。" : "请先抽查总览、人物、剧情和事件；确认后再生成事实状态、世界设定、伏笔、冲突和节奏。"}</span></div><button type="button" disabled={busy === "start-deep-analysis"} onClick={onStartDeepAnalysis}>{busy === "start-deep-analysis" ? "正在准备深层拆解" : viewData.deep_status === "OUTDATED" ? "基于最新故事结构重新生成" : "确认故事结构并继续"}</button></>
+        ) : !openingStructureReady ? (
+          <><div><strong>{viewData.opening_structure_status === "GENERATING" ? "正在生成 QG-1 前三章逐段账本" : "QG-1 需要先完成 3.1、3.2 共享原料"}</strong><span>{viewData.opening_structure_status === "GENERATING" ? "本次只精读前三章一次，同时服务 3.1 开场卡和 3.2 信息装载时间轴。" : openingStructureReadiness.flatMap((item) => item.gaps).filter((item, index, all) => all.indexOf(item) === index).join("；") || "需要连续覆盖前三章全部段落。"}</span></div>{viewData.opening_structure_status !== "GENERATING" && <button type="button" disabled={busy === "start-opening-structure"} onClick={() => onStartOpeningStructure(viewData.opening_structure_status === "READY")}>{busy === "start-opening-structure" ? "正在准备" : viewData.opening_structure_status === "READY" ? "重新精读前三章" : "生成 3.1/3.2 共享账本"}</button>}</>
         ) : !learningReadiness.ready && !characterDesignReadiness?.ready ? (
           <><div><strong>{viewData.character_design_status === "GENERATING" ? "正在生成 2.2 主角证据账本" : "当前还没有可生成的学习答案"}</strong><span>{viewData.character_design_status === "GENERATING" ? "完成后会独立保存，2.2 就绪后即可单独形成答案。" : "系统会从已有拆书数据中核对主角六项要素及其首次行动证据。"}</span></div>{viewData.character_design_status !== "GENERATING" && <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>{busy === "start-character-design" ? "正在准备" : viewData.character_design_status === "READY" ? "重新分析 2.2" : "生成 2.2 证据表"}</button>}</>
         ) : !learningReadiness.ready && !chapterEndHooksReadiness?.ready ? (
@@ -2257,6 +2328,21 @@ export default function ProductWorkbench() {
       setBusy("start-opening-hook-payoffs");
       setError("");
       await loadAnalysisResults(await api.startOpeningHookPayoffs(analysisRun.id, force));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleStartOpeningStructure(force = false) {
+    if (!analysisRun) return;
+    const confirmed = window.confirm("这一步只读取前三章全部段落，并发起一次在线 AI 请求，同时生成 3.1 开场卡与 3.2 段落任务/信息装载共享账本，会计入 Token（令牌）用量；不会自动生成其余问题，也不会写入新书开书包。是否继续？");
+    if (!confirmed) return;
+    try {
+      setBusy("start-opening-structure");
+      setError("");
+      await loadAnalysisResults(await api.startOpeningStructure(analysisRun.id, force));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2931,6 +3017,7 @@ export default function ProductWorkbench() {
                             onStartCharacterDesign={(force) => void handleStartCharacterDesign(force)}
                             onStartChapterEndHooks={(force) => void handleStartChapterEndHooks(force)}
                             onStartOpeningHookPayoffs={(force) => void handleStartOpeningHookPayoffs(force)}
+                            onStartOpeningStructure={(force) => void handleStartOpeningStructure(force)}
                             onStartLearningReport={() => void handleStartLearningReport()}
                             onConfirmAnalysis={() => void handleConfirmAnalysis()}
                           />

@@ -37,7 +37,7 @@ from .source_import import source_text
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.7.0"
+LEARNING_REPORT_PROMPT_VERSION = "1.8.0"
 LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.4.2",
     "1.4.3",
@@ -49,9 +49,10 @@ LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.5.5",
     "1.6.0",
     "1.7.0",
+    "1.8.0",
 })
 LEARNING_QUESTION_CATALOG_VERSION = "1.3.0"
-LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
+LEARNING_REPORT_BATCH_LABEL = "已实现逐问增量编译（7/42）"
 LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS = 150_000
 LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 1.5
 OPENING_PAYOFF_MAX_WINDOW_CANDIDATES = 200
@@ -159,6 +160,8 @@ LEARNING_QUESTION_CONTRACT_VERSIONS = {
     "1.4": "2.5.0",
     "2.1": "2.1.0",
     "2.2": "2.2.0",
+    "3.1": "1.0.0",
+    "3.2": "1.0.0",
     "4.9": "2.1.0",
 }
 LEARNING_VALIDATION_POLICY_VERSION = "1.0.0"
@@ -555,7 +558,16 @@ LEARNING_QUESTION_CATALOG = (
     _q("8.2", "哪些参数是品类共性、哪些是个人风格？", "跨书参数分布与作者差异比较", "claims"),
 )
 
-INITIAL_INCREMENTAL_QUESTION_IDS = ("1.4", "2.1", "2.2", "3.4", "4.9")
+INITIAL_INCREMENTAL_QUESTION_IDS = (
+    "1.4",
+    "3.1",
+    "3.2",
+    "3.4",
+    "2.1",
+    "2.2",
+    "4.9",
+)
+QG1_QUESTION_IDS = ("1.4", "3.1", "3.2", "3.4")
 _RECOMMENDED_RANK = {
     question_id: rank
     for rank, question_id in enumerate(INITIAL_INCREMENTAL_QUESTION_IDS, start=1)
@@ -685,6 +697,65 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "arc_timeline",
             "人物变化时间轴",
             "按章节顺序汇总有原文依据的变化观察；没有明确代价或完整冲突时也可保留局部变化。",
+        ),
+    ),
+    "3.1": (
+        LearningContractItemDefinition(
+            "opening_scene_type",
+            "开场场景类型",
+            "结合首章正文判断开场第一幕的主要类型并解释依据；类型示例只是观察框架，不是固定枚举。",
+        ),
+        LearningContractItemDefinition(
+            "protagonist_entrance",
+            "主角登场方式",
+            "定位主角首次出场段落和累计字符，说明当时正在做什么、面对什么初始麻烦，并引用现场原文。",
+        ),
+        LearningContractItemDefinition(
+            "first_sentence_and_paragraph",
+            "第一句话与第一段的功能",
+            "分别说明正文第一句话和第一段承担的功能，并引用真实开场原文。",
+        ),
+        LearningContractItemDefinition(
+            "opening_scene_card",
+            "首章开场卡",
+            "把正文起点、开场类型、主角登场、初始麻烦和开场功能汇总成一张可回查的单书卡片。",
+        ),
+        LearningContractItemDefinition(
+            "cross_book_opening_distribution",
+            "同品类开局类型对照",
+            "只有同品类、同商业模式多书使用同一口径后才能回答；当前缺少对照时必须标为证据不足。",
+        ),
+    ),
+    "3.2": (
+        LearningContractItemDefinition(
+            "chapter_tasks",
+            "黄金三章逐章任务",
+            "逐章说明第 1、2、3 章实际完成的任务；不要求每章凑齐固定任务清单。",
+        ),
+        LearningContractItemDefinition(
+            "paragraph_task_sequence",
+            "连续段落任务序列",
+            "按原文顺序覆盖前三章全部段落，允许合并承担同一主要功能的相邻段落，不能跳段、重叠或倒序。",
+        ),
+        LearningContractItemDefinition(
+            "key_event_positions",
+            "关键事件字符位置",
+            "列出各章关键事件的段落和源文件累计字符位置，由程序根据原文段落编译。",
+        ),
+        LearningContractItemDefinition(
+            "information_loading_timeline",
+            "信息装载时间轴",
+            "逐项记录主角困境、主角性格、核心能力、世界观规则、威胁、短期目标的首次位置与实际承载字符数；未观察到可以明确写证据不足。",
+        ),
+        LearningContractItemDefinition(
+            "core_ability_first_appearance",
+            "核心能力首次亮相",
+            "单列核心能力在前三章的首次位置；没有足够依据时不得硬判已经亮相。",
+        ),
+        LearningContractItemDefinition(
+            "cross_book_rhythm_range",
+            "同类书标准节奏区间",
+            "只有同品类多书按同一段落和字符口径分析后才能回答。",
         ),
     ),
     "4.9": (
@@ -1351,6 +1422,19 @@ def _source_materials(
         and character_design.get("is_current") is not False
     ):
         materials.append((120, "character_design_evidence", character_design))
+    opening_structure = projection.get("opening_structure_evidence")
+    if (
+        {"3.1", "3.2"}.intersection(question_ids)
+        and isinstance(opening_structure, dict)
+        and opening_structure.get("is_current") is not False
+    ):
+        materials.append((
+            130,
+            "opening_structure_evidence",
+            opening_structure,
+        ))
+        if set(question_ids).issubset({"3.1", "3.2"}):
+            return materials
     chapter_end_hooks = projection.get("chapter_end_hooks_evidence")
     if (
         {"3.4", "4.9"}.intersection(question_ids)
@@ -1799,6 +1883,154 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "opening_events": opening_events,
             "opening_payoff_candidates": opening_payoff_candidates,
         },
+    )
+
+    opening_structure = projection.get("opening_structure_evidence") or {}
+    opening_structure_status = str(
+        projection.get("opening_structure_status") or "NOT_GENERATED"
+    )
+    opening_scene = (
+        opening_structure.get("opening_scene", {})
+        if isinstance(opening_structure, dict)
+        else {}
+    )
+    opening_chapter_tasks = (
+        opening_structure.get("chapter_tasks", [])
+        if isinstance(opening_structure, dict)
+        else []
+    )
+    opening_segments = (
+        opening_structure.get("paragraph_segments", [])
+        if isinstance(opening_structure, dict)
+        else []
+    )
+    information_timeline = (
+        opening_structure.get("information_timeline", [])
+        if isinstance(opening_structure, dict)
+        else []
+    )
+    opening_structure_coverage = (
+        opening_structure.get("coverage", {})
+        if isinstance(opening_structure, dict)
+        else {}
+    )
+    shared_opening_gaps: list[str] = []
+    if opening_structure_status == "GENERATING":
+        shared_opening_gaps.append("前三章逐段账本仍在生成。")
+    elif opening_structure_status == "OUTDATED":
+        shared_opening_gaps.append("前三章逐段账本对应旧版正文或旧版主角识别。")
+    elif opening_structure_status == "FAILED":
+        shared_opening_gaps.append("前三章逐段账本上次生成失败，需要查看任务诊断。")
+    elif opening_structure_status != "READY":
+        shared_opening_gaps.append("尚未生成前三章逐段任务与信息装载账本。")
+    if chapter_count < 3:
+        shared_opening_gaps.append(
+            f"作品当前只有 {chapter_count} 章，无法形成完整黄金三章口径。"
+        )
+
+    opening_card_gaps = list(shared_opening_gaps)
+    if not (
+        str(opening_scene.get("opening_type") or "").strip()
+        and int(opening_scene.get("story_start_paragraph") or 0) > 0
+        and int(opening_scene.get("protagonist_first_paragraph") or 0) > 0
+        and str(opening_scene.get("protagonist_action") or "").strip()
+        and str(opening_scene.get("initial_trouble") or "").strip()
+        and str(opening_scene.get("first_sentence_function") or "").strip()
+        and str(opening_scene.get("first_paragraph_function") or "").strip()
+        and opening_scene.get("evidence_ids")
+    ):
+        opening_card_gaps.append(
+            "首章开场卡尚未完整记录正文起点、开场类型、主角登场、"
+            "初始麻烦和第一句话/段功能。"
+        )
+    checks["3.1"] = _readiness_check(
+        "3.1",
+        ready=not opening_card_gaps,
+        observed={
+            "opening_structure_status": opening_structure_status,
+            "opening_type": opening_scene.get("opening_type"),
+            "story_start_paragraph": opening_scene.get(
+                "story_start_paragraph"
+            ),
+            "protagonist_first_paragraph": opening_scene.get(
+                "protagonist_first_paragraph"
+            ),
+            "protagonist_first_source_char": opening_scene.get(
+                "protagonist_first_source_char"
+            ),
+        },
+        gaps=(
+            opening_card_gaps
+            or ["缺少同品类同商业模式作品的开局类型分布对照。"]
+        ),
+        required_artifact="前三章逐段任务与信息装载共享账本",
+        answer_scope="PARTIAL" if not opening_card_gaps else "NOT_READY",
+        source_material={"opening_scene": opening_scene},
+    )
+
+    opening_sequence_gaps = list(shared_opening_gaps)
+    if (
+        opening_structure_coverage.get("paragraph_coverage_complete")
+        is not True
+        or opening_structure_coverage.get(
+            "paragraph_sequence_contiguous"
+        )
+        is not True
+    ):
+        opening_sequence_gaps.append(
+            "前三章段落没有通过连续、不重叠、不漏段的程序覆盖检查。"
+        )
+    if sorted(
+        int(item.get("chapter_ordinal") or 0)
+        for item in opening_chapter_tasks
+        if isinstance(item, dict)
+    ) != [1, 2, 3]:
+        opening_sequence_gaps.append("黄金三章逐章任务没有完整覆盖第 1 至 3 章。")
+    if not opening_segments:
+        opening_sequence_gaps.append("缺少前三章连续段落任务序列。")
+    if (
+        len(information_timeline) != 6
+        or {
+            str(item.get("module") or "")
+            for item in information_timeline
+            if isinstance(item, dict)
+        }
+        != {
+            "主角困境",
+            "主角性格",
+            "核心能力",
+            "世界观规则",
+            "威胁",
+            "短期目标",
+        }
+    ):
+        opening_sequence_gaps.append("六类信息模块没有逐项记录首次位置或未观察状态。")
+    checks["3.2"] = _readiness_check(
+        "3.2",
+        ready=not opening_sequence_gaps,
+        observed={
+            "opening_structure_status": opening_structure_status,
+            "chapter_task_count": len(opening_chapter_tasks),
+            "paragraph_segment_count": len(opening_segments),
+            "information_module_assessed_count": len(
+                information_timeline
+            ),
+            "paragraph_coverage_complete": (
+                opening_structure_coverage.get(
+                    "paragraph_coverage_complete"
+                )
+            ),
+            "story_character_count": opening_structure_coverage.get(
+                "story_character_count"
+            ),
+        },
+        gaps=(
+            opening_sequence_gaps
+            or ["缺少同品类多书使用同一口径形成的标准节奏区间。"]
+        ),
+        required_artifact="前三章逐段任务与信息装载共享账本",
+        answer_scope="PARTIAL" if not opening_sequence_gaps else "NOT_READY",
+        source_material=opening_structure,
     )
 
     opening_character_artifact = _opening_character_program_artifact(projection)
@@ -4400,6 +4632,353 @@ def _apply_program_2_2_answer(
     ]
 
 
+def _opening_structure_evidence_ids(
+    opening_structure: dict,
+    *,
+    limit: int = 24,
+) -> list[str]:
+    values: list[str] = []
+    opening = opening_structure.get("opening_scene", {})
+    values.extend(opening.get("evidence_ids", []))
+    for item in opening_structure.get("chapter_tasks", []):
+        values.extend(item.get("evidence_ids", []))
+    for item in opening_structure.get("information_timeline", []):
+        values.extend(item.get("evidence_ids", []))
+    for item in opening_structure.get("paragraph_segments", []):
+        evidence_ids = item.get("evidence_ids", [])
+        if evidence_ids:
+            values.extend((evidence_ids[0], evidence_ids[-1]))
+    return list(dict.fromkeys(
+        str(value) for value in values if value
+    ))[:limit]
+
+
+def _program_3_1_contract_items(
+    opening_structure: dict,
+) -> list[LearningContractItemProposal]:
+    opening = opening_structure.get("opening_scene", {})
+    evidence_ids = [
+        str(item)
+        for item in opening.get("evidence_ids", [])
+        if item
+    ]
+    opening_type = str(opening.get("opening_type") or "")
+    entrance_paragraph = int(
+        opening.get("protagonist_first_paragraph") or 0
+    )
+    entrance_char = int(
+        opening.get("protagonist_first_source_char") or 0
+    )
+    first_functions = (
+        f"正文第一句话承担“{opening.get('first_sentence_function')}”；"
+        f"第一段承担“{opening.get('first_paragraph_function')}”。"
+    )
+    card = (
+        f"开场类型为“{opening_type}”；主角在第 {entrance_paragraph} "
+        f"段登场，当时{opening.get('protagonist_action')}；"
+        f"初始麻烦是{opening.get('initial_trouble')}。"
+    )
+    return [
+        LearningContractItemProposal(
+            item_id="opening_scene_type",
+            status="SUPPORTED",
+            finding=(
+                f"首章开场主要属于“{opening_type}”。"
+                f"{opening.get('explanation')}"
+            )[:800],
+            evidence_ids=evidence_ids,
+        ),
+        LearningContractItemProposal(
+            item_id="protagonist_entrance",
+            status="SUPPORTED",
+            finding=(
+                f"主角在首章第 {entrance_paragraph} 段、源文件累计字符 "
+                f"{entrance_char} 处首次登场；"
+                f"{opening.get('protagonist_action')}；"
+                f"初始麻烦：{opening.get('initial_trouble')}。"
+            )[:800],
+            metrics=[
+                LearningMetricProposal(
+                    label="主角首次出场段落",
+                    value=str(entrance_paragraph),
+                    unit="段",
+                    method="由程序把模型选择的首章段落号映射回原文段落。",
+                    evidence_ids=evidence_ids,
+                ),
+                LearningMetricProposal(
+                    label="主角首次出场累计字符",
+                    value=str(entrance_char),
+                    unit="字符位置",
+                    method="使用原文证据段的源文件起始字符位置。",
+                    evidence_ids=evidence_ids,
+                ),
+            ],
+            evidence_ids=evidence_ids,
+        ),
+        LearningContractItemProposal(
+            item_id="first_sentence_and_paragraph",
+            status="SUPPORTED",
+            finding=first_functions[:800],
+            evidence_ids=[
+                str(opening.get("story_start_evidence_id") or "")
+            ],
+        ),
+        LearningContractItemProposal(
+            item_id="opening_scene_card",
+            status="SUPPORTED",
+            finding=card[:800],
+            metrics=[
+                LearningMetricProposal(
+                    label="正文起点段落",
+                    value=str(
+                        int(opening.get("story_start_paragraph") or 0)
+                    ),
+                    unit="段",
+                    method="由前三章逐段账本区分前置信息与实际叙事正文。",
+                    evidence_ids=[
+                        str(
+                            opening.get(
+                                "story_start_evidence_id"
+                            )
+                            or ""
+                        )
+                    ],
+                ),
+            ],
+            evidence_ids=evidence_ids,
+        ),
+        LearningContractItemProposal(
+            item_id="cross_book_opening_distribution",
+            status="INSUFFICIENT_EVIDENCE",
+            finding="当前只有单书开场账本，不能形成同品类头部书开局类型分布。",
+            limitations=[
+                "需要多本同品类、同商业模式作品按相同段落口径建立开场卡。"
+            ],
+        ),
+    ]
+
+
+def _program_3_2_contract_items(
+    opening_structure: dict,
+) -> list[LearningContractItemProposal]:
+    chapter_tasks = opening_structure.get("chapter_tasks", [])
+    segments = opening_structure.get("paragraph_segments", [])
+    timeline = opening_structure.get("information_timeline", [])
+    coverage = opening_structure.get("coverage", {})
+    representative_evidence = _opening_structure_evidence_ids(
+        opening_structure,
+        limit=32,
+    )
+    chapter_finding = "；".join(
+        f"第 {item.get('chapter_ordinal')} 章："
+        f"{'、'.join(str(task) for task in item.get('tasks', []))}"
+        for item in chapter_tasks
+    )
+    key_positions = [
+        position
+        for item in chapter_tasks
+        for position in item.get("key_event_positions", [])
+    ]
+    key_finding = "；".join(
+        f"第 {item.get('chapter_ordinal')} 章第 "
+        f"{position.get('paragraph')} 段（累计字符 "
+        f"{position.get('source_char_start')}）"
+        for item in chapter_tasks
+        for position in item.get("key_event_positions", [])
+    )
+    timeline_finding = "；".join(
+        (
+            f"{item.get('module')}首次见于第 "
+            f"{item.get('first_chapter_ordinal')} 章第 "
+            f"{item.get('first_paragraph')} 段，相关段落共承载 "
+            f"{item.get('character_count')} 字符"
+            if item.get("status") == "SUPPORTED"
+            else f"{item.get('module')}：前三章当前未观察到足够依据"
+        )
+        for item in timeline
+    )
+    core = next(
+        (
+            item
+            for item in timeline
+            if item.get("module") == "核心能力"
+        ),
+        {},
+    )
+    core_supported = core.get("status") == "SUPPORTED"
+    return [
+        LearningContractItemProposal(
+            item_id="chapter_tasks",
+            status="SUPPORTED",
+            finding=chapter_finding[:800],
+            metrics=[
+                LearningMetricProposal(
+                    label="逐章任务覆盖",
+                    value=str(len(chapter_tasks)),
+                    unit="章",
+                    method="程序要求任务账本严格覆盖第 1 至 3 章。",
+                    evidence_ids=representative_evidence[:16],
+                ),
+            ],
+            evidence_ids=representative_evidence,
+        ),
+        LearningContractItemProposal(
+            item_id="paragraph_task_sequence",
+            status="SUPPORTED",
+            finding=(
+                f"前三章共形成 {len(segments)} 个连续段落功能段；"
+                "所有输入段落均已覆盖，不重叠、不漏段。"
+            ),
+            metrics=[
+                LearningMetricProposal(
+                    label="连续段落功能段",
+                    value=str(len(segments)),
+                    unit="段组",
+                    method="相邻且主要功能相同的原文段落由模型合并，程序校验连续覆盖。",
+                    evidence_ids=representative_evidence[:16],
+                ),
+                LearningMetricProposal(
+                    label="实际叙事字符",
+                    value=str(
+                        int(coverage.get("story_character_count") or 0)
+                    ),
+                    unit="字符",
+                    method="只汇总账本标为实际叙事正文的连续段落范围。",
+                    evidence_ids=representative_evidence[:16],
+                ),
+            ],
+            evidence_ids=representative_evidence,
+        ),
+        LearningContractItemProposal(
+            item_id="key_event_positions",
+            status="SUPPORTED",
+            finding=key_finding[:800],
+            metrics=[
+                LearningMetricProposal(
+                    label="关键事件定位数",
+                    value=str(len(key_positions)),
+                    unit="处",
+                    method="由模型选择关键段落，程序映射到源文件累计字符。",
+                    evidence_ids=representative_evidence[:16],
+                ),
+            ],
+            evidence_ids=[
+                str(position.get("evidence_id") or "")
+                for position in key_positions
+                if position.get("evidence_id")
+            ][:32],
+        ),
+        LearningContractItemProposal(
+            item_id="information_loading_timeline",
+            status="SUPPORTED",
+            finding=timeline_finding[:800],
+            metrics=[
+                LearningMetricProposal(
+                    label="信息模块检查数",
+                    value=str(len(timeline)),
+                    unit="类",
+                    method="六类观察模块逐项记录首次位置或未观察状态。",
+                    evidence_ids=representative_evidence[:16],
+                ),
+            ],
+            evidence_ids=list(dict.fromkeys(
+                str(evidence_id)
+                for item in timeline
+                for evidence_id in item.get("evidence_ids", [])
+                if evidence_id
+            ))[:32],
+        ),
+        LearningContractItemProposal(
+            item_id="core_ability_first_appearance",
+            status=(
+                "SUPPORTED"
+                if core_supported
+                else "INSUFFICIENT_EVIDENCE"
+            ),
+            finding=(
+                f"核心能力首次见于第 {core.get('first_chapter_ordinal')} "
+                f"章第 {core.get('first_paragraph')} 段、累计字符 "
+                f"{core.get('source_char_start')}。{core.get('finding')}"
+                if core_supported
+                else "前三章逐段账本当前未观察到足够依据，不能硬判核心能力已经亮相。"
+            )[:800],
+            evidence_ids=[
+                str(item)
+                for item in core.get("evidence_ids", [])
+                if item
+            ],
+        ),
+        LearningContractItemProposal(
+            item_id="cross_book_rhythm_range",
+            status="INSUFFICIENT_EVIDENCE",
+            finding="当前只有单书黄金三章账本，不能形成同类书标准节奏区间。",
+            limitations=[
+                "需要多本同品类作品按相同章节、段落和字符口径建立对照。"
+            ],
+        ),
+    ]
+
+
+def _apply_program_3_1_answer(
+    answer: LearningAnswerProposal,
+    opening_structure: dict,
+) -> None:
+    opening = opening_structure.get("opening_scene", {})
+    answer.status = "PARTIAL"
+    answer.conclusion = (
+        f"首章开场主要属于“{opening.get('opening_type')}”；"
+        f"主角在第 {opening.get('protagonist_first_paragraph')} 段登场，"
+        f"当时{opening.get('protagonist_action')}，"
+        f"初始麻烦是{opening.get('initial_trouble')}。"
+    )[:1800]
+    answer.contract_items = _program_3_1_contract_items(
+        opening_structure
+    )
+    answer.metrics = [
+        metric
+        for item in answer.contract_items
+        for metric in item.metrics
+    ][:20]
+    answer.evidence_ids = _opening_structure_evidence_ids(
+        opening_structure
+    )
+    answer.limitations = list(dict.fromkeys([
+        *answer.limitations,
+        "当前只有单书证据，不能给出同品类头部书开局类型分布。",
+    ]))[:10]
+
+
+def _apply_program_3_2_answer(
+    answer: LearningAnswerProposal,
+    opening_structure: dict,
+) -> None:
+    answer.status = "PARTIAL"
+    answer.conclusion = str(
+        opening_structure.get("overall_sequence")
+        or "前三章逐段任务与信息装载顺序见完整账本。"
+    )[:1800]
+    answer.contract_items = _program_3_2_contract_items(
+        opening_structure
+    )
+    answer.metrics = [
+        metric
+        for item in answer.contract_items
+        for metric in item.metrics
+    ][:20]
+    answer.evidence_ids = _opening_structure_evidence_ids(
+        opening_structure
+    )
+    answer.limitations = list(dict.fromkeys([
+        *answer.limitations,
+        *[
+            str(item)
+            for item in opening_structure.get("limitations", [])
+            if item
+        ],
+        "当前只有单书证据，不能形成同品类标准节奏区间。",
+    ]))[:10]
+
+
 def _program_ratio_text(ratio: float) -> str:
     value = f"{ratio * 100:.2f}".rstrip("0").rstrip(".")
     return f"{value}%"
@@ -5178,6 +5757,21 @@ def persist_learning_report(
             for answer in output.answers:
                 if answer.question_id == "2.2":
                     _apply_program_2_2_answer(answer, character_design)
+        if {"3.1", "3.2"}.intersection(selected_question_ids):
+            opening_structure = (
+                projection.get("opening_structure_evidence") or {}
+            )
+            for answer in output.answers:
+                if answer.question_id == "3.1":
+                    _apply_program_3_1_answer(
+                        answer,
+                        opening_structure,
+                    )
+                elif answer.question_id == "3.2":
+                    _apply_program_3_2_answer(
+                        answer,
+                        opening_structure,
+                    )
         if "4.9" in selected_question_ids:
             chapter_end_hooks = (
                 projection.get("chapter_end_hooks_evidence") or {}
@@ -5279,6 +5873,21 @@ def persist_learning_report(
         )
         persisted_answer["metrics"] = program_metrics
         persisted_answer.update(_program_2_1_reading_fields(artifact))
+    for question_id in ("3.1", "3.2"):
+        if question_id not in selected_question_ids:
+            continue
+        if projection is None:
+            raise ValueError("LEARNING_REPORT_PROGRAM_PROJECTION_MISSING")
+        persisted_answer = next(
+            answer
+            for answer in payload["answers"]
+            if answer["question_id"] == question_id
+        )
+        persisted_answer["program_artifacts"] = {
+            "opening_structure_ledger": (
+                projection.get("opening_structure_evidence") or {}
+            ),
+        }
     if "4.9" in selected_question_ids:
         if projection is None:
             raise ValueError("LEARNING_REPORT_PROGRAM_PROJECTION_MISSING")
@@ -5615,14 +6224,37 @@ def build_learning_report_projection(
     for definition in LEARNING_QUESTION_CATALOG:
         answer = answer_by_id.get(definition.question_id, {})
         has_current_answer = definition.question_id in current_answer_ids
+        readiness_item = readiness_by_id.get(definition.question_id)
         if has_current_answer:
             question_status = answer.get("status", "NOT_GENERATED")
         elif answer:
             question_status = "OUTDATED"
-        elif readiness_by_id.get(definition.question_id, {}).get("ready"):
+        elif (readiness_item or {}).get("ready"):
             question_status = "READY_TO_GENERATE"
         else:
             question_status = "NOT_GENERATED"
+        if readiness_item is None:
+            material_status = "NOT_ASSESSED"
+        elif readiness_item.get("ready"):
+            material_status = "READY"
+        else:
+            observed_status = str(
+                (readiness_item.get("observed") or {}).get(
+                    "opening_structure_status"
+                )
+                or ""
+            )
+            material_status = (
+                observed_status
+                if observed_status
+                in {
+                    "GENERATING",
+                    "OUTDATED",
+                    "FAILED",
+                    "NOT_GENERATED",
+                }
+                else "NOT_READY"
+            )
         questions.append({
             "question_id": definition.question_id,
             "stage_id": definition.stage_id,
@@ -5638,6 +6270,9 @@ def build_learning_report_projection(
             "external_data_policy": definition.external_data_policy,
             "recommended_rank": _RECOMMENDED_RANK.get(definition.question_id),
             "status": question_status,
+            "contract_status": "COMPLETE",
+            "material_status": material_status,
+            "answer_status": question_status,
             "conclusion": answer.get("conclusion", ""),
             "metrics": answer.get("metrics", []),
             "contract_items": [
@@ -5689,7 +6324,7 @@ def build_learning_report_projection(
         "revision": report.revision_no if report is not None else None,
         "source_deep_revision": report.source_deep_revision if report is not None else None,
         "generated_at": report.created_at if report is not None else None,
-        "recommended_question_ids": list(INITIAL_INCREMENTAL_QUESTION_IDS),
+        "recommended_question_ids": list(QG1_QUESTION_IDS),
         "questions": questions,
         "stages": stages,
         "author_decisions": payload.get("author_decisions", []),

@@ -725,6 +725,9 @@ class WorkbenchLearningQuestionRead(BaseModel):
     external_data_policy: str
     recommended_rank: int | None = None
     status: str
+    contract_status: str = "COMPLETE"
+    material_status: str = "NOT_ASSESSED"
+    answer_status: str = "NOT_GENERATED"
     conclusion: str = ""
     metrics: list[WorkbenchLearningMetricRead] = Field(default_factory=list)
     contract_items: list[WorkbenchLearningContractItemRead] = Field(
@@ -946,6 +949,8 @@ class WorkbenchRead(BaseModel):
     opening_hook_payoffs: list[WorkbenchOpeningHookPayoffRead] = Field(
         default_factory=list
     )
+    opening_structure_status: str = "NOT_GENERATED"
+    opening_structure_evidence: dict | None = None
     learning_report_status: str = "NOT_GENERATED"
     learning_report: WorkbenchLearningReportRead
     chapters: list[WorkbenchChapterRefRead] = Field(default_factory=list)

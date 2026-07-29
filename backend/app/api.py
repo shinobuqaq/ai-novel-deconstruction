@@ -133,6 +133,9 @@ from .services.opening_hook_payoffs import (
 from .services.opening_payoff_candidates import (
     OPENING_PAYOFF_CANDIDATES_TASK_KIND,
 )
+from .services.opening_structure import (
+    enqueue_opening_structure,
+)
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
@@ -1846,6 +1849,68 @@ def opening_hook_payoffs_start(
             detail={
                 "code": "OPENING_HOOK_PAYOFFS_SOURCE_NOT_READY",
                 "message": "需要先完成最新版 4.9 全书章末钩账本，才能追踪前三章钩子的后续兑现。",
+            },
+        )
+    return _analysis_run_read(session, run)
+
+
+@router.post(
+    "/api/analysis-runs/{run_id}/opening-structure/start",
+    response_model=AnalysisRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def opening_structure_start(
+    run_id: str,
+    request: Request,
+    force: bool = False,
+    session: Session = Depends(get_db),
+) -> AnalysisRunRead:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="ANALYSIS_RUN_NOT_FOUND")
+    active_deep = session.scalar(
+        select(Task)
+        .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
+        .where(
+            AnalysisRunTask.run_id == run_id,
+            Task.kind == "analysis.deep_insights",
+            Task.status.in_((
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.WAITING_CONFIRMATION.value,
+            )),
+        )
+    )
+    if active_deep is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEEP_ANALYSIS_RUNNING",
+                "message": "事实状态和核心拆解仍在生成，请完成后再精读前三章。",
+            },
+        )
+    task = enqueue_opening_structure(
+        session,
+        request.app.state.settings,
+        run,
+        force=force,
+    )
+    if task is None:
+        projection = build_workbench_projection(session, run_id)
+        if projection.get("opening_structure_status") == "READY":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "OPENING_STRUCTURE_ALREADY_CURRENT",
+                    "message": "当前前三章逐段账本已经基于最新正文生成。",
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "OPENING_STRUCTURE_SOURCE_NOT_READY",
+                "message": "前三章正文、主角或深层拆解尚未就绪。",
             },
         )
     return _analysis_run_read(session, run)

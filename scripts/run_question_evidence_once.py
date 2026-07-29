@@ -33,6 +33,10 @@ from app.services.opening_payoff_candidates import (  # noqa: E402
     OPENING_PAYOFF_CANDIDATES_TASK_KIND,
     enqueue_opening_payoff_candidates,
 )
+from app.services.opening_structure import (  # noqa: E402
+    OPENING_STRUCTURE_TASK_KIND,
+    enqueue_opening_structure,
+)
 from app.services.tasks import execute_task_sync  # noqa: E402
 
 
@@ -66,14 +70,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "生成指定北极星问题的专项证据账本；"
-            "1.4/2.2/3.4/4.9 顺序执行各自全部连续窗口。"
+            "1.4/2.2/3.1/3.2/3.4/4.9 使用固定入口执行。"
         )
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
         "--question-id",
         required=True,
-        choices=("1.4", "2.2", "3.4", "4.9"),
+        choices=("1.4", "2.2", "3.1", "3.2", "3.4", "4.9"),
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -85,12 +89,16 @@ def main() -> int:
     task_kind = {
         "1.4": OPENING_PAYOFF_CANDIDATES_TASK_KIND,
         "2.2": CHARACTER_DESIGN_TASK_KIND,
+        "3.1": OPENING_STRUCTURE_TASK_KIND,
+        "3.2": OPENING_STRUCTURE_TASK_KIND,
         "3.4": OPENING_HOOK_PAYOFFS_TASK_KIND,
         "4.9": CHAPTER_END_HOOKS_TASK_KIND,
     }[args.question_id]
     enqueue = {
         "1.4": enqueue_opening_payoff_candidates,
         "2.2": enqueue_character_design_evidence,
+        "3.1": enqueue_opening_structure,
+        "3.2": enqueue_opening_structure,
         "3.4": enqueue_opening_hook_payoffs,
         "4.9": enqueue_chapter_end_hooks,
     }[args.question_id]
@@ -164,6 +172,8 @@ def main() -> int:
                     f"事件 {task_payload.get('event_start_sequence')}—"
                     f"{task_payload.get('event_end_sequence')}"
                 )
+            elif args.question_id in {"3.1", "3.2"}:
+                print("共享专项：连续覆盖前三章全部段落")
             else:
                 print(
                     f"窗口 {task_payload.get('window_index', 1)}/"

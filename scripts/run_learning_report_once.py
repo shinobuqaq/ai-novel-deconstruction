@@ -88,7 +88,7 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
         "--question-id",
-        choices=("1.4", "2.1", "2.2", "3.4", "4.9"),
+        choices=("1.4", "2.1", "2.2", "3.1", "3.2", "3.4", "4.9"),
         help="只生成这一问；省略时按当前就绪与过期状态生成全部需要更新的问题。",
     )
     parser.add_argument("--force", action="store_true")

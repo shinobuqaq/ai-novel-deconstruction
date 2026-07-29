@@ -712,6 +712,9 @@ export type WorkbenchLearningQuestion = {
   external_data_policy: string;
   recommended_rank: number | null;
   status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
+  contract_status: "COMPLETE" | "INCOMPLETE";
+  material_status: "READY" | "NOT_READY" | "NOT_ASSESSED" | "NOT_GENERATED" | "GENERATING" | "OUTDATED" | "FAILED";
+  answer_status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
   conclusion: string;
   metrics: WorkbenchLearningMetric[];
   contract_items: Array<{
@@ -768,6 +771,47 @@ export type WorkbenchLearningQuestion = {
           ending_evidence_ids: string[];
         }>;
       }>;
+    };
+    opening_structure_ledger?: {
+      opening_scene: {
+        opening_type: string;
+        story_start_paragraph: number;
+        protagonist_first_paragraph: number;
+        protagonist_action: string;
+        initial_trouble: string;
+        first_sentence_function: string;
+        first_paragraph_function: string;
+      };
+      chapter_tasks: Array<{
+        chapter_ordinal: number;
+        tasks: string[];
+        explanation: string;
+        key_event_positions: Array<{
+          paragraph: number;
+          source_char_start: number;
+        }>;
+      }>;
+      paragraph_segments: Array<{
+        chapter_ordinal: number;
+        paragraph_start: number;
+        paragraph_end: number;
+        scope: "FRONT_MATTER" | "STORY";
+        function: string;
+        information_modules: string[];
+        explanation: string;
+      }>;
+      information_timeline: Array<{
+        module: string;
+        status: "SUPPORTED" | "NOT_OBSERVED";
+        first_chapter_ordinal: number | null;
+        first_paragraph: number | null;
+        character_count: number;
+        finding: string;
+      }>;
+      coverage: {
+        paragraph_count: number;
+        story_character_count: number;
+      };
     };
   };
   evidence_ids: string[];
@@ -918,6 +962,8 @@ export type Workbench = {
   opening_hook_payoffs_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   opening_hook_payoffs_evidence: WorkbenchOpeningHookPayoffsEvidence | null;
   opening_hook_payoffs: WorkbenchOpeningHookPayoff[];
+  opening_structure_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  opening_structure_evidence: Record<string, unknown> | null;
   learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
@@ -1124,6 +1170,8 @@ export const api = {
     request<AnalysisRun>(`/api/analysis-runs/${runId}/chapter-end-hooks/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startOpeningHookPayoffs: (runId: string, force = false) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/opening-hook-payoffs/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startOpeningStructure: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/opening-structure/start${force ? "?force=true" : ""}`, { method: "POST" }),
   startLearningReport: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
   analysisIssues: (runId: string) =>

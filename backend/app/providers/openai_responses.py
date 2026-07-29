@@ -58,6 +58,7 @@ class OpenAIResponsesProvider:
             "analysis.learning_report",
             "analysis.opening_hook_payoffs",
             "analysis.opening_payoff_candidates",
+            "analysis.opening_structure",
         }
         schema = payload.get("output_schema")
         instructions = payload.get("instructions")
@@ -90,6 +91,7 @@ class OpenAIResponsesProvider:
                 "analysis.chapter_end_hooks",
                 "analysis.opening_hook_payoffs",
                 "analysis.opening_payoff_candidates",
+                "analysis.opening_structure",
                 "analysis.learning_report",
             }
         ):

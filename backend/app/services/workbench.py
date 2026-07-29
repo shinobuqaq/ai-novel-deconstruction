@@ -28,6 +28,7 @@ from .opening_hook_payoffs import build_opening_hook_payoffs_projection
 from .opening_payoff_candidates import (
     build_opening_payoff_candidates_projection,
 )
+from .opening_structure import build_opening_structure_projection
 from .learning_report import assess_learning_report_readiness, build_learning_report_projection
 
 
@@ -1348,6 +1349,21 @@ def build_workbench_projection(
         if opening_hook_payoffs_evidence
         else []
     )
+    if include_question_evidence:
+        opening_structure_status, opening_structure_evidence = (
+            build_opening_structure_projection(
+                session,
+                run_id,
+                projection,
+            )
+        )
+    else:
+        opening_structure_status, opening_structure_evidence = (
+            "NOT_GENERATED",
+            None,
+        )
+    projection["opening_structure_status"] = opening_structure_status
+    projection["opening_structure_evidence"] = opening_structure_evidence
     learning_readiness = assess_learning_report_readiness(projection)
     learning_report_status, learning_report = build_learning_report_projection(
         session,
