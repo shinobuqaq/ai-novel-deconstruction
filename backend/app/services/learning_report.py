@@ -161,6 +161,19 @@ LEARNING_QUESTION_CONTRACT_VERSIONS = {
     "2.2": "2.2.0",
     "4.9": "2.1.0",
 }
+LEARNING_VALIDATION_POLICY_VERSION = "1.0.0"
+LEARNING_OBJECTIVE_VALIDATION_POLICY = (
+    "程序可以硬校验问题覆盖、人物/事件/章节/证据归属、来源版本、"
+    "顺序、数量、范围、连续覆盖、明确引文是否真实，以及无数据时"
+    "是否伪造外部因果。"
+)
+LEARNING_LITERARY_JUDGMENT_POLICY = (
+    "兑现、欲望、动机、人物变化、冲突、钩子类型、钩子强度、"
+    "回应完整度、节奏作用和其他文学解释由模型结合上下文判断，"
+    "用户保留最终判断。程序不得要求同时满足若干文学条件才成立，"
+    "不得用固定关键词、固定句式、主观评分或启发式覆盖模型判断；"
+    "分析维度只能作为观察框架，不能作为缺一不可的清单。"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +187,8 @@ class LearningQuestionDefinition:
     evidence_requirements: str
     scope_requirement: str
     external_data_policy: str
+    objective_validation_policy: str
+    literary_judgment_policy: str
 
     @property
     def stage_id(self) -> int:
@@ -490,6 +505,8 @@ def _q(question_id: str, question: str, requirement: str, evidence_view: str) ->
         contract.evidence_requirements,
         contract.scope_requirement,
         contract.external_data_policy,
+        LEARNING_OBJECTIVE_VALIDATION_POLICY,
+        LEARNING_LITERARY_JUDGMENT_POLICY,
     )
 
 
@@ -2292,6 +2309,19 @@ def provider_payload_for_learning_report(
             "evidence_requirements": _QUESTION_BY_ID[question_id].evidence_requirements,
             "scope_requirement": _QUESTION_BY_ID[question_id].scope_requirement,
             "external_data_policy": _QUESTION_BY_ID[question_id].external_data_policy,
+            "validation_policy": {
+                "version": LEARNING_VALIDATION_POLICY_VERSION,
+                "objective_checks": (
+                    _QUESTION_BY_ID[
+                        question_id
+                    ].objective_validation_policy
+                ),
+                "literary_judgments": (
+                    _QUESTION_BY_ID[
+                        question_id
+                    ].literary_judgment_policy
+                ),
+            },
         }
         for question_id in requested_question_ids
     ]
@@ -2334,6 +2364,11 @@ def provider_payload_for_learning_report(
             "本次只回答 question_catalog 中唯一一问；"
             "PARTIAL 必须保留已知缺口，不得借用其他问题的就绪状态。"
         ),
+        "validation_policy": {
+            "version": LEARNING_VALIDATION_POLICY_VERSION,
+            "objective_checks": LEARNING_OBJECTIVE_VALIDATION_POLICY,
+            "literary_judgments": LEARNING_LITERARY_JUDGMENT_POLICY,
+        },
         "question_catalog": question_catalog,
     }
     if include_chapter_catalog:

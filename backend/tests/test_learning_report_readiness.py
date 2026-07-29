@@ -6,6 +6,8 @@ import pytest
 
 from app.services.learning_report import (
     LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS,
+    LEARNING_LITERARY_JUDGMENT_POLICY,
+    LEARNING_OBJECTIVE_VALIDATION_POLICY,
     LEARNING_QUESTION_CATALOG,
     LEARNING_QUESTION_CONTRACTS,
     LEARNING_QUESTION_ITEM_CONTRACTS,
@@ -38,6 +40,23 @@ def test_all_learning_answers_share_one_default_soft_input_cap() -> None:
     assert unknown_context["input_token_budget"] == 150_000
     assert large_context["input_token_budget"] == 150_000
     assert "default_soft_input_cap_tokens" in unknown_context
+
+
+def test_all_42_questions_inherit_objective_and_literary_validation_policy() -> None:
+    assert len(LEARNING_QUESTION_CATALOG) == 42
+    for question in LEARNING_QUESTION_CATALOG:
+        assert (
+            question.objective_validation_policy
+            == LEARNING_OBJECTIVE_VALIDATION_POLICY
+        )
+        assert (
+            question.literary_judgment_policy
+            == LEARNING_LITERARY_JUDGMENT_POLICY
+        )
+        assert "不得要求同时满足若干文学条件才成立" in (
+            question.literary_judgment_policy
+        )
+        assert "观察框架" in question.literary_judgment_policy
 
 
 def test_learning_answer_cap_clamps_to_smaller_reported_context() -> None:

@@ -398,6 +398,11 @@ class StaticAnalysisProvider:
         else:
             assert task_kind == "analysis.learning_report"
             report_input = json.loads(payload["input"])
+            assert report_input["validation_policy"]["version"] == "1.0.0"
+            assert (
+                "不得要求同时满足若干文学条件才成立"
+                in report_input["validation_policy"]["literary_judgments"]
+            )
             evidence_id = next(
                 evidence["id"]
                 for material in report_input["materials"]
@@ -405,6 +410,10 @@ class StaticAnalysisProvider:
             )
             answers = []
             for question in report_input["question_catalog"]:
+                assert (
+                    question["validation_policy"]
+                    == report_input["validation_policy"]
+                )
                 question_id = question["question_id"]
                 answer = {
                     "question_id": question_id,
