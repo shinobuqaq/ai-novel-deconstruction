@@ -47,6 +47,7 @@ from .analysis import (
     StructuredOutputValidationError,
 )
 from .learning_report import (
+    LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS,
     LEARNING_REPORT_TASK_KIND,
     LearningReportValidationError,
     parse_learning_report,
@@ -1263,7 +1264,9 @@ async def execute_task(
                 expected_question_ids=[
                     str(question_id) for question_id in payload.get("question_ids", [])
                 ],
-                defer_user_text_checks_for={"2.2", "4.9"},
+                defer_user_text_checks_for=set(
+                    LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS
+                ),
             )
         except LearningReportValidationError as exc:
             raise ProviderError(

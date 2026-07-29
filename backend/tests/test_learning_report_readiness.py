@@ -11,12 +11,17 @@ from app.services.learning_report import (
     LEARNING_QUESTION_CATALOG,
     LEARNING_QUESTION_CONTRACTS,
     LEARNING_QUESTION_ITEM_CONTRACTS,
+    LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS,
+    LEARNING_REPORT_PROJECTION_QUESTION_IDS,
     LearningAnswerProposal,
     LearningReportValidationError,
     LearningReportOutput,
     _answer_uses_current_contract,
     _apply_program_2_2_answer,
+    _apply_program_3_1_answer,
+    _apply_program_3_2_answer,
     _apply_program_4_9_answer,
+    _compact_opening_structure_model_artifact,
     _request_budget,
     _source_materials,
     _validate_answer_user_text_boundaries,
@@ -57,6 +62,15 @@ def test_all_42_questions_inherit_objective_and_literary_validation_policy() -> 
             question.literary_judgment_policy
         )
         assert "观察框架" in question.literary_judgment_policy
+
+
+def test_program_compiled_questions_load_projection_and_defer_draft_text() -> None:
+    assert {"3.1", "3.2"}.issubset(
+        LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS
+    )
+    assert LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS.issubset(
+        LEARNING_REPORT_PROJECTION_QUESTION_IDS
+    )
 
 
 def test_learning_answer_cap_clamps_to_smaller_reported_context() -> None:
@@ -312,25 +326,37 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
     ]
 
 
-def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
-    projection = _projection(complete_specialized_ledgers=False)
-    projection["opening_structure_status"] = "READY"
-    projection["opening_structure_evidence"] = {
+def _opening_structure_ledger() -> dict:
+    return {
         "is_current": True,
         "opening_scene": {
             "opening_type": "日常被打破",
             "story_start_paragraph": 2,
+            "story_start_source_char": 10,
+            "story_start_evidence_id": "evd_opening",
             "protagonist_first_paragraph": 3,
+            "protagonist_first_source_char": 30,
+            "protagonist_first_evidence_id": "evd_opening",
             "protagonist_action": "正在查看陌生来信",
             "initial_trouble": "信中要求他立刻离开旧宅",
             "first_sentence_function": "先制造异常",
             "first_paragraph_function": "建立悬念",
+            "explanation": "以异常来信打破日常。",
             "evidence_ids": ["evd_opening"],
         },
         "chapter_tasks": [
             {
                 "chapter_ordinal": ordinal,
                 "tasks": [f"完成第 {ordinal} 章任务"],
+                "key_event_paragraphs": [2],
+                "key_event_positions": [{
+                    "paragraph": 2,
+                    "source_char_start": ordinal * 100,
+                    "source_char_end": ordinal * 100 + 20,
+                    "evidence_id": f"evd_chapter_{ordinal}",
+                }],
+                "explanation": f"第 {ordinal} 章完成对应任务。",
+                "evidence_ids": [f"evd_chapter_{ordinal}"],
             }
             for ordinal in range(1, 4)
         ],
@@ -339,11 +365,52 @@ def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
                 "chapter_ordinal": ordinal,
                 "paragraph_start": 1,
                 "paragraph_end": 3,
+                "scope": "STORY",
+                "function": f"第 {ordinal} 章功能",
+                "information_modules": ["主角困境"],
+                "explanation": "连续段落承担同一主要功能。",
+                "character_count": 400,
+                "source_char_start": ordinal * 100,
+                "source_char_end": ordinal * 100 + 80,
+                "evidence_ids": [
+                    f"evd_segment_{ordinal}_{index}"
+                    for index in range(1, 51)
+                ],
             }
             for ordinal in range(1, 4)
         ],
         "information_timeline": [
-            {"module": module, "status": "NOT_OBSERVED"}
+            {
+                "module": module,
+                "status": (
+                    "SUPPORTED"
+                    if module == "主角困境"
+                    else "NOT_OBSERVED"
+                ),
+                "first_chapter_ordinal": (
+                    1 if module == "主角困境" else None
+                ),
+                "first_paragraph": (
+                    1 if module == "主角困境" else None
+                ),
+                "finding": (
+                    "首章建立主角困境。"
+                    if module == "主角困境"
+                    else "前三章未观察到足够依据。"
+                ),
+                "character_count": 400 if module == "主角困境" else 0,
+                "source_char_start": (
+                    100 if module == "主角困境" else None
+                ),
+                "source_char_end": (
+                    180 if module == "主角困境" else None
+                ),
+                "evidence_ids": (
+                    ["evd_timeline_1"]
+                    if module == "主角困境"
+                    else []
+                ),
+            }
             for module in (
                 "主角困境",
                 "主角性格",
@@ -358,7 +425,17 @@ def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
             "paragraph_sequence_contiguous": True,
             "story_character_count": 1200,
         },
+        "overall_sequence": "前三章依次建立异常、选择与行动。",
+        "limitations": [
+            "这种安排会提升读者留存率。"
+        ],
     }
+
+
+def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
+    projection = _projection(complete_specialized_ledgers=False)
+    projection["opening_structure_status"] = "READY"
+    projection["opening_structure_evidence"] = _opening_structure_ledger()
 
     readiness = assess_learning_report_readiness(projection)
     checks = {item["question_id"]: item for item in readiness["checks"]}
@@ -372,6 +449,61 @@ def test_shared_opening_structure_unlocks_3_1_and_3_2_independently() -> None:
         "3.1",
         "3.2",
     ]
+
+
+def test_3_1_and_3_2_only_receive_compact_specialized_material() -> None:
+    projection = _projection(complete_specialized_ledgers=False)
+    projection["opening_structure_evidence"] = _opening_structure_ledger()
+
+    materials_3_1 = _source_materials(projection, ("3.1",))
+    materials_3_2 = _source_materials(projection, ("3.2",))
+
+    assert [kind for _priority, kind, _item in materials_3_1] == [
+        "opening_structure_evidence"
+    ]
+    assert [kind for _priority, kind, _item in materials_3_2] == [
+        "opening_structure_evidence"
+    ]
+    artifact_3_1 = materials_3_1[0][2]
+    artifact_3_2 = materials_3_2[0][2]
+    assert "opening_scene" in artifact_3_1
+    assert "paragraph_segments" not in artifact_3_1
+    assert "opening_scene" not in artifact_3_2
+    assert len(artifact_3_2["paragraph_segments"]) == 3
+    assert all(
+        len(item["evidence_ids"]) <= 2
+        for item in artifact_3_2["paragraph_segments"]
+    )
+    assert "story_overview" not in {
+        kind for _priority, kind, _item in materials_3_1 + materials_3_2
+    }
+
+
+def test_opening_structure_compaction_keeps_all_segments_without_all_evidence() -> None:
+    ledger = _opening_structure_ledger()
+    ledger["paragraph_segments"] = [
+        {
+            **ledger["paragraph_segments"][index % 3],
+            "paragraph_start": index + 1,
+            "paragraph_end": index + 1,
+            "evidence_ids": [
+                f"evd_segment_{index}_{evidence_index}"
+                for evidence_index in range(100)
+            ],
+        }
+        for index in range(42)
+    ]
+
+    artifact = _compact_opening_structure_model_artifact(
+        ledger,
+        "3.2",
+    )
+
+    assert len(artifact["paragraph_segments"]) == 42
+    assert all(
+        len(item["evidence_ids"]) == 2
+        for item in artifact["paragraph_segments"]
+    )
 
 
 def _answer(question_id: str) -> dict:
@@ -469,6 +601,61 @@ def _answer(question_id: str) -> dict:
                 "anchor_evidence_no": 1,
             }]
     return answer
+
+
+@pytest.mark.parametrize(
+    ("question_id", "apply_program", "stale_text"),
+    [
+        (
+            "3.1",
+            _apply_program_3_1_answer,
+            "缺少后续强力设定会导致读者失去核心期待。",
+        ),
+        (
+            "3.2",
+            _apply_program_3_2_answer,
+            "这种安排会提升读者留存率。",
+        ),
+    ],
+)
+def test_program_compiles_3_1_and_3_2_before_final_text_boundary_checks(
+    question_id: str,
+    apply_program,
+    stale_text: str,
+) -> None:
+    payload = _answer(question_id)
+    payload["conclusion"] = "专项账本被省略，只能依据故事概览推测。"
+    payload["limitations"] = [stale_text]
+    payload["reusable_lessons"] = [stale_text]
+    payload["do_not_copy"] = [stale_text]
+    for item in payload["contract_items"]:
+        if item["status"] == "SUPPORTED":
+            item["metrics"] = []
+            item["evidence_ids"] = []
+
+    output = parse_learning_report(
+        {
+            "answers": [payload],
+            "author_decisions": [],
+            "method_candidates": [],
+        },
+        expected_question_ids=[question_id],
+        defer_user_text_checks_for={question_id},
+    )
+    compiled = output.answers[0]
+    apply_program(compiled, _opening_structure_ledger())
+
+    _validate_answer_user_text_boundaries(compiled)
+
+    compiled_text = "".join([
+        compiled.conclusion,
+        *compiled.limitations,
+        *compiled.reusable_lessons,
+        *compiled.do_not_copy,
+        *(item.finding for item in compiled.contract_items),
+    ])
+    assert "专项账本被省略" not in compiled_text
+    assert stale_text not in compiled_text
 
 
 def _validated_2_2_answer() -> tuple[LearningAnswerProposal, dict]:

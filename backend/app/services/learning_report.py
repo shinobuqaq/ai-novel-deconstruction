@@ -56,6 +56,20 @@ LEARNING_REPORT_BATCH_LABEL = "已实现逐问增量编译（7/42）"
 LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS = 150_000
 LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 1.5
 OPENING_PAYOFF_MAX_WINDOW_CANDIDATES = 200
+LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS = frozenset({
+    "2.2",
+    "3.1",
+    "3.2",
+    "4.9",
+})
+LEARNING_REPORT_PROJECTION_QUESTION_IDS = frozenset({
+    "1.4",
+    "2.1",
+    "2.2",
+    "3.1",
+    "3.2",
+    "4.9",
+})
 
 _UNSUPPORTED_EXTERNAL_CAUSALITY = re.compile(
     r"(?:导致|造成|带来|提升|提高|降低|减少|增加|推动|引发|"
@@ -807,6 +821,10 @@ LEARNING_QUESTION_MODEL_ITEM_CONTRACTS: dict[
         for item in LEARNING_QUESTION_ITEM_CONTRACTS["2.1"]
         if item.item_id == "first_scene_functions"
     ),
+    # 3.1/3.2 的最终合同项全部由同一份前三章专项账本确定性编译。
+    # 模型返回的临时合同内容不会落库，因此解析阶段不应先用它阻断编译。
+    "3.1": (),
+    "3.2": (),
 }
 
 
@@ -1406,14 +1424,142 @@ def _material_bundle(
     }
 
 
+def _compact_item_evidence_ids(item: dict) -> list[str]:
+    evidence_ids = [
+        str(value)
+        for value in item.get("evidence_ids", [])
+        if value
+    ]
+    if len(evidence_ids) <= 2:
+        return evidence_ids
+    return [evidence_ids[0], evidence_ids[-1]]
+
+
+def _compact_opening_structure_model_artifact(
+    opening_structure: dict,
+    question_ids: tuple[str, ...] | str,
+) -> dict[str, object]:
+    selected_question_ids = (
+        {question_ids}
+        if isinstance(question_ids, str)
+        else set(question_ids)
+    )
+    artifact: dict[str, object] = {
+        "question_ids": sorted(
+            selected_question_ids.intersection({"3.1", "3.2"})
+        ),
+        "coverage": opening_structure.get("coverage", {}),
+        "scope_boundary": (
+            "该账本只覆盖当前单书前三章；同品类分布和标准节奏区间"
+            "需要多书同口径数据，不能由本书推断。"
+        ),
+    }
+    if "3.1" in selected_question_ids:
+        opening = opening_structure.get("opening_scene") or {}
+        artifact["opening_scene"] = {
+            key: opening.get(key)
+            for key in (
+                "chapter_ordinal",
+                "chapter_title",
+                "opening_type",
+                "story_start_paragraph",
+                "story_start_source_char",
+                "story_start_evidence_id",
+                "protagonist_first_paragraph",
+                "protagonist_first_source_char",
+                "protagonist_first_evidence_id",
+                "protagonist_action",
+                "initial_trouble",
+                "first_sentence_function",
+                "first_paragraph_function",
+                "explanation",
+            )
+        }
+        artifact["opening_scene"]["evidence_ids"] = (
+            _compact_item_evidence_ids(opening)
+        )
+    if "3.2" in selected_question_ids:
+        artifact["chapter_tasks"] = [
+            {
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "chapter_ordinal",
+                        "tasks",
+                        "key_event_paragraphs",
+                        "key_event_positions",
+                        "explanation",
+                    )
+                },
+                "evidence_ids": _compact_item_evidence_ids(item),
+            }
+            for item in opening_structure.get("chapter_tasks", [])
+            if isinstance(item, dict)
+        ]
+        artifact["paragraph_segments"] = [
+            {
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "chapter_ordinal",
+                        "paragraph_start",
+                        "paragraph_end",
+                        "scope",
+                        "function",
+                        "information_modules",
+                        "explanation",
+                        "character_count",
+                        "source_char_start",
+                        "source_char_end",
+                    )
+                },
+                "evidence_ids": _compact_item_evidence_ids(item),
+            }
+            for item in opening_structure.get("paragraph_segments", [])
+            if isinstance(item, dict)
+        ]
+        artifact["information_timeline"] = [
+            {
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "module",
+                        "status",
+                        "first_chapter_ordinal",
+                        "first_paragraph",
+                        "finding",
+                        "character_count",
+                        "source_char_start",
+                        "source_char_end",
+                    )
+                },
+                "evidence_ids": _compact_item_evidence_ids(item),
+            }
+            for item in opening_structure.get("information_timeline", [])
+            if isinstance(item, dict)
+        ]
+        artifact["overall_sequence"] = opening_structure.get(
+            "overall_sequence"
+        )
+    return artifact
+
+
 def _source_materials(
     projection: dict,
     question_ids: tuple[str, ...],
 ) -> list[tuple[int, str, dict]]:
     deep = projection.get("deep_analysis") or {}
     materials: list[tuple[int, str, dict]] = []
+    opening_only = bool(question_ids) and set(question_ids).issubset({
+        "3.1",
+        "3.2",
+    })
     overview = projection.get("story_overview")
-    if question_ids != ("2.1",) and isinstance(overview, dict):
+    if (
+        question_ids != ("2.1",)
+        and not opening_only
+        and isinstance(overview, dict)
+    ):
         materials.append((116, "story_overview", overview))
     character_design = projection.get("character_design_evidence")
     if (
@@ -1431,9 +1577,12 @@ def _source_materials(
         materials.append((
             130,
             "opening_structure_evidence",
-            opening_structure,
+            _compact_opening_structure_model_artifact(
+                opening_structure,
+                question_ids,
+            ),
         ))
-        if set(question_ids).issubset({"3.1", "3.2"}):
+        if opening_only:
             return materials
     chapter_end_hooks = projection.get("chapter_end_hooks_evidence")
     if (
@@ -4924,12 +5073,18 @@ def _apply_program_3_1_answer(
     opening_structure: dict,
 ) -> None:
     opening = opening_structure.get("opening_scene", {})
+    protagonist_action = str(
+        opening.get("protagonist_action") or ""
+    ).rstrip("。；，,; ")
+    initial_trouble = str(
+        opening.get("initial_trouble") or ""
+    ).rstrip("。；，,; ")
     answer.status = "PARTIAL"
     answer.conclusion = (
         f"首章开场主要属于“{opening.get('opening_type')}”；"
         f"主角在第 {opening.get('protagonist_first_paragraph')} 段登场，"
-        f"当时{opening.get('protagonist_action')}，"
-        f"初始麻烦是{opening.get('initial_trouble')}。"
+        f"当时{protagonist_action}，"
+        f"初始麻烦是{initial_trouble}。"
     )[:1800]
     answer.contract_items = _program_3_1_contract_items(
         opening_structure
@@ -4942,20 +5097,44 @@ def _apply_program_3_1_answer(
     answer.evidence_ids = _opening_structure_evidence_ids(
         opening_structure
     )
-    answer.limitations = list(dict.fromkeys([
-        *answer.limitations,
+    answer.counter_evidence_ids = []
+    answer.limitations = [
         "当前只有单书证据，不能给出同品类头部书开局类型分布。",
-    ]))[:10]
+    ]
+    answer.reusable_lessons = [
+        "可把开场类型、正文起点、主角首次行动、初始麻烦、第一句话与第一段功能放在同一张开场卡里核对。"
+    ]
+    answer.do_not_copy = [
+        "不能照搬本书的具体人物、设定或开场事件；其他作品必须依据自己的首章原文重新判断。"
+    ]
 
 
 def _apply_program_3_2_answer(
     answer: LearningAnswerProposal,
     opening_structure: dict,
 ) -> None:
+    chapter_tasks = [
+        item
+        for item in opening_structure.get("chapter_tasks", [])
+        if isinstance(item, dict)
+    ]
+    segments = [
+        item
+        for item in opening_structure.get("paragraph_segments", [])
+        if isinstance(item, dict)
+    ]
+    coverage = opening_structure.get("coverage") or {}
+    chapter_fragments = [
+        f"第 {item.get('chapter_ordinal')} 章："
+        f"{'、'.join(str(task) for task in item.get('tasks', []))}"
+        for item in chapter_tasks
+    ]
     answer.status = "PARTIAL"
-    answer.conclusion = str(
-        opening_structure.get("overall_sequence")
-        or "前三章逐段任务与信息装载顺序见完整账本。"
+    answer.conclusion = (
+        f"前三章已按 {int(coverage.get('paragraph_count') or 0)} 个原文段落"
+        f"连续覆盖，合并为 {len(segments)} 个功能段，实际叙事正文共 "
+        f"{int(coverage.get('story_character_count') or 0)} 字符。"
+        f"逐章任务为：{'；'.join(chapter_fragments)}。"
     )[:1800]
     answer.contract_items = _program_3_2_contract_items(
         opening_structure
@@ -4968,15 +5147,16 @@ def _apply_program_3_2_answer(
     answer.evidence_ids = _opening_structure_evidence_ids(
         opening_structure
     )
-    answer.limitations = list(dict.fromkeys([
-        *answer.limitations,
-        *[
-            str(item)
-            for item in opening_structure.get("limitations", [])
-            if item
-        ],
+    answer.counter_evidence_ids = []
+    answer.limitations = [
         "当前只有单书证据，不能形成同品类标准节奏区间。",
-    ]))[:10]
+    ]
+    answer.reusable_lessons = [
+        "可按“逐章任务—连续段落功能—六类信息首次位置”三层检查前三章的信息装载顺序。"
+    ]
+    answer.do_not_copy = [
+        "不能照搬本书的具体任务顺序、段落长度或信息揭示位置；其他作品应按自身内容重新逐段判断。"
+    ]
 
 
 def _program_ratio_text(ratio: float) -> str:
@@ -5705,7 +5885,9 @@ def persist_learning_report(
     )
     projection: dict | None = None
     program_1_4_artifact: dict[str, object] | None = None
-    if set(selected_question_ids).intersection({"1.4", "2.1", "2.2", "4.9"}):
+    if set(selected_question_ids).intersection(
+        LEARNING_REPORT_PROJECTION_QUESTION_IDS
+    ):
         from .workbench import build_workbench_projection
 
         projection = build_workbench_projection(session, run.id)
