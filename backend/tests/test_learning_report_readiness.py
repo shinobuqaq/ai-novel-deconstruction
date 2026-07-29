@@ -716,6 +716,78 @@ def test_program_3_1_uses_only_opening_evidence_and_clean_punctuation() -> None:
     )
 
 
+def test_program_3_2_separates_first_ability_signal_from_later_segments() -> None:
+    answer = LearningAnswerProposal.model_validate(_answer("3.2"))
+    ledger = _opening_structure_ledger()
+    core = next(
+        item
+        for item in ledger["information_timeline"]
+        if item["module"] == "核心能力"
+    )
+    core.update({
+        "status": "SUPPORTED",
+        "first_chapter_ordinal": 2,
+        "first_paragraph": 267,
+        "source_char_start": 18058,
+        "source_char_end": 18080,
+        "character_count": 17746,
+        "finding": (
+            "先被评为S级，后续展示精密枪法与龙文异常。"
+        ),
+        "evidence_ids": ["evd_core_signal"],
+    })
+    ledger["paragraph_segments"].extend([
+        {
+            "chapter_ordinal": 2,
+            "paragraph_start": 267,
+            "paragraph_end": 305,
+            "information_modules": ["核心能力"],
+            "function": "确认S级潜力与血统评级",
+            "evidence_ids": ["evd_core_signal", "evd_core_signal_2"],
+        },
+        {
+            "chapter_ordinal": 3,
+            "paragraph_start": 296,
+            "paragraph_end": 340,
+            "information_modules": ["核心能力"],
+            "function": "危机中显露精密枪法",
+            "evidence_ids": ["evd_core_action"],
+        },
+        {
+            "chapter_ordinal": 3,
+            "paragraph_start": 404,
+            "paragraph_end": 463,
+            "information_modules": ["核心能力"],
+            "function": "龙文测试发现异常",
+            "evidence_ids": ["evd_core_language"],
+        },
+    ])
+
+    _apply_program_3_2_answer(answer, ledger)
+
+    timeline = next(
+        item
+        for item in answer.contract_items
+        if item.item_id == "information_loading_timeline"
+    )
+    ability = next(
+        item
+        for item in answer.contract_items
+        if item.item_id == "core_ability_first_appearance"
+    )
+    assert "核心能力相关信号首次见于第 2 章第 267 段" in timeline.finding
+    assert "能力相关信息首次装载" in ability.finding
+    assert "不等同于后续能力都已在该段现场展示" in ability.finding
+    assert "第 3 章第 296—340 段“危机中显露精密枪法”" in ability.finding
+    assert "第 3 章第 404—463 段“龙文测试发现异常”" in ability.finding
+    assert "后续展示精密枪法与龙文异常" not in ability.finding
+    assert ability.evidence_ids == [
+        "evd_core_signal",
+        "evd_core_action",
+        "evd_core_language",
+    ]
+
+
 def _validated_2_2_answer() -> tuple[LearningAnswerProposal, dict]:
     fields = []
     contract_items = []

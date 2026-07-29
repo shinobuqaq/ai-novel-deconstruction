@@ -4976,10 +4976,18 @@ def _program_3_2_contract_items(
     )
     timeline_finding = "；".join(
         (
-            f"{item.get('module')}首次见于第 "
-            f"{item.get('first_chapter_ordinal')} 章第 "
-            f"{item.get('first_paragraph')} 段，相关段落共承载 "
-            f"{item.get('character_count')} 字符"
+            (
+                f"核心能力相关信号首次见于第 "
+                f"{item.get('first_chapter_ordinal')} 章第 "
+                f"{item.get('first_paragraph')} 段，相关段落共承载 "
+                f"{item.get('character_count')} 字符"
+                if item.get("module") == "核心能力"
+                else
+                f"{item.get('module')}首次见于第 "
+                f"{item.get('first_chapter_ordinal')} 章第 "
+                f"{item.get('first_paragraph')} 段，相关段落共承载 "
+                f"{item.get('character_count')} 字符"
+            )
             if item.get("status") == "SUPPORTED"
             else f"{item.get('module')}：前三章当前未观察到足够依据"
         )
@@ -4994,6 +5002,54 @@ def _program_3_2_contract_items(
         {},
     )
     core_supported = core.get("status") == "SUPPORTED"
+    core_segments = [
+        item
+        for item in segments
+        if (
+            isinstance(item, dict)
+            and "核心能力" in item.get("information_modules", [])
+        )
+    ]
+    core_segment_fragments = [
+        (
+            f"第 {item.get('chapter_ordinal')} 章第 "
+            f"{item.get('paragraph_start')}—{item.get('paragraph_end')} 段"
+            f"“{item.get('function')}”"
+        )
+        for item in core_segments
+    ]
+    core_finding = (
+        (
+            f"专项账本按宽口径记录能力信息：最早信号位于第 "
+            f"{core.get('first_chapter_ordinal')} 章第 "
+            f"{core.get('first_paragraph')} 段、累计字符 "
+            f"{core.get('source_char_start')}。"
+            "这里定位的是能力相关信息首次装载，不等同于后续能力都已在该段现场展示。"
+            + (
+                f"账本归入同一模块的功能段依次为："
+                f"{'；'.join(core_segment_fragments)}。"
+                if core_segment_fragments
+                else ""
+            )
+        )
+        if core_supported
+        else "前三章逐段账本当前未观察到足够依据，不能硬判核心能力已经亮相。"
+    )
+    core_evidence_ids = list(dict.fromkeys(
+        str(evidence_id)
+        for item in core_segments
+        for evidence_id in item.get("evidence_ids", [])[:1]
+        if evidence_id
+    ))[:16]
+    if core_supported:
+        core_evidence_ids = list(dict.fromkeys([
+            *(
+                str(item)
+                for item in core.get("evidence_ids", [])
+                if item
+            ),
+            *core_evidence_ids,
+        ]))
     return [
         LearningContractItemProposal(
             item_id="chapter_tasks",
@@ -5083,18 +5139,8 @@ def _program_3_2_contract_items(
                 if core_supported
                 else "INSUFFICIENT_EVIDENCE"
             ),
-            finding=(
-                f"核心能力首次见于第 {core.get('first_chapter_ordinal')} "
-                f"章第 {core.get('first_paragraph')} 段、累计字符 "
-                f"{core.get('source_char_start')}。{core.get('finding')}"
-                if core_supported
-                else "前三章逐段账本当前未观察到足够依据，不能硬判核心能力已经亮相。"
-            )[:800],
-            evidence_ids=[
-                str(item)
-                for item in core.get("evidence_ids", [])
-                if item
-            ],
+            finding=core_finding[:800],
+            evidence_ids=core_evidence_ids,
         ),
         LearningContractItemProposal(
             item_id="cross_book_rhythm_range",
