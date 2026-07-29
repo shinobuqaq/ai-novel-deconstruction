@@ -687,6 +687,35 @@ def test_program_compiles_3_1_and_3_2_before_final_text_boundary_checks(
     assert stale_text not in compiled_text
 
 
+def test_program_3_1_uses_only_opening_evidence_and_clean_punctuation() -> None:
+    answer = LearningAnswerProposal.model_validate(_answer("3.1"))
+    ledger = _opening_structure_ledger()
+    ledger["opening_scene"]["protagonist_action"] = "正在查看陌生来信。"
+    ledger["opening_scene"]["initial_trouble"] = "必须立刻离开旧宅。"
+
+    _apply_program_3_1_answer(answer, ledger)
+
+    answer_text = "".join([
+        answer.conclusion,
+        *(item.finding for item in answer.contract_items),
+    ])
+    assert "。；" not in answer_text
+    assert "。。" not in answer_text
+    assert answer.evidence_ids == [
+        "evd_opening",
+        "evd_chapter_1",
+    ]
+    assert "evd_chapter_2" not in answer.evidence_ids
+    first_functions = next(
+        item
+        for item in answer.contract_items
+        if item.item_id == "first_sentence_and_paragraph"
+    )
+    assert first_functions.finding.startswith(
+        "专项账本的文学判断（不是读者效果实测）"
+    )
+
+
 def _validated_2_2_answer() -> tuple[LearningAnswerProposal, dict]:
     fields = []
     contract_items = []

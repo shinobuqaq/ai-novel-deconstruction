@@ -4802,15 +4802,39 @@ def _opening_structure_evidence_ids(
     ))[:limit]
 
 
+def _program_3_1_evidence_ids(
+    opening_structure: dict,
+    *,
+    limit: int = 16,
+) -> list[str]:
+    opening = opening_structure.get("opening_scene") or {}
+    values = [
+        *opening.get("evidence_ids", []),
+        opening.get("story_start_evidence_id"),
+        opening.get("protagonist_first_evidence_id"),
+    ]
+    first_chapter_task = next(
+        (
+            item
+            for item in opening_structure.get("chapter_tasks", [])
+            if (
+                isinstance(item, dict)
+                and int(item.get("chapter_ordinal") or 0) == 1
+            )
+        ),
+        {},
+    )
+    values.extend(first_chapter_task.get("evidence_ids", []))
+    return list(dict.fromkeys(
+        str(value) for value in values if value
+    ))[:limit]
+
+
 def _program_3_1_contract_items(
     opening_structure: dict,
 ) -> list[LearningContractItemProposal]:
     opening = opening_structure.get("opening_scene", {})
-    evidence_ids = [
-        str(item)
-        for item in opening.get("evidence_ids", [])
-        if item
-    ]
+    evidence_ids = _program_3_1_evidence_ids(opening_structure)
     opening_type = str(opening.get("opening_type") or "")
     entrance_paragraph = int(
         opening.get("protagonist_first_paragraph") or 0
@@ -4818,14 +4842,27 @@ def _program_3_1_contract_items(
     entrance_char = int(
         opening.get("protagonist_first_source_char") or 0
     )
+    protagonist_action = str(
+        opening.get("protagonist_action") or ""
+    ).rstrip("。；，,; ")
+    initial_trouble = str(
+        opening.get("initial_trouble") or ""
+    ).rstrip("。；，,; ")
+    first_sentence_function = str(
+        opening.get("first_sentence_function") or ""
+    ).rstrip("。；，,; ")
+    first_paragraph_function = str(
+        opening.get("first_paragraph_function") or ""
+    ).rstrip("。；，,; ")
     first_functions = (
-        f"正文第一句话承担“{opening.get('first_sentence_function')}”；"
-        f"第一段承担“{opening.get('first_paragraph_function')}”。"
+        f"专项账本的文学判断（不是读者效果实测）："
+        f"正文第一句话主要用于：{first_sentence_function}；"
+        f"第一段主要用于：{first_paragraph_function}。"
     )
     card = (
         f"开场类型为“{opening_type}”；主角在第 {entrance_paragraph} "
-        f"段登场，当时{opening.get('protagonist_action')}；"
-        f"初始麻烦是{opening.get('initial_trouble')}。"
+        f"段登场；开场行动：{protagonist_action}；"
+        f"初始麻烦：{initial_trouble}。"
     )
     return [
         LearningContractItemProposal(
@@ -4843,8 +4880,8 @@ def _program_3_1_contract_items(
             finding=(
                 f"主角在首章第 {entrance_paragraph} 段、源文件累计字符 "
                 f"{entrance_char} 处首次登场；"
-                f"{opening.get('protagonist_action')}；"
-                f"初始麻烦：{opening.get('initial_trouble')}。"
+                f"开场行动：{protagonist_action}；"
+                f"初始麻烦：{initial_trouble}。"
             )[:800],
             metrics=[
                 LearningMetricProposal(
@@ -4869,7 +4906,9 @@ def _program_3_1_contract_items(
             status="SUPPORTED",
             finding=first_functions[:800],
             evidence_ids=[
-                str(opening.get("story_start_evidence_id") or "")
+                str(value)
+                for value in (opening.get("story_start_evidence_id"),)
+                if value
             ],
         ),
         LearningContractItemProposal(
@@ -5082,9 +5121,9 @@ def _apply_program_3_1_answer(
     answer.status = "PARTIAL"
     answer.conclusion = (
         f"首章开场主要属于“{opening.get('opening_type')}”；"
-        f"主角在第 {opening.get('protagonist_first_paragraph')} 段登场，"
-        f"当时{protagonist_action}，"
-        f"初始麻烦是{initial_trouble}。"
+        f"主角从第 {opening.get('protagonist_first_paragraph')} 段开始登场。"
+        f"开场行动是：{protagonist_action}；"
+        f"初始麻烦是：{initial_trouble}。"
     )[:1800]
     answer.contract_items = _program_3_1_contract_items(
         opening_structure
@@ -5094,9 +5133,7 @@ def _apply_program_3_1_answer(
         for item in answer.contract_items
         for metric in item.metrics
     ][:20]
-    answer.evidence_ids = _opening_structure_evidence_ids(
-        opening_structure
-    )
+    answer.evidence_ids = _program_3_1_evidence_ids(opening_structure)
     answer.counter_evidence_ids = []
     answer.limitations = [
         "当前只有单书证据，不能给出同品类头部书开局类型分布。",
