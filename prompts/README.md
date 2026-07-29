@@ -9,6 +9,8 @@
 - `deep_insights_v1.md`
 - `character_design_evidence_v1.md`
 - `chapter_end_hooks_v1.md`
+- `opening_payoff_candidates_v1.md`
+- `opening_hook_payoffs_v1.md`
 - `learning_report_v1.md`
 
 每个正式提示词至少包含：

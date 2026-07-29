@@ -72,6 +72,12 @@ from .opening_hook_payoffs import (
     persist_opening_hook_payoffs,
     provider_payload_for_opening_hook_payoffs,
 )
+from .opening_payoff_candidates import (
+    OPENING_PAYOFF_CANDIDATES_TASK_KIND,
+    parse_opening_payoff_candidates,
+    persist_opening_payoff_candidates,
+    provider_payload_for_opening_payoff_candidates,
+)
 
 
 ANALYSIS_TASK_KINDS = {
@@ -82,6 +88,7 @@ ANALYSIS_TASK_KINDS = {
     CHARACTER_DESIGN_TASK_KIND,
     CHAPTER_END_HOOKS_TASK_KIND,
     OPENING_HOOK_PAYOFFS_TASK_KIND,
+    OPENING_PAYOFF_CANDIDATES_TASK_KIND,
     LEARNING_REPORT_TASK_KIND,
 }
 
@@ -506,6 +513,33 @@ async def execute_task(
                 message=message,
                 retryable=False,
             ) from exc
+    elif claim.kind == OPENING_PAYOFF_CANDIDATES_TASK_KIND:
+        try:
+            with session_factory() as session:
+                provider_payload = (
+                    provider_payload_for_opening_payoff_candidates(
+                        session,
+                        settings,
+                        payload,
+                    )
+                )
+        except ValueError as exc:
+            reason_code = str(exc)
+            raise ProviderError(
+                code=reason_code.split(":", 1)[0],
+                message=(
+                    "当前卖点兑现候选窗口超过15万 Token（令牌）软上限，"
+                    "需要缩小窗口后重试。"
+                    if reason_code.startswith(
+                        "OPENING_PAYOFF_CANDIDATES_CONTEXT_TOO_LARGE"
+                    )
+                    else "正文、事件或故事前提已经更新，请基于最新结果重新扫描卖点兑现。"
+                    if reason_code
+                    == "OPENING_PAYOFF_CANDIDATES_SOURCE_OUTDATED"
+                    else "卖点兑现候选原料尚未就绪。"
+                ),
+                retryable=False,
+            ) from exc
     elif claim.kind == LEARNING_REPORT_TASK_KIND:
         with session_factory() as session:
             provider_payload = provider_payload_for_learning_report(
@@ -566,6 +600,7 @@ async def execute_task(
     persisted_character_design = None
     persisted_chapter_end_hooks = None
     persisted_opening_hook_payoffs = None
+    persisted_opening_payoff_candidates = None
     persisted_learning_report = None
     if claim.kind == ANALYSIS_TASK_KIND:
         try:
@@ -862,6 +897,7 @@ async def execute_task(
                 }
                 persisted_character_design = persist_character_design_evidence(
                     session,
+                    settings=settings,
                     task=task,
                     attempt_id=claim.current_attempt_id,
                     task_payload=effective_payload,
@@ -971,6 +1007,77 @@ async def execute_task(
                         else "生成期间正文或拆解结果已经更新，请基于最新结果重新生成。"
                     ),
                     retryable=reason_code != "CHAPTER_END_HOOKS_SOURCE_OUTDATED",
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="reference_validation",
+                        reason_code=reason_code,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
+    elif claim.kind == OPENING_PAYOFF_CANDIDATES_TASK_KIND:
+        try:
+            opening_payoff_candidates_output = (
+                parse_opening_payoff_candidates(response.parsed)
+            )
+        except ValueError as exc:
+            errors = getattr(exc, "validation_errors", [])
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message=_validation_message(
+                    "卖点首次兑现候选分类",
+                    errors,
+                ),
+                retryable=True,
+                diagnostics=_attempt_diagnostics(
+                    provider_payload,
+                    response,
+                    phase="schema_validation",
+                    validation_errors=errors,
+                    reason_code=str(exc),
+                ),
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                provider_name=response.provider_id or provider.name,
+                model=response.model,
+                raw_text=response.raw_text,
+            ) from exc
+        with session_factory() as session:
+            if not task_claim_is_current(session, claim=claim):
+                acknowledge_task_cancellation(session, claim=claim)
+                return False
+            task = session.get(Task, claim.id)
+            if task is None:
+                raise ValueError("TASK_NOT_FOUND")
+            try:
+                persisted_opening_payoff_candidates = (
+                    persist_opening_payoff_candidates(
+                        session,
+                        settings,
+                        task=task,
+                        attempt_id=claim.current_attempt_id,
+                        task_payload=payload,
+                        output=opening_payoff_candidates_output,
+                    )
+                )
+            except ValueError as exc:
+                reason_code = str(exc)
+                raise ProviderError(
+                    code="PROVIDER_INVALID_OUTPUT",
+                    message=(
+                        "卖点兑现候选的顺序、事件或原文对应未通过程序核对，请只重做当前窗口。"
+                        if reason_code
+                        != "OPENING_PAYOFF_CANDIDATES_SOURCE_OUTDATED"
+                        else "生成期间正文、事件或故事前提已经更新，请重新扫描。"
+                    ),
+                    retryable=(
+                        reason_code
+                        != "OPENING_PAYOFF_CANDIDATES_SOURCE_OUTDATED"
+                    ),
                     diagnostics=_attempt_diagnostics(
                         provider_payload,
                         response,
@@ -1154,6 +1261,8 @@ async def execute_task(
             if claim.kind == CHAPTER_END_HOOKS_TASK_KIND
             else "analysis.opening_hook_payoffs.result"
             if claim.kind == OPENING_HOOK_PAYOFFS_TASK_KIND
+            else "analysis.opening_payoff_candidates.result"
+            if claim.kind == OPENING_PAYOFF_CANDIDATES_TASK_KIND
             else "analysis.learning_report.result"
             if claim.kind == LEARNING_REPORT_TASK_KIND
             else "fake.echo.result"
@@ -1226,6 +1335,15 @@ async def execute_task(
                     persisted_opening_hook_payoffs.id
                 ),
                 "question_id": persisted_opening_hook_payoffs.question_id,
+            }
+        if persisted_opening_payoff_candidates is not None:
+            artifact_payload["accepted"] = {
+                "learning_question_evidence_id": (
+                    persisted_opening_payoff_candidates.id
+                ),
+                "question_id": (
+                    persisted_opening_payoff_candidates.question_id
+                ),
             }
         if persisted_learning_report is not None:
             artifact_payload["accepted"] = {

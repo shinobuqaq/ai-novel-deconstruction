@@ -1145,6 +1145,85 @@ def test_program_rejects_intro_evidence_as_first_three_chapter_evidence() -> Non
     )
 
 
+def test_program_replaces_unknown_1_4_opening_evidence_before_validation() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    promise_item = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "opening_promise_sources"
+    )
+    opening_metric = next(
+        metric
+        for metric in promise_item["metrics"]
+        if metric["label"] == "前三章"
+    )
+    opening_metric["evidence_ids"] = ["evd_model_hallucinated"]
+    promise_item["evidence_ids"] = [
+        "evd_intro",
+        "evd_model_hallucinated",
+    ]
+    output = LearningReportOutput(
+        answers=[LearningAnswerProposal.model_validate(payload)],
+        author_decisions=[],
+        method_candidates=[],
+    )
+
+    _validate_selected_answers_against_projection(
+        output,
+        projection,
+        opening_promise_sources=opening_sources,
+        evidence_by_id=evidence_by_id,
+    )
+
+    compiled = next(
+        item
+        for item in output.answers[0].contract_items
+        if item.item_id == "opening_promise_sources"
+    )
+    compiled_opening = next(
+        metric for metric in compiled.metrics
+        if metric.label == "前三章"
+    )
+    assert compiled_opening.evidence_ids == ["evd_payoff"]
+    assert "evd_model_hallucinated" not in {
+        evidence_id
+        for item in output.answers[0].contract_items
+        for evidence_id in item.evidence_ids
+    }
+
+
+def test_program_still_rejects_unknown_1_4_selling_point_evidence() -> None:
+    answer, projection, opening_sources, evidence_by_id = (
+        _validated_1_4_answer()
+    )
+    payload = answer.model_dump(mode="json")
+    selling_point = next(
+        item
+        for item in payload["contract_items"]
+        if item["item_id"] == "selling_point_card"
+    )
+    selling_point["evidence_ids"] = ["evd_model_hallucinated"]
+
+    with pytest.raises(ValueError) as error:
+        _validate_selected_answers_against_projection(
+            LearningReportOutput(
+                answers=[LearningAnswerProposal.model_validate(payload)],
+                author_decisions=[],
+                method_candidates=[],
+            ),
+            projection,
+            opening_promise_sources=opening_sources,
+            evidence_by_id=evidence_by_id,
+        )
+
+    assert str(error.value) == (
+        "LEARNING_REPORT_1_4_EVIDENCE_SCOPE_INVALID"
+    )
+
+
 def test_old_refreshed_contract_versions_are_not_current() -> None:
     oldest_payload = {
         "question_contract_versions": {
@@ -1160,7 +1239,7 @@ def test_old_refreshed_contract_versions_are_not_current() -> None:
     }
     current_payload = {
         "question_contract_versions": {
-            "1.4": "2.3.0",
+            "1.4": "2.4.0",
             "2.2": "2.1.0",
         },
     }

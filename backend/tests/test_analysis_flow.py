@@ -294,9 +294,22 @@ class StaticAnalysisProvider:
                 event["sequence_no"]
                 for event in character_input["protagonist_events"]
             ] == list(range(
-                1,
-                len(character_input["protagonist_events"]) + 1,
+                character_input["protagonist_events"][0]["sequence_no"],
+                character_input["protagonist_events"][-1]["sequence_no"] + 1,
             ))
+            if character_input.get("window", {}).get("phase") == "CONFLICTS":
+                return ProviderResponse(
+                    parsed={
+                        "protagonist": character_input["protagonist"]["name"],
+                        "desire_conflicts": [],
+                    },
+                    raw_text="{}",
+                    prompt_tokens=120,
+                    completion_tokens=80,
+                    provider_id=self.name,
+                    model="static-analysis",
+                    parameters={},
+                )
             event = character_input["protagonist_events"][0]
             evidence_id = event["evidence_ids"][0]
             chapter_ordinal = event["chapter_ordinals"][0]
@@ -331,6 +344,32 @@ class StaticAnalysisProvider:
                 ],
                 "desire_conflicts": [],
                 "arc_summary": "林舟由被动回到旧宅，转为主动追查密信来源；短篇样本只能证明这一阶段变化。",
+            }
+        elif task_kind == "analysis.opening_payoff_candidates":
+            payoff_input = json.loads(payload["input"])
+            classifications = []
+            for candidate in payoff_input["candidates"]:
+                program_exclusion = (
+                    candidate["program_exclusion_code"] or ""
+                )
+                is_complete = not program_exclusion
+                classifications.append({
+                    "sequence_no": candidate["sequence_no"],
+                    "matched_facet_ids": (
+                        ["F1", "F2", "F3"]
+                        if is_complete
+                        else []
+                    ),
+                    "exclusion_code": (
+                        program_exclusion
+                        or "NONE"
+                    ),
+                    "anchor_evidence_no": 1,
+                })
+                if is_complete:
+                    break
+            output = {
+                "classifications": classifications,
             }
         elif task_kind == "analysis.chapter_end_hooks":
             hook_input = json.loads(payload["input"])
@@ -399,24 +438,24 @@ class StaticAnalysisProvider:
                     payoff_ledger = report_input["program_artifacts"][
                         "opening_payoff_candidate_ledger"
                     ]
-                    payoff_candidate = payoff_ledger["candidates"][0]
-                    opening_evidence = payoff_candidate[
-                        "evidence_options"
-                    ][0]
-                    opening_evidence_id = opening_evidence["evidence_id"]
-                    opening_chapter = opening_evidence["chapter_ordinal"]
+                    payoff_candidate = payoff_ledger["selected"]
+                    representative = payoff_ledger[
+                        "representative_classifications"
+                    ]
+                    opening_evidence_id = payoff_candidate[
+                        "anchor_evidence_id"
+                    ]
                     promise_evidence_ids = (
                         promise_sources["description_evidence_ids"]
                         or [opening_evidence_id]
                     )
                     first_three_evidence_id = next(
                         (
-                            option["evidence_id"]
-                            for candidate in payoff_ledger["candidates"]
-                            for option in candidate["evidence_options"]
+                            candidate["anchor_evidence_id"]
+                            for candidate in representative
                             if (
-                                1 <= int(option["chapter_ordinal"]) <= 3
-                                and option["evidence_id"]
+                                1 <= int(candidate["chapter_ordinal"]) <= 3
+                                and candidate["anchor_evidence_id"]
                                 not in promise_evidence_ids
                             )
                         ),
@@ -448,7 +487,6 @@ class StaticAnalysisProvider:
                             if item_id == "cross_book_comparison"
                             else [opening_evidence_id]
                         )
-                        payoff_classifications = []
                         if item_id == "opening_promise_sources":
                             title = (
                                 promise_sources["preferred_title"]
@@ -507,15 +545,9 @@ class StaticAnalysisProvider:
                                 first_three_evidence_id,
                             ]))
                         if item_id == "first_payoff_location":
-                            finding = "提交连续候选分类，由程序编译位置。"
+                            finding = "专项账本已由程序确定最早完整兑现位置。"
                             metrics = []
-                            item_evidence_ids = []
-                            payoff_classifications = [{
-                                "sequence_no": 1,
-                                "matched_facet_ids": ["F1", "F2", "F3"],
-                                "exclusion_code": "NONE",
-                                "anchor_evidence_no": 1,
-                            }]
+                            item_evidence_ids = [opening_evidence_id]
                         answer["contract_items"].append(
                         {
                             "item_id": item_id,
@@ -529,7 +561,6 @@ class StaticAnalysisProvider:
                                 else []
                             ),
                             "classifications": [],
-                            "payoff_classifications": payoff_classifications,
                         }
                         )
                 elif question_id == "2.1":
@@ -1447,20 +1478,39 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     assert projection["deep_analysis"]["claims"][0]["verification_status"] == "SUPPORTED"
     assert projection["deep_analysis"]["world_rules"][0]["discovered_chapter"] == 1
     assert projection["character_design_status"] == "NOT_GENERATED"
-    assert projection["learning_report"]["readiness"]["ready_question_count"] == 2
+    assert projection["learning_report"]["readiness"]["ready_question_count"] == 1
 
     character_start = client.post(
         f"/api/analysis-runs/{run['id']}/character-design/start"
     )
     assert character_start.status_code == 202
     with client.app.state.session_factory() as session:
-        character_claim = claim_next_task(
+        character_fields_claim = claim_next_task(
             session,
             worker_id="character-design-test-worker",
             lease_seconds=60,
         )
+    assert character_fields_claim is not None
+    assert character_fields_claim.kind == "analysis.character_design_evidence"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        character_fields_claim,
+        registry,
+    )
+    character_fields_projection = client.get(
+        f"/api/analysis-runs/{run['id']}/workbench"
+    ).json()
+    assert character_fields_projection["character_design_status"] == "GENERATING"
+    with client.app.state.session_factory() as session:
+        character_claim = claim_next_task(
+            session,
+            worker_id="character-conflicts-test-worker",
+            lease_seconds=60,
+        )
     assert character_claim is not None
     assert character_claim.kind == "analysis.character_design_evidence"
+    assert json.loads(character_claim.payload_json)["window_phase"] == "CONFLICTS"
     assert execute_task_sync(
         client.app.state.session_factory,
         client.app.state.settings,
@@ -1470,12 +1520,18 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     character_projection = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()
-    assert character_projection["character_design_status"] == "READY"
+    character_task_state = client.get(
+        f"/api/tasks/{character_claim.id}"
+    ).json()
+    assert character_projection["character_design_status"] == "READY", (
+        character_task_state["last_error_code"],
+        character_task_state["last_error_message"],
+    )
     assert character_projection["character_design_evidence"]["revision"] == 1
     assert character_projection["character_design_evidence"]["is_current"] is True
     assert len(character_projection["character_design_evidence"]["fields"]) == 6
     assert character_projection["character_design_evidence"]["coverage"]["event_coverage_complete"] is True
-    assert character_projection["learning_report"]["readiness"]["ready_question_count"] == 3
+    assert character_projection["learning_report"]["readiness"]["ready_question_count"] == 2
     with client.app.state.session_factory() as session:
         cancelled_character_task = Task(
             project_id=character_claim.project_id,
@@ -1546,7 +1602,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     assert hooks_projection["chapter_end_hooks_evidence"]["is_current"] is True
     assert hooks_projection["chapter_end_hooks_evidence"]["coverage"]["sampled_chapter_count"] == 2
     assert len(hooks_projection["chapter_end_hooks"]) == 2
-    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 4
+    assert hooks_projection["learning_report"]["readiness"]["ready_question_count"] == 3
     hooks_diagnostics = client.get(
         f"/api/analysis-runs/{run['id']}/diagnostics"
     ).json()
@@ -1565,10 +1621,37 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         learning_task_count_before_character_revision = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
+        payoff_task_count_before = session.scalar(
+            select(func.count(Task.id)).where(
+                Task.kind == "analysis.opening_payoff_candidates"
+            )
+        )
     first_learning_start = client.post(
         f"/api/analysis-runs/{run['id']}/learning-report/start"
     )
     assert first_learning_start.status_code == 202
+    with client.app.state.session_factory() as session:
+        assert session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
+        ) == learning_task_count_before_character_revision + 3
+        assert session.scalar(
+            select(func.count(Task.id)).where(
+                Task.kind == "analysis.opening_payoff_candidates"
+            )
+        ) == payoff_task_count_before + 1
+        opening_payoff_claim = claim_next_task(
+            session,
+            worker_id="opening-payoff-test-worker",
+            lease_seconds=60,
+        )
+    assert opening_payoff_claim is not None
+    assert opening_payoff_claim.kind == "analysis.opening_payoff_candidates"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        opening_payoff_claim,
+        registry,
+    )
     with client.app.state.session_factory() as session:
         assert session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
@@ -1594,7 +1677,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
             current_claim,
             registry,
         )
-    assert first_question_ids == ["1.4", "2.1", "2.2", "4.9"]
+    assert first_question_ids == ["2.1", "2.2", "4.9", "1.4"]
     assert first_learning_claim is not None
     first_learning_projection = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
@@ -1631,6 +1714,15 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         first_learning_diagnostics.get("reason_code"),
         first_learning_task_states,
     )
+    first_pipeline_diagnostics = client.get(
+        f"/api/analysis-runs/{run['id']}/diagnostics"
+    ).json()
+    opening_payoff_stage = next(
+        item for item in first_pipeline_diagnostics["stages"]
+        if item["key"] == "analysis.opening_payoff_candidates"
+    )
+    assert opening_payoff_stage["status"] == "SUCCEEDED"
+    assert len(opening_payoff_stage["calls"]) == 1
     assert sum(
         item["generated_count"]
         for item in first_learning_projection["learning_report"]["stages"]
@@ -1758,7 +1850,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     assert latest_revision.json()["chapter_end_hooks_status"] == "OUTDATED"
     assert latest_revision.json()["chapter_end_hooks_evidence"]["is_current"] is False
     assert latest_revision.json()["learning_report_status"] == "OUTDATED"
-    assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 2
+    assert latest_revision.json()["learning_report"]["readiness"]["ready_question_count"] == 1
     assert latest_revision.json()["deep_analysis"]["conflicts"][0]["resolution"] == "尚未解决。"
     latest_unaffected_fact = next(
         item
@@ -1778,13 +1870,28 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     )
     assert refreshed_character_start.status_code == 202
     with client.app.state.session_factory() as session:
-        refreshed_character_claim = claim_next_task(
+        refreshed_character_fields_claim = claim_next_task(
             session,
             worker_id="character-design-refresh-worker",
             lease_seconds=60,
         )
+    assert refreshed_character_fields_claim is not None
+    assert refreshed_character_fields_claim.kind == "analysis.character_design_evidence"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        refreshed_character_fields_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        refreshed_character_claim = claim_next_task(
+            session,
+            worker_id="character-conflicts-refresh-worker",
+            lease_seconds=60,
+        )
     assert refreshed_character_claim is not None
     assert refreshed_character_claim.kind == "analysis.character_design_evidence"
+    assert json.loads(refreshed_character_claim.payload_json)["window_phase"] == "CONFLICTS"
     assert execute_task_sync(
         client.app.state.session_factory,
         client.app.state.settings,
@@ -1801,7 +1908,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
     assert len(initial_learning["questions"]) == 42
     assert sum(item["status"] == "OUTDATED" for item in initial_learning["questions"]) == 4
     assert initial_learning["readiness"]["ready"] is True
-    assert initial_learning["readiness"]["ready_question_count"] == 3
+    assert initial_learning["readiness"]["ready_question_count"] == 2
     with client.app.state.session_factory() as session:
         learning_task_count_before = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
@@ -1814,7 +1921,24 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
         learning_task_count_after = session.scalar(
             select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
         )
-    assert learning_task_count_after == learning_task_count_before + 3
+        refreshed_payoff_claim = claim_next_task(
+            session,
+            worker_id="opening-payoff-refresh-worker",
+            lease_seconds=60,
+        )
+    assert learning_task_count_after == learning_task_count_before + 2
+    assert refreshed_payoff_claim is not None
+    assert refreshed_payoff_claim.kind == "analysis.opening_payoff_candidates"
+    assert execute_task_sync(
+        client.app.state.session_factory,
+        client.app.state.settings,
+        refreshed_payoff_claim,
+        registry,
+    )
+    with client.app.state.session_factory() as session:
+        assert session.scalar(
+            select(func.count(Task.id)).where(Task.kind == "analysis.learning_report")
+        ) == learning_task_count_before + 3
     refreshed_question_ids = []
     for index in range(3):
         with client.app.state.session_factory() as session:
@@ -1833,7 +1957,7 @@ def test_entities_events_flow_keeps_exact_source_evidence_and_is_idempotent(
             refreshed_learning_claim,
             registry,
         )
-    assert refreshed_question_ids == ["1.4", "2.1", "2.2"]
+    assert refreshed_question_ids == ["2.1", "2.2", "1.4"]
     partial_refresh = client.get(
         f"/api/analysis-runs/{run['id']}/workbench"
     ).json()

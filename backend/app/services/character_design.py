@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,11 +36,13 @@ from .provider_config import (
 CHARACTER_DESIGN_TASK_KIND = "analysis.character_design_evidence"
 CHARACTER_DESIGN_QUESTION_ID = "2.2"
 CHARACTER_DESIGN_PROMPT_ID = "character_design_evidence"
-CHARACTER_DESIGN_PROMPT_VERSION = "2.0.0"
-CHARACTER_DESIGN_SUPPORT_POLICY_VERSION = "1.9.2"
+CHARACTER_DESIGN_PROMPT_VERSION = "2.1.0"
+CHARACTER_DESIGN_SUPPORT_POLICY_VERSION = "2.0.0"
 CHARACTER_DESIGN_SOFT_INPUT_TOKENS = 150_000
 CHARACTER_DESIGN_REQUEST_OVERHEAD_TOKENS = 4_096
 CHARACTER_DESIGN_ESTIMATED_CHARS_PER_TOKEN = 1.5
+CHARACTER_DESIGN_WINDOW_OVERHEAD_CHARS = 16_000
+CHARACTER_DESIGN_MAX_WINDOW_EVENTS = 80
 CHARACTER_DESIGN_DECISION_CONTEXT_CHARS = 4_000
 CHARACTER_DESIGN_PROXIMITY_SUPPORT_LIMIT = 10
 CHARACTER_DESIGN_EVENT_SUPPORT_LIMIT = 21
@@ -216,7 +219,7 @@ class DesireConflictEvidence(BaseModel):
 class CharacterDesignEvidenceOutput(BaseModel):
     protagonist: str = Field(min_length=1, max_length=120)
     fields: list[CharacterDesignFieldEvidence] = Field(min_length=6, max_length=6)
-    desire_conflicts: list[DesireConflictEvidence] = Field(default_factory=list, max_length=40)
+    desire_conflicts: list[DesireConflictEvidence] = Field(default_factory=list)
     arc_summary: str = Field(min_length=1, max_length=2400)
 
 
@@ -734,6 +737,68 @@ def _compact_event(
         "outcome": event.get("outcome"),
         "evidence_ids": support_evidence_ids,
     }
+
+
+def _window_specs(
+    compact_events: list[dict[str, object]],
+    evidence_text_by_id: dict[str, str],
+    *,
+    input_char_budget: int,
+) -> list[dict[str, int]]:
+    material_budget = max(
+        8_000,
+        input_char_budget - CHARACTER_DESIGN_WINDOW_OVERHEAD_CHARS,
+    )
+    windows: list[dict[str, int]] = []
+    current: list[dict[str, object]] = []
+    current_chars = 0
+    current_evidence_ids: set[str] = set()
+    for event in compact_events:
+        event_evidence_ids = {
+            str(evidence_id)
+            for evidence_id in event.get("evidence_ids", [])
+            if str(evidence_id) in evidence_text_by_id
+        }
+        new_evidence_ids = event_evidence_ids - current_evidence_ids
+        item_chars = len(json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )) + sum(
+            len(evidence_text_by_id[evidence_id]) + len(evidence_id) + 64
+            for evidence_id in new_evidence_ids
+        )
+        if current and (
+            current_chars + item_chars > material_budget
+            or len(current) >= CHARACTER_DESIGN_MAX_WINDOW_EVENTS
+        ):
+            windows.append({
+                "event_start_sequence": int(current[0]["sequence_no"]),
+                "event_end_sequence": int(current[-1]["sequence_no"]),
+                "estimated_material_chars": current_chars,
+            })
+            current = []
+            current_chars = 0
+            current_evidence_ids = set()
+            new_evidence_ids = event_evidence_ids
+            item_chars = len(json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )) + sum(
+                len(evidence_text_by_id[evidence_id]) + len(evidence_id) + 64
+                for evidence_id in new_evidence_ids
+            )
+        current.append(event)
+        current_chars += item_chars
+        current_evidence_ids.update(event_evidence_ids)
+    if current:
+        windows.append({
+            "event_start_sequence": int(current[0]["sequence_no"]),
+            "event_end_sequence": int(current[-1]["sequence_no"]),
+            "estimated_material_chars": current_chars,
+        })
+    return windows
 
 
 def _evidence_overlap_ngrams(value: object) -> set[str]:
@@ -1725,6 +1790,24 @@ def provider_payload_for_character_design(
     events = _protagonist_events(projection, protagonist_name)
     if not events:
         raise ValueError("PROTAGONIST_EVENTS_NOT_READY")
+    window_phase = str(task_payload.get("window_phase") or "LEGACY")
+    if window_phase not in {"LEGACY", "FIELDS", "CONFLICTS"}:
+        raise ValueError("CHARACTER_DESIGN_WINDOW_PHASE_INVALID")
+    event_start_sequence = int(
+        task_payload.get("event_start_sequence") or 1
+    )
+    event_end_sequence = int(
+        task_payload.get("event_end_sequence") or len(events)
+    )
+    if (
+        event_start_sequence < 1
+        or event_end_sequence < event_start_sequence
+        or event_end_sequence > len(events)
+    ):
+        raise ValueError("CHARACTER_DESIGN_WINDOW_INVALID")
+    selected_events = events[
+        event_start_sequence - 1:event_end_sequence
+    ]
 
     _service, profile = resolve_analysis_profile(
         settings,
@@ -1740,6 +1823,27 @@ def provider_payload_for_character_design(
         version.id,
         events,
     )
+    selected_event_ids = {
+        str(event.get("id") or "") for event in selected_events
+    }
+    selected_support_ids = {
+        str(evidence_id)
+        for event in selected_events
+        for evidence_id in support_by_event_id.get(
+            str(event.get("id") or ""),
+            [],
+        )
+    }
+    selected_guardrails = [
+        item
+        for item in first_display_guardrails
+        if str(item.get("later_event_id") or "") in selected_event_ids
+    ]
+    selected_support_ids.update(
+        str(item.get("repeated_evidence_id") or "")
+        for item in selected_guardrails
+        if item.get("repeated_evidence_id")
+    )
     evidence_catalog = [
         {
             "id": evidence.id,
@@ -1749,7 +1853,11 @@ def provider_payload_for_character_design(
             "text": evidence.text_snapshot,
         }
         for evidence in sorted(
-            evidence_by_id.values(),
+            (
+                evidence
+                for evidence_id, evidence in evidence_by_id.items()
+                if evidence_id in selected_support_ids
+            ),
             key=lambda item: (item.start_char, item.id),
         )
     ]
@@ -1773,13 +1881,49 @@ def provider_payload_for_character_design(
     repair_conflicts = "desire_conflicts" in repair_components
     if repair_mode and repair_fields and repair_conflicts:
         raise ValueError("CHARACTER_DESIGN_REPAIR_COMPONENTS_MIXED")
+    if window_phase == "FIELDS" and repair_conflicts:
+        raise ValueError("CHARACTER_DESIGN_WINDOW_COMPONENT_INVALID")
+    if window_phase == "CONFLICTS" and repair_fields:
+        raise ValueError("CHARACTER_DESIGN_WINDOW_COMPONENT_INVALID")
+    accepted_fields = list(
+        task_payload.get("accepted_character_fields") or []
+    )
+    if window_phase == "CONFLICTS" and len(accepted_fields) != len(
+        CHARACTER_DESIGN_FIELDS
+    ):
+        raise ValueError("CHARACTER_DESIGN_WINDOW_FIELDS_NOT_READY")
+    window_chapter_ordinals = {
+        int(chapter)
+        for event in selected_events
+        for chapter in event.get("chapter_ordinals", [])
+        if int(chapter) > 0
+    }
     input_payload = {
         "question_id": CHARACTER_DESIGN_QUESTION_ID,
         "contract": {
-            "output": "主角双层欲望卡、六项首次展示节奏表和弧光转折时间轴",
-            "measurement": "定位六项首次行动事件，并统计两层欲望冲突节点",
+            "output": (
+                "当前连续事件窗口内的六项首次展示候选"
+                if window_phase == "FIELDS"
+                else "当前连续事件窗口内的两层欲望冲突节点"
+                if window_phase == "CONFLICTS"
+                else "主角双层欲望卡、六项首次展示节奏表和弧光转折时间轴"
+            ),
+            "measurement": (
+                "逐窗定位六项首次行动候选，由程序跨窗选择全书最早位置"
+                if window_phase == "FIELDS"
+                else "使用程序已确定的六项字段，逐窗统计两层欲望冲突节点"
+                if window_phase == "CONFLICTS"
+                else "定位六项首次行动事件，并统计两层欲望冲突节点"
+            ),
             "evidence": "每项必须由主角行动或选择的原文证明，人物简介不能单独作证",
-            "scope": "覆盖前三章、前 30 章和全书主角事件",
+            "scope": (
+                f"全书连续窗口 {task_payload.get('window_index')}/"
+                f"{task_payload.get('window_count')}，事件序号 "
+                f"{event_start_sequence}..{event_end_sequence}；"
+                "全部窗口完成后由程序合并为全书结论"
+                if window_phase != "LEGACY"
+                else "覆盖前三章、前 30 章和全书主角事件"
+            ),
             "repair": (
                 "本次只返回 repair_request.components 指定的失败部分；"
                 "已接受部分由程序保留，不得重复返回"
@@ -1798,6 +1942,7 @@ def provider_payload_for_character_design(
         "chapter_catalog": [
             {"ordinal": ordinal, "title": unit.title}
             for ordinal, unit in enumerate(chapter_units, start=1)
+            if ordinal in window_chapter_ordinals
         ],
         "protagonist_events": [
             _compact_event(
@@ -1806,15 +1951,41 @@ def provider_payload_for_character_design(
                 sequence_no=sequence_no,
             )
             for sequence_no, event in enumerate(events, start=1)
+            if event_start_sequence <= sequence_no <= event_end_sequence
         ],
-        "first_display_guardrails": first_display_guardrails,
+        "first_display_guardrails": selected_guardrails,
         "evidence_catalog": evidence_catalog,
     }
+    if window_phase != "LEGACY":
+        input_payload["window"] = {
+            "group_id": task_payload.get("window_group_id"),
+            "phase": window_phase,
+            "index": task_payload.get("window_index"),
+            "count": task_payload.get("window_count"),
+            "event_start_sequence": event_start_sequence,
+            "event_end_sequence": event_end_sequence,
+            "estimated_material_chars": int(
+                task_payload.get("estimated_material_chars") or 0
+            ),
+            "all_windows_form_complete_event_coverage": True,
+        }
+    if window_phase == "FIELDS":
+        input_payload["window_policy"] = (
+            "只判断本窗口；SUPPORTED 表示本窗口首次候选，"
+            "INSUFFICIENT_EVIDENCE 表示本窗口未发现。"
+            "desire_conflicts 必须返回空数组，程序按全书窗口顺序选择最早候选。"
+        )
+    elif window_phase == "CONFLICTS":
+        input_payload["accepted_character_fields"] = accepted_fields
+        input_payload["window_policy"] = (
+            "六项字段已由程序跨全部字段窗口确定；"
+            "本次只返回当前窗口内真实发生且付出具体代价的欲望冲突。"
+        )
     if repair_mode:
         input_payload["repair_request"] = {
             "components": repair_components,
             "accepted_fields": list(
-                task_payload.get("accepted_character_fields") or []
+                accepted_fields
             ),
             "accepted_desire_conflicts": list(
                 task_payload.get("accepted_desire_conflicts") or []
@@ -1833,8 +2004,8 @@ def provider_payload_for_character_design(
     context_manifest = {
         "source_chapter_count": len(chapter_units),
         "protagonist_event_count": len(events),
-        "included_event_count": len(events),
-        "event_coverage_complete": True,
+        "included_event_count": len(selected_events),
+        "event_coverage_complete": window_phase == "LEGACY",
         "evidence_span_count": len(evidence_catalog),
         "decision_support_limit": CHARACTER_DESIGN_EVENT_SUPPORT_LIMIT,
         "first_display_support_limit": (
@@ -1857,12 +2028,20 @@ def provider_payload_for_character_design(
         ),
         "repair_mode": repair_mode,
         "repair_components": repair_components,
+        "window_phase": window_phase,
+        "window_group_id": task_payload.get("window_group_id"),
+        "window_index": task_payload.get("window_index"),
+        "window_count": task_payload.get("window_count"),
+        "event_start_sequence": event_start_sequence,
+        "event_end_sequence": event_end_sequence,
         "accepted_field_count": len(
             task_payload.get("accepted_character_fields") or []
         ),
     }
     output_model: type[BaseModel]
-    if repair_mode and repair_conflicts:
+    if window_phase == "CONFLICTS" or (
+        repair_mode and repair_conflicts
+    ):
         output_model = CharacterDesignConflictRepairOutput
     elif repair_mode:
         output_model = CharacterDesignFieldRepairOutput
@@ -2426,6 +2605,36 @@ def reconcile_character_design_response(
         *CHARACTER_DESIGN_FIELDS,
         "desire_conflicts",
     }
+    window_phase = str(task_payload.get("window_phase") or "LEGACY")
+    event_start_sequence = int(
+        task_payload.get("event_start_sequence") or 1
+    )
+    event_end_sequence = int(
+        task_payload.get("event_end_sequence") or _covered_event_count
+    )
+    event_sequence_by_id = {
+        str(event.get("id") or ""): sequence_no
+        for sequence_no, event in enumerate(
+            _protagonist_events(projection, protagonist_name),
+            start=1,
+        )
+    }
+
+    def validate_conflict_window(
+        conflicts: list[DesireConflictEvidence],
+    ) -> None:
+        if any(
+            (
+                event_sequence_by_id.get(item.event_id) is None
+                or event_sequence_by_id[item.event_id] < event_start_sequence
+                or event_sequence_by_id[item.event_id] > event_end_sequence
+            )
+            for item in conflicts
+        ):
+            raise ValueError(
+                "CHARACTER_DESIGN_WINDOW_CONFLICT_REFERENCE_INVALID"
+            )
+
     repair_raw = task_payload.get("repair_character_components")
     if isinstance(repair_raw, list):
         requested_components = [
@@ -2433,6 +2642,10 @@ def reconcile_character_design_response(
             for item in repair_raw
             if str(item) in allowed_components
         ]
+    elif window_phase == "FIELDS":
+        requested_components = list(CHARACTER_DESIGN_FIELDS)
+    elif window_phase == "CONFLICTS":
+        requested_components = ["desire_conflicts"]
     else:
         requested_components = [
             *CHARACTER_DESIGN_FIELDS,
@@ -2493,6 +2706,20 @@ def reconcile_character_design_response(
             index, raw = candidates[0]
             try:
                 field = CharacterDesignFieldEvidence.model_validate(raw)
+                selected_sequence = event_sequence_by_id.get(
+                    str(field.first_display_event_id or "")
+                )
+                if (
+                    field.status == "SUPPORTED"
+                    and (
+                        selected_sequence is None
+                        or selected_sequence < event_start_sequence
+                        or selected_sequence > event_end_sequence
+                    )
+                ):
+                    raise ValueError(
+                        "CHARACTER_DESIGN_WINDOW_EVENT_REFERENCE_INVALID"
+                    )
                 accepted[field_name] = _validate_character_design_field(
                     field,
                     protagonist_name=protagonist_name,
@@ -2570,6 +2797,7 @@ def reconcile_character_design_response(
                 evidence_chapter_by_id=evidence_chapter_by_id,
                 evidence_text_by_id=evidence_text_by_id,
             )
+            validate_conflict_window(accepted_conflicts)
             conflicts_accepted = True
             conflicts_attempt_id = str(
                 task_payload.get(
@@ -2600,6 +2828,7 @@ def reconcile_character_design_response(
                 evidence_chapter_by_id=evidence_chapter_by_id,
                 evidence_text_by_id=evidence_text_by_id,
             )
+            validate_conflict_window(accepted_conflicts)
             conflicts_accepted = True
             conflicts_attempt_id = pending_conflicts_attempt_id
             pending_conflicts = None
@@ -2641,6 +2870,7 @@ def reconcile_character_design_response(
                     evidence_chapter_by_id=evidence_chapter_by_id,
                     evidence_text_by_id=evidence_text_by_id,
                 )
+                validate_conflict_window(accepted_conflicts)
                 conflicts_accepted = True
                 conflicts_attempt_id = attempt_id
             except CharacterDesignValidationError as exc:
@@ -2652,11 +2882,17 @@ def reconcile_character_design_response(
                     "message": str(exc),
                 })
 
-    repair_components = (
-        missing_fields
-        if missing_fields
-        else ([] if conflicts_accepted else ["desire_conflicts"])
-    )
+    if window_phase == "FIELDS":
+        repair_components = missing_fields
+        accepted_conflicts = []
+        conflicts_accepted = True
+        conflicts_attempt_id = None
+    else:
+        repair_components = (
+            missing_fields
+            if missing_fields
+            else ([] if conflicts_accepted else ["desire_conflicts"])
+        )
     accepted_fields = [
         accepted[field_name].model_dump(mode="json")
         for field_name in CHARACTER_DESIGN_FIELDS
@@ -2698,20 +2934,157 @@ def reconcile_character_design_response(
     )
 
 
+def _enqueue_character_design_window_tasks(
+    session: Session,
+    settings: Settings,
+    *,
+    run: AnalysisRun,
+    fingerprint: str,
+    window_group_id: str,
+    window_phase: Literal["FIELDS", "CONFLICTS"],
+    windows: list[dict[str, int]],
+    accepted_fields: list[dict[str, object]] | None = None,
+    accepted_field_attempt_ids: dict[str, str] | None = None,
+) -> list[Task]:
+    _service, profile = resolve_analysis_profile(
+        settings,
+        ENTITIES_EVENTS_PROFILE_ID,
+    )
+    next_index = max(
+        (link.batch_index for link in run.task_links),
+        default=run.total_batches,
+    ) + 1
+    created_tasks: list[Task] = []
+    for offset, window in enumerate(windows):
+        base_payload: dict[str, object] = {
+            "run_id": run.id,
+            "source_version_id": run.source_version_id,
+            "source_fingerprint": fingerprint,
+            "question_id": CHARACTER_DESIGN_QUESTION_ID,
+            "provider_name": "openai",
+            "model_profile_id": profile.id,
+            "window_group_id": window_group_id,
+            "window_phase": window_phase,
+            "window_index": offset + 1,
+            "window_count": len(windows),
+            "event_start_sequence": window["event_start_sequence"],
+            "event_end_sequence": window["event_end_sequence"],
+            "estimated_material_chars": window["estimated_material_chars"],
+            "analysis_policy": "ALL_PROTAGONIST_EVENTS_WINDOWED",
+        }
+        if window_phase == "CONFLICTS":
+            base_payload.update({
+                "accepted_character_fields": accepted_fields or [],
+                "accepted_character_field_attempt_ids": (
+                    accepted_field_attempt_ids or {}
+                ),
+                "repair_character_components": ["desire_conflicts"],
+            })
+        task_payload, max_attempts = prepare_task_provider_routes(
+            settings,
+            base_payload,
+            profile.max_retries + 1,
+        )
+        task = Task(
+            project_id=run.source_version.document.project_id,
+            kind=CHARACTER_DESIGN_TASK_KIND,
+            payload_json=json.dumps(
+                task_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            max_attempts=max_attempts,
+        )
+        session.add(task)
+        session.flush()
+        session.add(AnalysisRunTask(
+            run_id=run.id,
+            task_id=task.id,
+            batch_index=next_index + offset,
+        ))
+        created_tasks.append(task)
+    run.total_batches = next_index + len(created_tasks) - 1
+    run.status = AnalysisRunStatus.PENDING.value
+    return created_tasks
+
+
+def _character_design_window_ledgers(
+    session: Session,
+    *,
+    run_id: str,
+    fingerprint: str,
+    window_group_id: str,
+    window_phase: Literal["FIELDS", "CONFLICTS"],
+) -> list[LearningQuestionEvidence]:
+    marker = "f" if window_phase == "FIELDS" else "c"
+    prefix = f"2.2{marker}-{window_group_id}-"
+    return list(session.scalars(
+        select(LearningQuestionEvidence)
+        .where(
+            LearningQuestionEvidence.run_id == run_id,
+            LearningQuestionEvidence.source_fingerprint == fingerprint,
+            LearningQuestionEvidence.prompt_version
+            == CHARACTER_DESIGN_PROMPT_VERSION,
+            LearningQuestionEvidence.question_id.like(f"{prefix}%"),
+        )
+        .order_by(LearningQuestionEvidence.question_id)
+    ))
+
+
+def _merged_character_design_fields(
+    field_payloads: list[dict[str, object]],
+) -> tuple[
+    list[CharacterDesignFieldEvidence],
+    dict[str, str],
+]:
+    selected: dict[str, CharacterDesignFieldEvidence] = {}
+    selected_attempt_ids: dict[str, str] = {}
+    for payload in field_payloads:
+        for raw in payload.get("fields", []):
+            if not isinstance(raw, dict):
+                continue
+            item = CharacterDesignFieldEvidence.model_validate(raw)
+            current = selected.get(item.field)
+            if current is not None and current.status == "SUPPORTED":
+                continue
+            if item.status == "SUPPORTED" or current is None:
+                selected[item.field] = item
+                attempt_id = str(raw.get("created_by_attempt_id") or "")
+                if attempt_id:
+                    selected_attempt_ids[item.field] = attempt_id
+    merged: list[CharacterDesignFieldEvidence] = []
+    for field_name in CHARACTER_DESIGN_FIELDS:
+        item = selected.get(field_name)
+        if item is None or item.status != "SUPPORTED":
+            item = CharacterDesignFieldEvidence(
+                field=field_name,
+                status="INSUFFICIENT_EVIDENCE",
+                explanation=(
+                    "程序已连续核对全部主角事件窗口，"
+                    "当前成书原文不足以确定该项首次行动证据。"
+                ),
+            )
+            selected_attempt_ids.pop(field_name, None)
+        merged.append(item)
+    return merged, selected_attempt_ids
+
+
 def persist_character_design_evidence(
     session: Session,
     *,
+    settings: Settings | None = None,
     task: Task,
     attempt_id: str,
     task_payload: dict,
     output: CharacterDesignEvidenceOutput,
 ) -> LearningQuestionEvidence:
+    window_phase = str(task_payload.get("window_phase") or "LEGACY")
     existing = session.scalar(
         select(LearningQuestionEvidence).where(
             LearningQuestionEvidence.created_by_task_id == task.id
         )
     )
-    if existing is not None:
+    if existing is not None and window_phase == "LEGACY":
         return existing
     run = session.get(AnalysisRun, task_payload.get("run_id"))
     version = session.get(SourceVersion, task_payload.get("source_version_id"))
@@ -2740,6 +3113,301 @@ def persist_character_design_evidence(
         evidence_chapter_by_id,
         evidence_text_by_id,
     )
+    if window_phase in {"FIELDS", "CONFLICTS"}:
+        window_group_id = str(
+            task_payload.get("window_group_id") or ""
+        )
+        window_index = int(task_payload.get("window_index") or 0)
+        window_count = int(task_payload.get("window_count") or 0)
+        event_start_sequence = int(
+            task_payload.get("event_start_sequence") or 0
+        )
+        event_end_sequence = int(
+            task_payload.get("event_end_sequence") or 0
+        )
+        if (
+            not re.fullmatch(r"[a-f0-9]{8}", window_group_id)
+            or window_index < 1
+            or window_count < 1
+            or window_index > window_count
+            or event_start_sequence < 1
+            or event_end_sequence < event_start_sequence
+            or event_end_sequence > covered_event_count
+        ):
+            raise ValueError("CHARACTER_DESIGN_WINDOW_INVALID")
+        marker = "f" if window_phase == "FIELDS" else "c"
+        internal_payload = {
+            "window_group_id": window_group_id,
+            "window_phase": window_phase,
+            "window_index": window_index,
+            "window_count": window_count,
+            "event_start_sequence": event_start_sequence,
+            "event_end_sequence": event_end_sequence,
+            "fields": output.model_dump(mode="json")["fields"],
+            "desire_conflicts": output.model_dump(mode="json")[
+                "desire_conflicts"
+            ],
+        }
+        field_attempt_ids = {
+            str(key): str(value)
+            for key, value in (
+                task_payload.get(
+                    "accepted_character_field_attempt_ids"
+                ) or {}
+            ).items()
+            if value
+        }
+        for item in internal_payload["fields"]:
+            item["created_by_attempt_id"] = field_attempt_ids.get(
+                str(item["field"]),
+                attempt_id,
+            )
+        conflict_attempt_id = str(
+            task_payload.get(
+                "accepted_desire_conflicts_attempt_id"
+            )
+            or attempt_id
+        )
+        for item in internal_payload["desire_conflicts"]:
+            item["created_by_attempt_id"] = conflict_attempt_id
+        if existing is None:
+            existing = LearningQuestionEvidence(
+                run_id=run.id,
+                source_version_id=version.id,
+                question_id=(
+                    f"2.2{marker}-{window_group_id}-{window_index:03d}"
+                ),
+                revision_no=1,
+                source_fingerprint=fingerprint,
+                payload_json=json.dumps(
+                    internal_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                prompt_id=CHARACTER_DESIGN_PROMPT_ID,
+                prompt_version=CHARACTER_DESIGN_PROMPT_VERSION,
+                created_by_task_id=task.id,
+                created_by_attempt_id=attempt_id,
+            )
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+
+        phase_ledgers = _character_design_window_ledgers(
+            session,
+            run_id=run.id,
+            fingerprint=fingerprint,
+            window_group_id=window_group_id,
+            window_phase=window_phase,
+        )
+        if len(phase_ledgers) < window_count:
+            return existing
+        if len(phase_ledgers) != window_count:
+            raise ValueError("CHARACTER_DESIGN_WINDOW_COUNT_INVALID")
+        phase_payloads = [
+            json.loads(item.payload_json) for item in phase_ledgers
+        ]
+        if [
+            int(item.get("window_index") or 0)
+            for item in phase_payloads
+        ] != list(range(1, window_count + 1)):
+            raise ValueError("CHARACTER_DESIGN_WINDOW_COVERAGE_INVALID")
+        if (
+            int(phase_payloads[0].get("event_start_sequence") or 0)
+            != 1
+            or int(
+                phase_payloads[-1].get("event_end_sequence") or 0
+            )
+            != covered_event_count
+            or any(
+                int(current.get("event_end_sequence") or 0) + 1
+                != int(following.get("event_start_sequence") or 0)
+                for current, following in zip(
+                    phase_payloads,
+                    phase_payloads[1:],
+                )
+            )
+        ):
+            raise ValueError(
+                "CHARACTER_DESIGN_FULL_EVENT_COVERAGE_INVALID"
+            )
+
+        field_ledgers = _character_design_window_ledgers(
+            session,
+            run_id=run.id,
+            fingerprint=fingerprint,
+            window_group_id=window_group_id,
+            window_phase="FIELDS",
+        )
+        if len(field_ledgers) != window_count:
+            raise ValueError("CHARACTER_DESIGN_FIELD_WINDOWS_INCOMPLETE")
+        field_payloads = [
+            json.loads(item.payload_json) for item in field_ledgers
+        ]
+        merged_fields, merged_field_attempt_ids = (
+            _merged_character_design_fields(field_payloads)
+        )
+        if window_phase == "FIELDS":
+            field_by_name = {
+                item.field: item for item in merged_fields
+            }
+            can_scan_conflicts = all(
+                field_by_name[name].status == "SUPPORTED"
+                for name in ("surface_desire", "deep_desire")
+            )
+            if can_scan_conflicts:
+                if settings is None:
+                    raise ValueError(
+                        "CHARACTER_DESIGN_SETTINGS_REQUIRED"
+                    )
+                conflict_ledgers = _character_design_window_ledgers(
+                    session,
+                    run_id=run.id,
+                    fingerprint=fingerprint,
+                    window_group_id=window_group_id,
+                    window_phase="CONFLICTS",
+                )
+                active_character_tasks = list(session.scalars(
+                    select(Task)
+                    .join(
+                        AnalysisRunTask,
+                        AnalysisRunTask.task_id == Task.id,
+                    )
+                    .where(
+                        AnalysisRunTask.run_id == run.id,
+                        Task.kind == CHARACTER_DESIGN_TASK_KIND,
+                        Task.status.in_((
+                            TaskStatus.PENDING.value,
+                            TaskStatus.RUNNING.value,
+                            TaskStatus.RETRY_WAIT.value,
+                            TaskStatus.WAITING_CONFIRMATION.value,
+                        )),
+                    )
+                    .order_by(AnalysisRunTask.batch_index)
+                ))
+                active_conflict_task = next(
+                    (
+                        candidate
+                        for candidate in active_character_tasks
+                        if (
+                            json.loads(
+                                candidate.payload_json
+                            ).get("window_group_id")
+                            == window_group_id
+                            and json.loads(
+                                candidate.payload_json
+                            ).get("window_phase")
+                            == "CONFLICTS"
+                        )
+                    ),
+                    None,
+                )
+                if (
+                    not conflict_ledgers
+                    and active_conflict_task is None
+                ):
+                    windows = [
+                        {
+                            "event_start_sequence": int(
+                                item["event_start_sequence"]
+                            ),
+                            "event_end_sequence": int(
+                                item["event_end_sequence"]
+                            ),
+                            "estimated_material_chars": int(
+                                item.get(
+                                    "estimated_material_chars",
+                                    0,
+                                )
+                            ),
+                        }
+                        for item in phase_payloads
+                    ]
+                    _enqueue_character_design_window_tasks(
+                        session,
+                        settings,
+                        run=run,
+                        fingerprint=fingerprint,
+                        window_group_id=window_group_id,
+                        window_phase="CONFLICTS",
+                        windows=windows,
+                        accepted_fields=[
+                            item.model_dump(mode="json")
+                            for item in merged_fields
+                        ],
+                        accepted_field_attempt_ids=(
+                            merged_field_attempt_ids
+                        ),
+                    )
+                    session.commit()
+                return existing
+            output = CharacterDesignEvidenceOutput(
+                protagonist=_protagonist(projection)[0],
+                fields=merged_fields,
+                desire_conflicts=[],
+                arc_summary="最终弧光总结由程序编译。",
+            )
+            task_payload = {
+                **task_payload,
+                "accepted_character_field_attempt_ids": (
+                    merged_field_attempt_ids
+                ),
+                "character_design_field_window_count": window_count,
+                "character_design_conflict_window_count": 0,
+                "character_design_window_group_id": window_group_id,
+            }
+        else:
+            event_sequence_by_id = {
+                str(event.get("id") or ""): sequence_no
+                for sequence_no, event in enumerate(
+                    _protagonist_events(
+                        projection,
+                        _protagonist(projection)[0],
+                    ),
+                    start=1,
+                )
+            }
+            merged_conflicts: list[DesireConflictEvidence] = []
+            conflict_attempt_ids: dict[str, str] = {}
+            seen_conflict_events: set[str] = set()
+            for payload in phase_payloads:
+                for raw in payload.get("desire_conflicts", []):
+                    if not isinstance(raw, dict):
+                        continue
+                    item = DesireConflictEvidence.model_validate(raw)
+                    if item.event_id in seen_conflict_events:
+                        continue
+                    seen_conflict_events.add(item.event_id)
+                    merged_conflicts.append(item)
+                    source_attempt_id = str(
+                        raw.get("created_by_attempt_id") or ""
+                    )
+                    if source_attempt_id:
+                        conflict_attempt_ids[item.event_id] = (
+                            source_attempt_id
+                        )
+            merged_conflicts.sort(
+                key=lambda item: (
+                    event_sequence_by_id.get(item.event_id, 10**9),
+                    item.event_id,
+                )
+            )
+            output = CharacterDesignEvidenceOutput(
+                protagonist=_protagonist(projection)[0],
+                fields=merged_fields,
+                desire_conflicts=merged_conflicts,
+                arc_summary="最终弧光总结由程序编译。",
+            )
+            task_payload = {
+                **task_payload,
+                "accepted_character_field_attempt_ids": (
+                    merged_field_attempt_ids
+                ),
+                "desire_conflict_attempt_ids": conflict_attempt_ids,
+                "character_design_field_window_count": window_count,
+                "character_design_conflict_window_count": window_count,
+                "character_design_window_group_id": window_group_id,
+            }
     for item in output.fields:
         item.explanation = _compiled_field_explanation(item)
     output.arc_summary = _compiled_arc_summary(
@@ -2763,6 +3431,13 @@ def persist_character_design_evidence(
         task_payload.get("accepted_desire_conflicts_attempt_id")
         or attempt_id
     )
+    conflict_attempt_ids = {
+        str(key): str(value)
+        for key, value in (
+            task_payload.get("desire_conflict_attempt_ids") or {}
+        ).items()
+        if value
+    }
     for item in payload["desire_conflicts"]:
         item["evidence_ids"] = list(dict.fromkeys([
             *item["motive_evidence_ids"],
@@ -2770,12 +3445,31 @@ def persist_character_design_evidence(
             *item["result_evidence_ids"],
             *item["sacrifice_evidence_ids"],
         ]))
-        item["created_by_attempt_id"] = conflict_attempt_id
+        item["created_by_attempt_id"] = conflict_attempt_ids.get(
+            str(item["event_id"]),
+            conflict_attempt_id,
+        )
     payload["coverage"] = {
         "source_chapter_count": len(projection.get("chapters", [])),
         "protagonist_event_count": covered_event_count,
         "covered_event_count": covered_event_count,
         "event_coverage_complete": True,
+        "event_coverage_policy": (
+            "ALL_PROTAGONIST_EVENTS_WINDOWED"
+            if task_payload.get("character_design_window_group_id")
+            else "ALL_PROTAGONIST_EVENTS_SINGLE_REQUEST"
+        ),
+        "window_group_id": task_payload.get(
+            "character_design_window_group_id"
+        ),
+        "field_window_count": int(
+            task_payload.get("character_design_field_window_count") or 1
+        ),
+        "conflict_window_count": int(
+            task_payload.get(
+                "character_design_conflict_window_count"
+            ) or 1
+        ),
         "first_30_chapter_event_count": sum(
             1
             for event in _protagonist_events(
@@ -2794,19 +3488,31 @@ def persist_character_design_evidence(
             LearningQuestionEvidence.question_id == CHARACTER_DESIGN_QUESTION_ID,
         )
     ) or 0) + 1
-    ledger = LearningQuestionEvidence(
-        run_id=run.id,
-        source_version_id=version.id,
-        question_id=CHARACTER_DESIGN_QUESTION_ID,
-        revision_no=revision_no,
-        source_fingerprint=fingerprint,
-        payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        prompt_id=CHARACTER_DESIGN_PROMPT_ID,
-        prompt_version=CHARACTER_DESIGN_PROMPT_VERSION,
-        created_by_task_id=task.id,
-        created_by_attempt_id=attempt_id,
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
     )
-    session.add(ledger)
+    if window_phase in {"FIELDS", "CONFLICTS"} and existing is not None:
+        ledger = existing
+        ledger.question_id = CHARACTER_DESIGN_QUESTION_ID
+        ledger.revision_no = revision_no
+        ledger.payload_json = payload_json
+        ledger.created_by_attempt_id = attempt_id
+    else:
+        ledger = LearningQuestionEvidence(
+            run_id=run.id,
+            source_version_id=version.id,
+            question_id=CHARACTER_DESIGN_QUESTION_ID,
+            revision_no=revision_no,
+            source_fingerprint=fingerprint,
+            payload_json=payload_json,
+            prompt_id=CHARACTER_DESIGN_PROMPT_ID,
+            prompt_version=CHARACTER_DESIGN_PROMPT_VERSION,
+            created_by_task_id=task.id,
+            created_by_attempt_id=attempt_id,
+        )
+        session.add(ledger)
     session.commit()
     session.refresh(ledger)
     return ledger
@@ -2922,39 +3628,45 @@ def enqueue_character_design_evidence(
         )
     except ModelSettingsError:
         return None
-    task_payload, max_attempts = prepare_task_provider_routes(
-        settings,
-        {
-            "run_id": run.id,
-            "source_version_id": run.source_version_id,
-            "source_fingerprint": fingerprint,
-            "question_id": CHARACTER_DESIGN_QUESTION_ID,
-            "provider_name": "openai",
-            "model_profile_id": profile.id,
-        },
-        profile.max_retries + 1,
+    events = _protagonist_events(projection, protagonist_name)
+    if not events:
+        return None
+    (
+        support_by_event_id,
+        evidence_by_id,
+        _first_display_guardrails,
+    ) = _event_support_evidence(
+        session,
+        run.source_version_id,
+        events,
     )
-    task = Task(
-        project_id=run.source_version.document.project_id,
-        kind=CHARACTER_DESIGN_TASK_KIND,
-        payload_json=json.dumps(task_payload, ensure_ascii=False, sort_keys=True),
-        max_attempts=max_attempts,
-    )
-    session.add(task)
-    session.flush()
-    next_index = max(
-        (link.batch_index for link in run.task_links),
-        default=run.total_batches,
-    ) + 1
-    session.add(
-        AnalysisRunTask(
-            run_id=run.id,
-            task_id=task.id,
-            batch_index=next_index,
+    compact_events = [
+        _compact_event(
+            event,
+            support_by_event_id.get(str(event.get("id") or ""), []),
+            sequence_no=sequence_no,
         )
+        for sequence_no, event in enumerate(events, start=1)
+    ]
+    windows = _window_specs(
+        compact_events,
+        {
+            evidence_id: evidence.text_snapshot
+            for evidence_id, evidence in evidence_by_id.items()
+        },
+        input_char_budget=_request_budget_chars(profile),
     )
-    run.total_batches = next_index
-    run.status = AnalysisRunStatus.PENDING.value
+    if not windows:
+        return None
+    created_tasks = _enqueue_character_design_window_tasks(
+        session,
+        settings,
+        run=run,
+        fingerprint=fingerprint,
+        window_group_id=uuid.uuid4().hex[:8],
+        window_phase="FIELDS",
+        windows=windows,
+    )
     session.commit()
-    session.refresh(task)
-    return task
+    session.refresh(created_tasks[0])
+    return created_tasks[0]

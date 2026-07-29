@@ -37,7 +37,7 @@ from .source_import import source_text
 
 LEARNING_REPORT_TASK_KIND = "analysis.learning_report"
 LEARNING_REPORT_PROMPT_ID = "learning_report"
-LEARNING_REPORT_PROMPT_VERSION = "1.5.5"
+LEARNING_REPORT_PROMPT_VERSION = "1.6.0"
 LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.4.2",
     "1.4.3",
@@ -47,12 +47,13 @@ LEARNING_REPORT_COMPATIBLE_PROMPT_VERSIONS = frozenset({
     "1.5.3",
     "1.5.4",
     "1.5.5",
+    "1.6.0",
 })
 LEARNING_QUESTION_CATALOG_VERSION = "1.3.0"
 LEARNING_REPORT_BATCH_LABEL = "首组逐问增量编译（5/42）"
 LEARNING_ANSWER_DEFAULT_SOFT_INPUT_CAP_TOKENS = 150_000
 LEARNING_ANSWER_ESTIMATED_CHARS_PER_TOKEN = 1.5
-OPENING_PAYOFF_CANDIDATE_LIMIT = 200
+OPENING_PAYOFF_MAX_WINDOW_CANDIDATES = 200
 
 _UNSUPPORTED_EXTERNAL_CAUSALITY = re.compile(
     r"(?:导致|造成|带来|提升|提高|降低|减少|增加|推动|引发|"
@@ -154,7 +155,7 @@ _CHAPTER_END_HOOK_STRENGTH_LABELS = {
     "NONE": ("NONE", "无钩"),
 }
 LEARNING_QUESTION_CONTRACT_VERSIONS = {
-    "1.4": "2.3.0",
+    "1.4": "2.4.0",
     "2.1": "2.0.0",
     "2.2": "2.1.0",
     "4.9": "2.0.0",
@@ -753,7 +754,7 @@ class LearningContractClassificationProposal(BaseModel):
 class LearningPayoffClassificationProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sequence_no: int = Field(ge=1, le=OPENING_PAYOFF_CANDIDATE_LIMIT)
+    sequence_no: int = Field(ge=1)
     matched_facet_ids: list[Literal["F1", "F2", "F3"]] = Field(
         default_factory=list,
         max_length=3,
@@ -787,7 +788,7 @@ class LearningContractItemProposal(BaseModel):
     )
     payoff_classifications: list[LearningPayoffClassificationProposal] = Field(
         default_factory=list,
-        max_length=OPENING_PAYOFF_CANDIDATE_LIMIT,
+        max_length=OPENING_PAYOFF_MAX_WINDOW_CANDIDATES,
     )
 
 
@@ -1149,6 +1150,9 @@ def _opening_payoff_candidate_artifact(
     evidence_by_id: dict[str, EvidenceSpan],
     chapter_by_unit_id: dict[str, dict[str, object]],
     opening_promise_sources: dict[str, object],
+    *,
+    candidate_start_sequence: int = 1,
+    candidate_limit: int | None = OPENING_PAYOFF_MAX_WINDOW_CANDIDATES,
 ) -> dict[str, object]:
     description_evidence_ids = {
         str(evidence_id)
@@ -1185,7 +1189,14 @@ def _opening_payoff_candidate_artifact(
             evidence,
         ))
     sortable_events.sort(key=lambda item: item[:3])
-    selected_events = sortable_events[:OPENING_PAYOFF_CANDIDATE_LIMIT]
+    candidate_start_sequence = max(1, candidate_start_sequence)
+    selection_start = candidate_start_sequence - 1
+    selection_end = (
+        None
+        if candidate_limit is None
+        else selection_start + max(0, candidate_limit)
+    )
+    selected_events = sortable_events[selection_start:selection_end]
     candidates: list[dict[str, object]] = []
     for sequence_no, (
         event_chapter,
@@ -1193,7 +1204,10 @@ def _opening_payoff_candidate_artifact(
         event_id,
         event,
         evidence,
-    ) in enumerate(selected_events, start=1):
+    ) in enumerate(
+        selected_events,
+        start=candidate_start_sequence,
+    ):
         evidence_options: list[dict[str, object]] = []
         for evidence_no, item in enumerate(evidence[:16], start=1):
             chapter = chapter_by_unit_id.get(item.source_unit_id, {})
@@ -1271,10 +1285,17 @@ def _opening_payoff_candidate_artifact(
         "coverage": {
             "source_event_count": len(sortable_events),
             "candidate_count": len(candidates),
-            "candidate_limit": OPENING_PAYOFF_CANDIDATE_LIMIT,
+            "candidate_start_sequence": candidate_start_sequence,
+            "candidate_end_sequence": (
+                candidate_start_sequence + len(candidates) - 1
+                if candidates
+                else candidate_start_sequence - 1
+            ),
+            "candidate_limit": candidate_limit,
             "source_sequence_contiguous": True,
             "all_source_events_in_window": (
-                len(sortable_events) <= OPENING_PAYOFF_CANDIDATE_LIMIT
+                selection_start == 0
+                and len(candidates) == len(sortable_events)
             ),
         },
         "candidates": candidates,
@@ -1666,6 +1687,38 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         selling_point_gaps.append("故事前提没有原文依据。")
     if not opening_events:
         selling_point_gaps.append("前三章没有带原文依据的开篇事件，无法定位首次兑现。")
+    opening_payoff_candidates = (
+        projection.get("opening_payoff_candidates_evidence") or {}
+    )
+    payoff_coverage = (
+        opening_payoff_candidates.get("coverage", {})
+        if isinstance(opening_payoff_candidates, dict)
+        else {}
+    )
+    payoff_selected = (
+        opening_payoff_candidates.get("selected")
+        if isinstance(opening_payoff_candidates, dict)
+        else None
+    )
+    payoff_projection_present = (
+        "opening_payoff_candidates_status" in projection
+        or "opening_payoff_candidates_evidence" in projection
+    )
+    if payoff_projection_present:
+        if not opening_payoff_candidates:
+            selling_point_gaps.append(
+                "卖点首次兑现连续候选账本尚未生成。"
+            )
+        elif opening_payoff_candidates.get("is_current") is False:
+            selling_point_gaps.append(
+                "卖点首次兑现连续候选账本已经过期。"
+            )
+        elif not payoff_selected and not payoff_coverage.get(
+            "all_source_events_scanned"
+        ):
+            selling_point_gaps.append(
+                "卖点首次兑现候选尚未连续扫描到首次完整兑现或全书末尾。"
+            )
     checks: dict[str, dict[str, object]] = {}
     checks["1.4"] = _readiness_check(
         "1.4",
@@ -1674,6 +1727,13 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "chapter_count": chapter_count,
             "opening_event_count": len(opening_events),
             "overview_evidence_count": len(overview.get("evidence_ids", [])),
+            "payoff_candidate_count": int(
+                payoff_coverage.get("source_event_count") or 0
+            ),
+            "payoff_scanned_candidate_count": int(
+                payoff_coverage.get("scanned_candidate_count") or 0
+            ),
+            "payoff_found": bool(payoff_selected),
         },
         gaps=(
             selling_point_gaps
@@ -1687,6 +1747,7 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         source_material={
             "story_overview": overview,
             "opening_events": opening_events,
+            "opening_payoff_candidates": opening_payoff_candidates,
         },
     )
 
@@ -2178,11 +2239,6 @@ def provider_payload_for_learning_report(
         "story_overview": projection.get("story_overview"),
         "characters": projection.get("characters", []),
         "materials": [item for _priority, _kind, item in source_materials],
-        "opening_payoff_events": (
-            projection.get("events", [])
-            if requested_question_ids == ("1.4",)
-            else []
-        ),
     })
     evidence_by_id = {
         item.id: item
@@ -2261,15 +2317,51 @@ def provider_payload_for_learning_report(
     if question_id == "1.4":
         if opening_promise_sources is None:
             raise ValueError("LEARNING_REPORT_1_4_PROMISE_SOURCE_MISSING")
-        fixed_input["program_artifacts"] = {
-            "opening_payoff_candidate_ledger": (
-                _opening_payoff_candidate_artifact(
-                    projection,
-                    evidence_by_id,
-                    chapter_by_unit_id,
-                    opening_promise_sources,
+        payoff_ledger = (
+            projection.get("opening_payoff_candidates_evidence") or {}
+        )
+        if (
+            not isinstance(payoff_ledger, dict)
+            or payoff_ledger.get("is_current") is False
+            or not payoff_ledger.get("coverage")
+        ):
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_LEDGER_NOT_READY"
+            )
+        payoff_rows = [
+            item
+            for item in payoff_ledger.get("classifications", [])
+            if isinstance(item, dict)
+        ]
+        selected_payoff = payoff_ledger.get("selected")
+        selected_sequence = int(
+            (selected_payoff or {}).get("sequence_no") or 0
+        )
+        representative_rows = [
+            item
+            for item in payoff_rows
+            if (
+                int(item.get("chapter_ordinal") or 0) <= 3
+                or (
+                    selected_sequence > 0
+                    and selected_sequence - 3
+                    <= int(item.get("sequence_no") or 0)
+                    <= selected_sequence
                 )
-            ),
+            )
+        ]
+        fixed_input["program_artifacts"] = {
+            "opening_payoff_candidate_ledger": {
+                "coverage": payoff_ledger["coverage"],
+                "selected": selected_payoff,
+                "representative_classifications": (
+                    representative_rows[:24]
+                ),
+                "program_policy": (
+                    "专项已按全书事件顺序连续分窗；"
+                    "用户答案不得重做分类或改选位置。"
+                ),
+            },
         }
     if question_id == "2.1":
         opening_character_artifact = _opening_character_program_artifact(projection)
@@ -2629,28 +2721,6 @@ def parse_learning_report(
                         ],
                         "type": "value_error",
                         "message": "没有同口径多书数据时不得生成同类书卖点对比。",
-                    }],
-                )
-            payoff_item = item_by_id["first_payoff_location"]
-            if (
-                payoff_item.status != "SUPPORTED"
-                or not payoff_item.payoff_classifications
-            ):
-                raise LearningReportValidationError(
-                    "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATIONS_MISSING",
-                    [{
-                        "path": [
-                            "answers",
-                            answer.question_id,
-                            "contract_items",
-                            "first_payoff_location",
-                            "payoff_classifications",
-                        ],
-                        "type": "value_error",
-                        "message": (
-                            "1.4 必须从第 1 个候选起连续返回兑现要素分类，"
-                            "由程序决定第一条完整兑现。"
-                        ),
                     }],
                 )
         if answer.question_id == "2.2":
@@ -3257,6 +3327,11 @@ def _program_1_4_promise_sources(
     opening_metric_evidence = set(
         metrics["opening_chapters"].evidence_ids
     )
+    known_opening_metric_evidence = opening_metric_evidence.intersection(
+        first_three_evidence
+        | description_evidence
+        | overview_evidence
+    )
     authoritative_opening_evidence = {
         str(row.get("anchor_evidence_id") or "")
         for row in opening_promise_rows
@@ -3266,14 +3341,19 @@ def _program_1_4_promise_sources(
         not opening_promise_rows
         or not authoritative_opening_evidence
         or not opening_metric_evidence
-        or not opening_metric_evidence.issubset(
-            first_three_evidence
-        )
-        or not opening_metric_evidence.intersection(
-            first_three_body_evidence
-        )
-        or not opening_metric_evidence.intersection(
-            authoritative_opening_evidence
+        or (
+            known_opening_metric_evidence
+            and (
+                not known_opening_metric_evidence.issubset(
+                    first_three_evidence
+                )
+                or not known_opening_metric_evidence.intersection(
+                    first_three_body_evidence
+                )
+                or not known_opening_metric_evidence.intersection(
+                    authoritative_opening_evidence
+                )
+            )
         )
     ):
         raise ValueError(
@@ -3379,6 +3459,107 @@ def _program_1_4_promise_sources(
     }
 
 
+def _legacy_1_4_payoff_ledger(
+    payoff: LearningContractItemProposal,
+    projection: dict,
+    evidence_by_id: dict[str, EvidenceSpan],
+    chapter_by_unit_id: dict[str, dict[str, object]],
+    opening_promise_sources: dict[str, object],
+) -> dict[str, object]:
+    artifact = _opening_payoff_candidate_artifact(
+        projection,
+        evidence_by_id,
+        chapter_by_unit_id,
+        opening_promise_sources,
+    )
+    candidates = [
+        item
+        for item in artifact.get("candidates", [])
+        if isinstance(item, dict)
+    ]
+    candidate_by_sequence = {
+        int(item["sequence_no"]): item for item in candidates
+    }
+    classifications = payoff.payoff_classifications
+    sequence_numbers = [
+        classification.sequence_no for classification in classifications
+    ]
+    if (
+        not classifications
+        or len(sequence_numbers) != len(set(sequence_numbers))
+        or sequence_numbers != list(range(1, len(sequence_numbers) + 1))
+        or any(
+            sequence_no not in candidate_by_sequence
+            for sequence_no in sequence_numbers
+        )
+    ):
+        raise ValueError(
+            "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATION_COVERAGE_INVALID"
+        )
+    rows: list[dict[str, object]] = []
+    selected: dict[str, object] | None = None
+    for classification in classifications:
+        candidate = candidate_by_sequence[classification.sequence_no]
+        evidence_options = {
+            int(item["evidence_no"]): item
+            for item in candidate.get("evidence_options", [])
+            if isinstance(item, dict)
+        }
+        anchor = evidence_options.get(classification.anchor_evidence_no)
+        if anchor is None:
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_EVIDENCE_REFERENCE_INVALID"
+            )
+        program_exclusion = str(
+            candidate.get("program_exclusion_code") or ""
+        )
+        if (
+            program_exclusion
+            and classification.exclusion_code != program_exclusion
+        ):
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_PROGRAM_EXCLUSION_INVALID"
+            )
+        is_complete = (
+            set(classification.matched_facet_ids)
+            == {"F1", "F2", "F3"}
+            and classification.exclusion_code == "NONE"
+        )
+        row = {
+            **classification.model_dump(mode="json"),
+            "event_id": candidate.get("event_id"),
+            "event_title": candidate.get("event_title"),
+            "event_summary": candidate.get("event_summary"),
+            "anchor_evidence_id": anchor.get("evidence_id"),
+            "chapter_ordinal": anchor.get("chapter_ordinal"),
+            "chapter_title": anchor.get("chapter_title"),
+            "paragraph_number": anchor.get("paragraph_number"),
+            "source_char_start": anchor.get("source_char_start"),
+            "program_complete_payoff": is_complete,
+        }
+        rows.append(row)
+        if is_complete and selected is None:
+            selected = row
+    if selected is None:
+        raise ValueError("LEARNING_REPORT_1_4_COMPLETE_PAYOFF_MISSING")
+    return {
+        "classifications": rows,
+        "selected": selected,
+        "coverage": {
+            "source_event_count": len(candidates),
+            "scanned_candidate_count": len(rows),
+            "planned_window_count": 1,
+            "completed_window_count": 1,
+            "all_source_events_scanned": len(rows) == len(candidates),
+            "stopped_after_first_complete": (
+                len(rows) < len(candidates)
+            ),
+            "source_sequence_contiguous": True,
+            "legacy_direct_validation_only": True,
+        },
+    }
+
+
 def _program_1_4_answer(
     answer: LearningAnswerProposal,
     projection: dict,
@@ -3396,11 +3577,6 @@ def _program_1_4_answer(
         "opening_events": projection.get("events", []),
         "opening_promise_sources": opening_promise_sources,
     })
-    _validate_answer_evidence_subset(
-        answer,
-        allowed,
-        error_code="LEARNING_REPORT_1_4_EVIDENCE_SCOPE_INVALID",
-    )
     items = _contract_item_by_id(answer)
     selling_point = items["selling_point_card"]
     promise_sources = items["opening_promise_sources"]
@@ -3458,89 +3634,47 @@ def _program_1_4_answer(
     ):
         raise ValueError("LEARNING_REPORT_1_4_PROMISE_SOURCE_INCOMPLETE")
 
-    candidate_artifact = _opening_payoff_candidate_artifact(
-        projection,
-        evidence_by_id,
-        chapter_by_unit_id,
-        opening_promise_sources,
+    payoff = items["first_payoff_location"]
+    source_candidate_artifact = (
+        projection.get("opening_payoff_candidates_evidence") or {}
     )
-    candidates = [
+    if not source_candidate_artifact and payoff.payoff_classifications:
+        source_candidate_artifact = _legacy_1_4_payoff_ledger(
+            payoff,
+            projection,
+            evidence_by_id,
+            chapter_by_unit_id,
+            opening_promise_sources,
+        )
+    elif (
+        not isinstance(source_candidate_artifact, dict)
+        or source_candidate_artifact.get("is_current") is False
+    ):
+        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_LEDGER_NOT_READY")
+    candidate_artifact = json.loads(json.dumps(
+        source_candidate_artifact,
+        ensure_ascii=False,
+        default=str,
+    ))
+    payoff.payoff_classifications = []
+    classified_rows = [
         item
-        for item in candidate_artifact.get("candidates", [])
+        for item in candidate_artifact.get("classifications", [])
         if isinstance(item, dict)
     ]
-    candidate_by_sequence = {
-        int(item["sequence_no"]): item for item in candidates
-    }
-    payoff = items["first_payoff_location"]
-    classifications = payoff.payoff_classifications
-    if not classifications:
-        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATIONS_MISSING")
-    sequence_numbers = [
-        classification.sequence_no for classification in classifications
-    ]
+    coverage = candidate_artifact.get("coverage", {})
     if (
-        len(sequence_numbers) != len(set(sequence_numbers))
-        or sequence_numbers != list(range(1, len(sequence_numbers) + 1))
-        or any(
-            sequence_no not in candidate_by_sequence
-            for sequence_no in sequence_numbers
-        )
+        not classified_rows
+        or not isinstance(coverage, dict)
+        or coverage.get("source_sequence_contiguous") is not True
     ):
-        raise ValueError(
-            "LEARNING_REPORT_1_4_PAYOFF_CLASSIFICATION_COVERAGE_INVALID"
-        )
-
-    selected_classification: LearningPayoffClassificationProposal | None = None
-    selected_candidate: dict[str, object] | None = None
-    selected_evidence: dict[str, object] | None = None
-    classified_rows: list[dict[str, object]] = []
-    for classification in classifications:
-        candidate = candidate_by_sequence[classification.sequence_no]
-        evidence_options = {
-            int(item["evidence_no"]): item
-            for item in candidate.get("evidence_options", [])
-            if isinstance(item, dict)
-        }
-        anchor = evidence_options.get(classification.anchor_evidence_no)
-        if anchor is None:
-            raise ValueError(
-                "LEARNING_REPORT_1_4_PAYOFF_EVIDENCE_REFERENCE_INVALID"
-            )
-        program_exclusion = str(
-            candidate.get("program_exclusion_code") or ""
-        )
-        if (
-            program_exclusion
-            and classification.exclusion_code != program_exclusion
-        ):
-            raise ValueError(
-                "LEARNING_REPORT_1_4_PAYOFF_PROGRAM_EXCLUSION_INVALID"
-            )
-        is_complete = (
-            set(classification.matched_facet_ids) == {"F1", "F2", "F3"}
-            and classification.exclusion_code == "NONE"
-        )
-        classified_rows.append({
-            **classification.model_dump(mode="json"),
-            "event_id": candidate.get("event_id"),
-            "event_title": candidate.get("event_title"),
-            "event_summary": candidate.get("event_summary"),
-            "anchor_evidence_id": anchor.get("evidence_id"),
-            "chapter_ordinal": anchor.get("chapter_ordinal"),
-            "chapter_title": anchor.get("chapter_title"),
-            "program_complete_payoff": is_complete,
-        })
-        if is_complete and selected_classification is None:
-            selected_classification = classification
-            selected_candidate = candidate
-            selected_evidence = anchor
-    if (
-        selected_classification is None
-        or selected_candidate is None
-        or selected_evidence is None
+        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_LEDGER_INVALID")
+    selected_candidate = candidate_artifact.get("selected")
+    if selected_candidate is not None and not isinstance(
+        selected_candidate,
+        dict,
     ):
-        raise ValueError("LEARNING_REPORT_1_4_COMPLETE_PAYOFF_MISSING")
+        raise ValueError("LEARNING_REPORT_1_4_PAYOFF_LEDGER_INVALID")
 
     opening_promise_rows = [
         row
@@ -3558,25 +3692,98 @@ def _program_1_4_answer(
         opening_promise_rows,
     )
 
-    selected_sequence = selected_classification.sequence_no
+    if selected_candidate is None:
+        if coverage.get("all_source_events_scanned") is not True:
+            raise ValueError(
+                "LEARNING_REPORT_1_4_PAYOFF_LEDGER_INCOMPLETE"
+            )
+        scanned_count = int(
+            coverage.get("scanned_candidate_count") or 0
+        )
+        payoff.status = "INSUFFICIENT_EVIDENCE"
+        payoff.finding = (
+            f"程序已按源文件顺序连续核对全书 {scanned_count} 个"
+            "有效事件候选，未发现同时命中 F1、F2、F3 的完整兑现。"
+        )
+        payoff.metrics = []
+        payoff.evidence_ids = []
+        payoff.limitations = [
+            "这是当前成书原文中的未发现结论，不等于卖点一定无效。"
+        ]
+        cross_book = items["cross_book_comparison"]
+        cross_book.status = "INSUFFICIENT_EVIDENCE"
+        cross_book.finding = (
+            "当前缺少同品类、同商业模式作品的同口径数据，"
+            "不能生成跨书卖点优劣结论。"
+        )
+        cross_book.metrics = []
+        cross_book.evidence_ids = []
+        cross_book.limitations = ["当前只能形成单书观察。"]
+        scan_metric = LearningMetricProposal(
+            label="连续核对候选数",
+            value=str(scanned_count),
+            unit="个事件",
+            method="程序连续扫描到全书事件末尾。",
+            evidence_ids=[],
+        )
+        answer.status = "PARTIAL"
+        answer.conclusion = (
+            f"{selling_point.finding} 当前全书连续候选中没有找到"
+            "同时满足真实机制、主角直接卷入和现实行动的完整兑现。"
+        )
+        answer.metrics = [scan_metric]
+        answer.evidence_ids = list(dict.fromkeys([
+            *selling_point.evidence_ids,
+            *promise_sources.evidence_ids,
+        ]))[:24]
+        answer.limitations = [
+            "全书连续候选未发现完整兑现，不能伪造首次兑现位置。",
+            "缺少同品类、同商业模式作品的同口径数据，不能形成跨书比较。",
+        ]
+        answer.reusable_lessons = [
+            "先区分承诺被提到、机制真实出现、主角直接卷入和现实行动，未同时满足时不要强报首次兑现。",
+        ]
+        answer.do_not_copy = [
+            "不能照搬本书的专有设定、人物、事件或原文表达。",
+            "不能把本书未发现完整兑现直接写成其他作品的通用规则。",
+        ]
+        candidate_artifact["contract_validation"] = {
+            "classification_sequence_contiguous": True,
+            "all_source_events_scanned": True,
+            "complete_payoff_not_fabricated": True,
+            "position_compiled_by_program": True,
+        }
+        candidate_artifact["promise_source_contract"] = (
+            promise_source_artifact
+        )
+        _validate_answer_evidence_subset(
+            answer,
+            allowed,
+            error_code="LEARNING_REPORT_1_4_EVIDENCE_SCOPE_INVALID",
+        )
+        return candidate_artifact
+
+    selected_sequence = int(
+        selected_candidate.get("sequence_no") or 0
+    )
     description_start = int(
         opening_promise_sources.get("description_source_char_start") or 0
     )
     promise_chapter = int(
         opening_promise_sources.get("promise_chapter_position") or 0
     )
-    chapter = int(selected_evidence.get("chapter_ordinal") or 0)
+    chapter = int(selected_candidate.get("chapter_ordinal") or 0)
     paragraph_number = int(
-        selected_evidence.get("paragraph_number") or 0
+        selected_candidate.get("paragraph_number") or 0
     )
     source_char_start = int(
-        selected_evidence.get("source_char_start") or 0
+        selected_candidate.get("source_char_start") or 0
     )
     chapter_title = str(
-        selected_evidence.get("chapter_title") or ""
+        selected_candidate.get("chapter_title") or ""
     )
     selected_evidence_id = str(
-        selected_evidence.get("evidence_id") or ""
+        selected_candidate.get("anchor_evidence_id") or ""
     )
     if description_start <= 0:
         promise_anchor_ids = {
@@ -3584,26 +3791,27 @@ def _program_1_4_answer(
             *promise_sources.evidence_ids,
         }
         promise_anchor_options = [
-            option
-            for candidate in candidates
-            for option in candidate.get("evidence_options", [])
-            if (
-                isinstance(option, dict)
-                and str(option.get("evidence_id") or "")
-                in promise_anchor_ids
-            )
+            evidence_by_id[evidence_id]
+            for evidence_id in promise_anchor_ids
+            if evidence_id in evidence_by_id
         ]
         promise_anchor = min(
             promise_anchor_options,
-            key=lambda item: int(item.get("source_char_start") or 0),
-            default=selected_evidence,
+            key=lambda item: item.start_char,
+            default=None,
         )
-        description_start = int(
-            promise_anchor.get("source_char_start") or source_char_start
-        )
-        promise_chapter = int(
-            promise_anchor.get("chapter_ordinal") or chapter
-        )
+        if promise_anchor is not None:
+            description_start = promise_anchor.start_char + 1
+            promise_chapter = int(
+                chapter_by_unit_id.get(
+                    promise_anchor.source_unit_id,
+                    {},
+                ).get("ordinal")
+                or chapter
+            )
+        else:
+            description_start = source_char_start
+            promise_chapter = chapter
     if (
         chapter <= 0
         or paragraph_number <= 0
@@ -3741,7 +3949,6 @@ def _program_1_4_answer(
         "chapter_distance": chapter - promise_chapter,
         "character_distance": source_char_start - description_start,
     }
-    candidate_artifact["candidates"] = candidates[:len(classifications)]
     candidate_artifact["contract_validation"] = {
         "classification_sequence_contiguous": True,
         "first_complete_selected_by_program": True,
@@ -3749,6 +3956,11 @@ def _program_1_4_answer(
     }
     candidate_artifact["promise_source_contract"] = (
         promise_source_artifact
+    )
+    _validate_answer_evidence_subset(
+        answer,
+        allowed,
+        error_code="LEARNING_REPORT_1_4_EVIDENCE_SCOPE_INVALID",
     )
     return candidate_artifact
 
@@ -5010,7 +5222,27 @@ def enqueue_learning_report(
         return None
     from .workbench import build_workbench_projection
 
-    readiness = assess_learning_report_readiness(build_workbench_projection(session, run.id))
+    projection = build_workbench_projection(session, run.id)
+    payoff_task: Task | None = None
+    if (
+        only_question_ids is None
+        or "1.4" in only_question_ids
+    ) and projection.get(
+        "opening_payoff_candidates_status"
+    ) != "READY":
+        from .opening_payoff_candidates import (
+            enqueue_opening_payoff_candidates,
+        )
+
+        payoff_task = enqueue_opening_payoff_candidates(
+            session,
+            settings,
+            run,
+            force=force,
+        )
+        session.refresh(run)
+        projection = build_workbench_projection(session, run.id)
+    readiness = assess_learning_report_readiness(projection)
     checks_by_id = {
         str(item["question_id"]): item for item in readiness["checks"]
     }
@@ -5026,13 +5258,15 @@ def enqueue_learning_report(
         )
     ]
     if not eligible_question_ids:
+        if payoff_task is not None:
+            return payoff_task
         raise LearningReportNotReadyError(readiness)
     latest_report = session.scalar(
         select(LearningReport)
         .where(LearningReport.run_id == run.id)
         .order_by(LearningReport.revision_no.desc())
     )
-    active_task = session.scalar(
+    active_tasks = list(session.scalars(
         select(Task)
         .join(AnalysisRunTask, AnalysisRunTask.task_id == Task.id)
         .where(
@@ -5046,9 +5280,15 @@ def enqueue_learning_report(
             )),
         )
         .order_by(AnalysisRunTask.batch_index)
-    )
-    if active_task is not None:
-        return active_task
+    ))
+    active_question_ids = {
+        str(question_id)
+        for active_task in active_tasks
+        for question_id in (
+            json.loads(active_task.payload_json).get("question_ids")
+            or []
+        )
+    }
     current_fingerprints = {
         question_id: str(checks_by_id[question_id]["source_fingerprint"])
         for question_id in INITIAL_INCREMENTAL_QUESTION_IDS
@@ -5075,16 +5315,23 @@ def enqueue_learning_report(
             )
         }
     selected_question_ids = (
-        eligible_question_ids
+        [
+            question_id
+            for question_id in eligible_question_ids
+            if question_id not in active_question_ids
+        ]
         if force
         else [
             question_id
             for question_id in eligible_question_ids
-            if question_id not in current_answer_ids
+            if (
+                question_id not in current_answer_ids
+                and question_id not in active_question_ids
+            )
         ]
     )
     if not selected_question_ids:
-        return None
+        return payoff_task or (active_tasks[0] if active_tasks else None)
     try:
         _service, profile = resolve_analysis_profile(settings, ENTITIES_EVENTS_PROFILE_ID)
     except ModelSettingsError:
@@ -5134,7 +5381,7 @@ def enqueue_learning_report(
     run.status = AnalysisRunStatus.PENDING.value
     session.commit()
     session.refresh(created_tasks[0])
-    return created_tasks[0]
+    return payoff_task or created_tasks[0]
 
 
 def build_learning_report_projection(

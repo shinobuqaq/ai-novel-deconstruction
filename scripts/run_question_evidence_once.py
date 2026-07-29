@@ -29,6 +29,10 @@ from app.services.opening_hook_payoffs import (  # noqa: E402
     OPENING_HOOK_PAYOFFS_TASK_KIND,
     enqueue_opening_hook_payoffs,
 )
+from app.services.opening_payoff_candidates import (  # noqa: E402
+    OPENING_PAYOFF_CANDIDATES_TASK_KIND,
+    enqueue_opening_payoff_candidates,
+)
 from app.services.tasks import execute_task_sync  # noqa: E402
 
 
@@ -62,14 +66,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "生成指定北极星问题的专项证据账本；"
-            "2.2 执行单个全书任务，3.4/4.9 顺序执行全部连续窗口。"
+            "1.4/2.2/3.4/4.9 顺序执行各自全部连续窗口。"
         )
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
         "--question-id",
         required=True,
-        choices=("2.2", "3.4", "4.9"),
+        choices=("1.4", "2.2", "3.4", "4.9"),
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -79,11 +83,13 @@ def main() -> int:
     engine = create_db_engine(settings)
     session_factory = create_session_factory(engine)
     task_kind = {
+        "1.4": OPENING_PAYOFF_CANDIDATES_TASK_KIND,
         "2.2": CHARACTER_DESIGN_TASK_KIND,
         "3.4": OPENING_HOOK_PAYOFFS_TASK_KIND,
         "4.9": CHAPTER_END_HOOKS_TASK_KIND,
     }[args.question_id]
     enqueue = {
+        "1.4": enqueue_opening_payoff_candidates,
         "2.2": enqueue_character_design_evidence,
         "3.4": enqueue_opening_hook_payoffs,
         "4.9": enqueue_chapter_end_hooks,
@@ -104,7 +110,7 @@ def main() -> int:
             print("没有创建任务：原料未就绪，或当前账本已经是最新版。")
             return 2
 
-        unit_name = "专项任务" if args.question_id == "2.2" else "连续窗口"
+        unit_name = "连续窗口"
         print(
             f"开始生成北极星 {args.question_id}："
             f"本批 {len(active_ids)} 个{unit_name}。"
@@ -137,8 +143,27 @@ def main() -> int:
                 )
                 return 3
             task_payload = json.loads(claim.payload_json)
-            if args.question_id == "2.2":
-                print("执行主角双层欲望与最小完整集全书证据任务")
+            if args.question_id == "1.4":
+                print(
+                    f"窗口 {task_payload.get('window_index', 1)}/"
+                    f"{task_payload.get('window_count', 1)}："
+                    f"候选 {task_payload.get('candidate_start_sequence')}—"
+                    f"{task_payload.get('candidate_end_sequence')}"
+                )
+            elif args.question_id == "2.2":
+                phase = task_payload.get("window_phase")
+                phase_label = (
+                    "六项人物字段"
+                    if phase == "FIELDS"
+                    else "两层欲望冲突"
+                )
+                print(
+                    f"{phase_label}窗口 "
+                    f"{task_payload.get('window_index', 1)}/"
+                    f"{task_payload.get('window_count', 1)}："
+                    f"事件 {task_payload.get('event_start_sequence')}—"
+                    f"{task_payload.get('event_end_sequence')}"
+                )
             else:
                 print(
                     f"窗口 {task_payload.get('window_index', 1)}/"

@@ -130,6 +130,9 @@ from .services.opening_hook_payoffs import (
     OPENING_HOOK_PAYOFFS_TASK_KIND,
     enqueue_opening_hook_payoffs,
 )
+from .services.opening_payoff_candidates import (
+    OPENING_PAYOFF_CANDIDATES_TASK_KIND,
+)
 from .services.workbench import build_state_at_chapter_projection, build_workbench_projection
 from .services.provider_config import (
     AnalysisProfile,
@@ -377,6 +380,7 @@ _ANALYSIS_STAGE_DIAGNOSTICS = (
     ("analysis.deep_insights", "事实与核心分析"),
     (CHARACTER_DESIGN_TASK_KIND, "主角双层欲望与最小完整集证据"),
     (CHAPTER_END_HOOKS_TASK_KIND, "逐章章末钩类型与节律账本"),
+    (OPENING_PAYOFF_CANDIDATES_TASK_KIND, "卖点首次兑现连续候选账本"),
     (OPENING_HOOK_PAYOFFS_TASK_KIND, "前三章章末钩兑现追踪表"),
     (LEARNING_REPORT_TASK_KIND, "创作学习报告"),
 )
@@ -428,6 +432,7 @@ def _analysis_run_diagnostics(
             "analysis.hierarchical_digest",
             CHARACTER_DESIGN_TASK_KIND,
             CHAPTER_END_HOOKS_TASK_KIND,
+            OPENING_PAYOFF_CANDIDATES_TASK_KIND,
             OPENING_HOOK_PAYOFFS_TASK_KIND,
             LEARNING_REPORT_TASK_KIND,
         } and not stage_tasks:
@@ -452,6 +457,7 @@ def _analysis_run_diagnostics(
                 "analysis.deep_insights",
                 CHARACTER_DESIGN_TASK_KIND,
                 CHAPTER_END_HOOKS_TASK_KIND,
+                OPENING_PAYOFF_CANDIDATES_TASK_KIND,
                 OPENING_HOOK_PAYOFFS_TASK_KIND,
                 LEARNING_REPORT_TASK_KIND,
             }
