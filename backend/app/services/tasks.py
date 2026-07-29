@@ -1340,6 +1340,26 @@ async def execute_task(
                     model=response.model,
                     raw_text=response.raw_text,
                 ) from exc
+            except TypeError as exc:
+                raise ProviderError(
+                    code="LEARNING_REPORT_PERSISTENCE_ERROR",
+                    message=(
+                        "创作学习答案已经返回，但本地保存时遇到程序错误；"
+                        "已停止自动重试并保留原始输出供离线修复。"
+                    ),
+                    retryable=False,
+                    diagnostics=_attempt_diagnostics(
+                        provider_payload,
+                        response,
+                        phase="persistence",
+                        reason_code=type(exc).__name__,
+                    ),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    provider_name=response.provider_id or provider.name,
+                    model=response.model,
+                    raw_text=response.raw_text,
+                ) from exc
 
     with session_factory() as session:
         if not task_claim_is_current(session, claim=claim):

@@ -5860,6 +5860,23 @@ def _validate_selected_answers_against_projection(
             _validate_4_9_answer_against_projection(answer, projection)
 
 
+def _learning_report_json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(
+        f"Object of type {type(value).__name__} is not JSON serializable"
+    )
+
+
+def _serialize_learning_report_payload(payload: dict[str, object]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=_learning_report_json_default,
+    )
+
+
 def persist_learning_report(
     session: Session,
     *,
@@ -6115,7 +6132,7 @@ def persist_learning_report(
         },
         "source_deep_revision": source_deep_revision,
     })
-    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    payload_json = _serialize_learning_report_payload(payload)
     if existing is None:
         revision_no = (session.scalar(
             select(func.max(LearningReport.revision_no)).where(LearningReport.run_id == run.id)

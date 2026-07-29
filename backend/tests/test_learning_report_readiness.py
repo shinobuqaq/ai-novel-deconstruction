@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +25,7 @@ from app.services.learning_report import (
     _apply_program_4_9_answer,
     _compact_opening_structure_model_artifact,
     _request_budget,
+    _serialize_learning_report_payload,
     _source_materials,
     _validate_answer_user_text_boundaries,
     _validate_selected_answers_against_projection,
@@ -71,6 +74,32 @@ def test_program_compiled_questions_load_projection_and_defer_draft_text() -> No
     assert LEARNING_REPORT_PROGRAM_COMPILED_QUESTION_IDS.issubset(
         LEARNING_REPORT_PROJECTION_QUESTION_IDS
     )
+
+
+def test_learning_report_payload_serializes_program_artifact_datetime() -> None:
+    payload = {
+        "answers": [{
+            "question_id": "3.1",
+            "program_artifacts": {
+                "opening_structure_ledger": {
+                    "generated_at": datetime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        15,
+                        tzinfo=timezone.utc,
+                    ),
+                },
+            },
+        }],
+    }
+
+    decoded = json.loads(_serialize_learning_report_payload(payload))
+
+    assert decoded["answers"][0]["program_artifacts"][
+        "opening_structure_ledger"
+    ]["generated_at"] == "2026-07-30T02:15:00+00:00"
 
 
 def test_learning_answer_cap_clamps_to_smaller_reported_context() -> None:
