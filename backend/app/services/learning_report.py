@@ -3357,17 +3357,21 @@ def _answer_external_causality_texts(
     Fields kept:
       - answer.conclusion
       - answer.limitations
+      - answer.reusable_lessons  (checked — may contain market claims)
+      - answer.do_not_copy       (checked — may contain market claims)
       - contract_items findings, limitations, metrics
       - answer-level metrics
 
     Fields excluded from the causality check:
-      - All handbook sub-fields (craft-technique writing advice)
-      - reusable_lessons  (craft techniques — naturally uses "读者" terms)
-      - do_not_copy       (explains uniqueness of source book content)
+      - All handbook sub-fields (craft-technique writing advice that
+        naturally uses narrative-level "读者" language to describe
+        story mechanics rather than market outcomes)
     """
     return [
         answer.conclusion,
         *answer.limitations,
+        *answer.reusable_lessons,
+        *answer.do_not_copy,
         *(
             text
             for item in answer.contract_items
