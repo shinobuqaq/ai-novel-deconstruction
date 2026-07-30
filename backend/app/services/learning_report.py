@@ -580,6 +580,8 @@ INITIAL_INCREMENTAL_QUESTION_IDS = (
     "2.1",
     "2.2",
     "4.9",
+    "2.3",
+    "2.4",
 )
 QG1_QUESTION_IDS = ("1.4", "3.1", "3.2", "3.4")
 _RECOMMENDED_RANK = {
@@ -770,6 +772,40 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "cross_book_rhythm_range",
             "同类书标准节奏区间",
             "只有同品类多书按同一段落和字符口径分析后才能回答。",
+        ),
+    ),
+    "2.3": (
+        LearningContractItemDefinition(
+            "function_matrix",
+            "配角功能分工矩阵",
+            "逐位常驻配角列出主要叙事功能（供压、传递信息、情感支撑、喜剧/节奏调节等），并说明活跃的主要阶段。",
+        ),
+        LearningContractItemDefinition(
+            "function_overlap",
+            "功能重叠检查",
+            "如果多个配角承担相同功能，标出重叠；说明是否造成叙事冗余风险。",
+        ),
+        LearningContractItemDefinition(
+            "function_vacancy",
+            "功能空缺检查",
+            "说明当前配角阵容缺少哪些常见叙事功能，或哪些功能只由主角自己承担。",
+        ),
+    ),
+    "2.4": (
+        LearningContractItemDefinition(
+            "villain_tier_table",
+            "反派梯队表",
+            "按威胁层级列出主要反派，包括首次登场、退场或被消解的位置，以及与主角对立关系的铺垫起点。",
+        ),
+        LearningContractItemDefinition(
+            "pressure_escalation",
+            "压力供给节奏",
+            "说明反派如何按层级接力供压，以及相邻梯队之间的过渡方式。",
+        ),
+        LearningContractItemDefinition(
+            "villain_agency",
+            "反派自身事业线",
+            "说明主要反派是否有独立于主角的目标和行动线；若有，简要描述其关键节点。",
         ),
     ),
     "4.9": (
@@ -2573,6 +2609,67 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         },
         gaps=method_gaps,
         required_artifact="单书方法候选三栏结算表",
+    )
+
+    # 2.3 配角功能分工矩阵 - 使用现有人物和事件数据
+    non_trivial_characters = [c for c in characters if c.get("evidence_ids")]
+    character_count = len(characters)
+    char_gaps_23: list[str] = []
+    if not str(overview.get("premise") or "").strip():
+        char_gaps_23.append("缺少故事前提，无法区分主角与配角。")
+    if character_count < 3:
+        char_gaps_23.append(f"当前只识别到 {character_count} 名人物，不足以形成配角功能分析。")
+    elif len(non_trivial_characters) < 2:
+        char_gaps_23.append("多数人物缺少原文证据，无法确认叙事功能。")
+    checks["2.3"] = _readiness_check(
+        "2.3",
+        ready=not char_gaps_23,
+        observed={
+            "character_count": character_count,
+            "evidence_backed_character_count": len(non_trivial_characters),
+            "has_overview_premise": bool(str(overview.get("premise") or "").strip()),
+        },
+        gaps=(
+            char_gaps_23
+            or ["缺少同品类配角功能对照基线；当前只能给单书观察，跨书规律待验证。"]
+        ),
+        required_artifact="人物列表与故事结构（用于配角功能分析）",
+        answer_scope="PARTIAL" if not char_gaps_23 else "NOT_READY",
+        source_material={
+            "character_count": character_count,
+            "non_trivial_character_count": len(non_trivial_characters),
+            "has_overview": bool(overview.get("premise")),
+        },
+    )
+
+    # 2.4 反派梯队表 - 使用现有人物、事件和故事结构数据
+    event_count = len(events)
+    villain_gaps: list[str] = []
+    if not str(overview.get("premise") or "").strip():
+        villain_gaps.append("缺少故事前提，无法推断主要对立力量。")
+    if character_count < 2:
+        villain_gaps.append("当前人物数量不足以形成反派梯队分析。")
+    if event_count < 5:
+        villain_gaps.append(f"当前只有 {event_count} 个事件，不足以定位反派供压节点。")
+    checks["2.4"] = _readiness_check(
+        "2.4",
+        ready=not villain_gaps,
+        observed={
+            "character_count": character_count,
+            "event_count": event_count,
+            "has_overview_premise": bool(str(overview.get("premise") or "").strip()),
+        },
+        gaps=(
+            villain_gaps
+            or ["反派铺垫距离与实力差需要书内描写依据；当前只能给单书观察。"]
+        ),
+        required_artifact="人物、事件与故事结构（用于反派梯队分析）",
+        answer_scope="PARTIAL" if not villain_gaps else "NOT_READY",
+        source_material={
+            "character_count": character_count,
+            "event_count": event_count,
+            "has_overview": bool(overview.get("premise")),
+        },
     )
 
     ordered_checks = [

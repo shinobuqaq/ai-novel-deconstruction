@@ -123,19 +123,68 @@ def _projection(*, complete_specialized_ledgers: bool) -> dict:
             "protagonist": "林舟",
             "evidence_ids": ["evd_overview"],
         },
-        "characters": [{
-            "name": "林舟",
-            "role": "PROTAGONIST",
-            "goals": ["查明寄信人"],
-            "motivations": ["保护家人"],
-            "evidence_ids": ["evd_character"],
-        }],
-        "events": [{
-            "id": "evt_opening",
-            "people": ["林舟"],
-            "chapter_ordinals": [1],
-            "evidence_ids": ["evd_event"],
-        }],
+        "characters": [
+            {
+                "name": "林舟",
+                "role": "PROTAGONIST",
+                "goals": ["查明寄信人"],
+                "motivations": ["保护家人"],
+                "evidence_ids": ["evd_character"],
+            },
+            {
+                "name": "顾明",
+                "role": "SUPPORTING",
+                "goals": ["协助林舟"],
+                "motivations": [],
+                "evidence_ids": ["evd_char_gm"],
+            },
+            {
+                "name": "陈峰",
+                "role": "ANTAGONIST",
+                "goals": ["隐瞒真相"],
+                "motivations": ["自保"],
+                "evidence_ids": ["evd_char_cf"],
+            },
+            {
+                "name": "林母",
+                "role": "SUPPORTING",
+                "goals": ["保护林舟"],
+                "motivations": [],
+                "evidence_ids": ["evd_char_lm"],
+            },
+        ],
+        "events": [
+            {
+                "id": "evt_opening",
+                "people": ["林舟"],
+                "chapter_ordinals": [1],
+                "evidence_ids": ["evd_event"],
+            },
+            {
+                "id": "evt_clue",
+                "people": ["林舟", "顾明"],
+                "chapter_ordinals": [2],
+                "evidence_ids": ["evd_evt2"],
+            },
+            {
+                "id": "evt_conflict",
+                "people": ["林舟", "陈峰"],
+                "chapter_ordinals": [3],
+                "evidence_ids": ["evd_evt3"],
+            },
+            {
+                "id": "evt_revelation",
+                "people": ["林舟", "林母"],
+                "chapter_ordinals": [5],
+                "evidence_ids": ["evd_evt4"],
+            },
+            {
+                "id": "evt_confrontation",
+                "people": ["林舟", "陈峰"],
+                "chapter_ordinals": [8],
+                "evidence_ids": ["evd_evt5"],
+            },
+        ],
         "phases": [{"id": "phase_1"}],
         "deep_analysis": {
             "scene_analysis": [{"chapter_ordinal": 1}],
@@ -280,11 +329,11 @@ def test_sparse_deep_analysis_only_unlocks_independently_supported_questions() -
     )
 
     assert readiness["ready"] is True
-    assert readiness["ready_question_count"] == 2
-    assert readiness["partial_question_count"] == 2
+    assert readiness["ready_question_count"] == 4
+    assert readiness["partial_question_count"] == 4
     assert readiness["complete_question_count"] == 0
     assert readiness["total_question_count"] == 42
-    assert readiness["generation_ready_question_ids"] == ["1.4", "2.1"]
+    assert readiness["generation_ready_question_ids"] == ["1.4", "2.1", "2.3", "2.4"]
     checks = {item["question_id"]: item for item in readiness["checks"]}
     assert checks["1.4"]["ready"] is True
     assert checks["2.1"]["ready"] is True
@@ -301,14 +350,16 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
     )
 
     assert readiness["ready"] is True
-    assert readiness["ready_question_count"] == 4
+    assert readiness["ready_question_count"] == 6
     assert readiness["complete_question_count"] == 2
-    assert readiness["partial_question_count"] == 2
+    assert readiness["partial_question_count"] == 4
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
         "2.1",
         "2.2",
         "4.9",
+        "2.3",
+        "2.4",
     ]
     assert readiness["next_required_artifacts"] == [
         "前三章逐段任务与信息装载共享账本",
@@ -344,7 +395,7 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
 
     readiness = assess_learning_report_readiness(projection)
 
-    assert readiness["ready_question_count"] == 5
+    assert readiness["ready_question_count"] == 7
     assert readiness["complete_question_count"] == 3
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
@@ -352,6 +403,8 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
         "2.1",
         "2.2",
         "4.9",
+        "2.3",
+        "2.4",
     ]
 
 
