@@ -3588,6 +3588,13 @@ def parse_learning_report(
                 and item.item_id not in {
                     "first_scene_functions",
                     "scope_boundary",
+                    # 4.9 statistical items derive from the chapter_end_hooks
+                    # ledger (counts/ratios), not from original-text evd_ spans.
+                    "chapter_coverage",
+                    "type_distribution",
+                    "strength_rhythm",
+                    "type_rotation",
+                    "no_hook_analysis",
                 }
             )
         ]
