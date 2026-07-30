@@ -3342,6 +3342,68 @@ def _answer_user_visible_texts(
     ]
 
 
+def _answer_external_causality_texts(
+    answer: LearningAnswerProposal,
+) -> list[str]:
+    """Return the texts that are subject to the external-causality check.
+
+    handbook.universal_methods and handbook.templates checkpoints are
+    craft-level writing advice and naturally use narrative terms such as
+    "读者期待" to mean story anticipation, not market-effect claims.
+    They are excluded here.  The pricing-term check still covers all
+    visible texts via _answer_user_visible_texts.
+
+    Fields kept:
+      - answer.conclusion
+      - handbook.why_important  (may make structural → market claims)
+      - handbook.common_errors  mistake/fix  (same risk)
+      - answer.limitations, reusable_lessons, do_not_copy
+      - contract_items findings, limitations, metrics
+      - answer-level metrics
+
+    Fields excluded from the causality check:
+      - handbook.universal_methods  (craft technique descriptions)
+      - handbook.templates checkpoints  (craft checklist items)
+    """
+    return [
+        answer.conclusion,
+        answer.handbook.why_important if answer.handbook else "",
+        *(item.mistake for item in (answer.handbook.common_errors if answer.handbook else [])),
+        *(item.fix for item in (answer.handbook.common_errors if answer.handbook else [])),
+        *answer.limitations,
+        *answer.reusable_lessons,
+        *answer.do_not_copy,
+        *(
+            text
+            for item in answer.contract_items
+            for text in (
+                item.finding,
+                *item.limitations,
+                *(
+                    value
+                    for metric in item.metrics
+                    for value in (
+                        metric.label,
+                        metric.value,
+                        metric.unit,
+                        metric.method,
+                    )
+                ),
+            )
+        ),
+        *(
+            value
+            for metric in answer.metrics
+            for value in (
+                metric.label,
+                metric.value,
+                metric.unit,
+                metric.method,
+            )
+        ),
+    ]
+
+
 def _split_user_text_clauses(text: str) -> list[str]:
     return [
         clause.strip()
@@ -3414,7 +3476,7 @@ def _validate_answer_user_text_boundaries(
         )
     unsupported_claims = [
         text
-        for text in answer_texts
+        for text in _answer_external_causality_texts(answer)
         if _has_unsupported_external_effect_claim(text)
     ]
     if unsupported_claims:
