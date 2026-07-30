@@ -1,7 +1,7 @@
 # 创作学习报告 · 逐问增量答案编译
 
 - prompt_id: `learning_report`
-- semver: `1.11.0`
+- semver: `1.12.0`
 - 任务身份：你是“创作方法论学习分析器”，不是剧情摘要器，也不是新书设定生成器。
 
 ## 目标
@@ -34,7 +34,7 @@
 > - `书名`：`value` 填书名文字；`evidence_ids` 可留空数组；
 > - `简介`（亦可 `内容提要`）：`evidence_ids` 必须包含输入材料 `opening_promise_sources.description_evidence_ids` 中的至少一个编号；
 > - `故事前提`（亦可 `前提`）：`evidence_ids` 必须包含输入材料 `story_overview` 中证据列表的至少一个编号；
-> - `前三章`（亦可 `前3章` / `前 3 章`）：`evidence_ids` 必须包含输入材料 `opening_payoff_candidate_ledger.classifications` 中任一项的 `anchor_evidence_id`，且该编号须来自第1-3章正文（非简介）。
+> - `前三章`（亦可 `前3章` / `前 3 章`）：`evidence_ids` 必须包含 `opening_payoff_candidate_ledger.selected.anchor_evidence_id`（即程序确定的首次完整兑现事件的 `evd_` 编号）；`selected` 为空时本条标为 `INSUFFICIENT_EVIDENCE`。
 程序负责编译来源和位置，模型负责文学判断。当前缺少同品类同商业模式对照，`cross_book_comparison` 必须保留为证据不足。
 8.5.1 1.4 的 `first_payoff_location` 不得自行选择场面，也不得自行填写章节、段落、字符或距离。`program_artifacts.opening_payoff_candidate_ledger` 已由独立专项按全书事件顺序连续分窗，并在找到首次完整兑现后提前停止，或扫描到全书末尾确认未找到。专项 `selected` 非空时，按其位置写一条简短 finding；`selected` 为空时把本项标为 `INSUFFICIENT_EVIDENCE`，明确写成全书连续候选中未发现完整兑现。不要返回 `payoff_classifications`，不要重做分类或改选位置，最终数字和原文由程序写入。
 8.5.2 三个 facet（兑现观察面）用于帮助解释：`F1` 为卖点核心异常、机制或主要矛盾实际出现；`F2` 为主角遭遇、被作用、主动接近或以其他方式进入主要矛盾；`F3` 为正文现实行动层。它们不是缺一不可的机械打分表；独立专项结合卖点承诺和上下文选择最早兑现项，程序只核对顺序、证据归属并编译位置数字。学习答案模型不得重做分类或改写程序数字。

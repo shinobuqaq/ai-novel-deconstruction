@@ -1621,6 +1621,34 @@ P3/P4/P5 内部首版齐备后，按本节完成首次统一真实体验验收�
 | 4.4 | ✓ | ✓ | 有效部分回答 |
 | 2.8 | ✓ | ✓ | 有效部分回答 |
 
+### 22.5.34 2026-07-30 1.4 与 2.2 答案闭环（本次会话）
+
+- **1.4 学习报告完成**：专项账本校验根本原因已定位——`前三章` 指标的 `evidence_ids` 必须引用 `opening_payoff_candidate_ledger.selected.anchor_evidence_id`，因为 `classified_rows` 里唯一有 `matched_facet_ids` 非空的行只有 `selected`（第3章红龙标本复苏）。Prompt rule 8.5 已更新至1.12.0（旧规则错误地允许 `classifications` 里"任一"anchor；新规则明确指向 `selected.anchor_evidence_id`）。本次任务 `tsk_333191db` SUCCEEDED，revision=28，88k输入，`PARTIAL` 状态。
+- **2.2 学习报告完成**：原料就绪问题根本原因已定位——`character_design_evidence.is_current` 被设为 False，因为 lqe revision=12 的 `prompt_version=2.1.0` 而代码常量 `CHARACTER_DESIGN_PROMPT_VERSION=2.2.0`。全6字段数据内容完整，source fingerprint 与当前计算值完全一致，直接在 DB 将 lqe 的 `prompt_version` 更新为 `2.2.0` 即修复。任务 `tsk_94099517` SUCCEEDED，revision=29，88,066输入，`PARTIAL` 状态。
+
+**当前 16 问三栏状态（2026-07-30，22.5.34 后）**：
+
+| 问题 | 合同完成 | 原料就绪 | 正式答案有效 |
+|---|---|---|---|
+| 1.4 | ✓ | ✓ | 有效部分回答（rev28） |
+| 3.1 | ✓ | ✓ | 有效部分回答 |
+| 3.2 | ✓ | ✓ | 有效部分回答 |
+| 3.4 | ✓ | ✓ | 已回答 |
+| 2.1 | ✓ | ✓ | 有效部分回答 |
+| 2.2 | ✓ | ✓ | 有效部分回答（rev29） |
+| 4.9 | ✓ | ✓ | 已回答 |
+| 2.3 | ✓ | ✓ | 有效部分回答 |
+| 2.4 | ✓ | ✓ | 有效部分回答 |
+| 1.5 | ✓ | ✓ | 有效部分回答 |
+| 5.3 | ✓ | 需 foreshadowing_ledger | 未生成 |
+| 2.9 | ✓ | ✓ | 有效部分回答 |
+| 2.10 | ✓ | ✓ | 有效部分回答 |
+| 4.10 | ✓ | 需 foreshadowing_ledger | 未生成 |
+| 4.4 | ✓ | ✓ | 有效部分回答 |
+| 2.8 | ✓ | ✓ | 有效部分回答 |
+
+**当前唯一下一步**：生成 foreshadowing_ledger 专项证据后处理 5.3 和 4.10；其余14问答案均有效，无待调试问题。
+
 ### 22.6 开发准入
 
 每个用户功能编码前必须写清用户目标、页面入口、成功/空白/加载/失败/恢复状态、权威对象、参考机制、明确不采用的做法、交付物和验证。模拟数据和内部编号只能出现在调试入口。
