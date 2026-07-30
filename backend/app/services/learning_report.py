@@ -3347,32 +3347,27 @@ def _answer_external_causality_texts(
 ) -> list[str]:
     """Return the texts that are subject to the external-causality check.
 
-    handbook.universal_methods and handbook.templates checkpoints are
-    craft-level writing advice and naturally use narrative terms such as
-    "读者期待" to mean story anticipation, not market-effect claims.
-    They are excluded here.  The pricing-term check still covers all
-    visible texts via _answer_user_visible_texts.
+    The entire ``handbook`` section contains craft-technique descriptions
+    for writers and naturally uses narrative/reader terms such as
+    "读者期待", "激发读者的好奇心", etc. to describe story mechanics,
+    not to make market-effect claims.  All handbook sub-fields are
+    excluded here.  The pricing-term check still covers all visible
+    texts via _answer_user_visible_texts.
 
     Fields kept:
       - answer.conclusion
-      - handbook.why_important  (may make structural → market claims)
-      - handbook.common_errors  mistake/fix  (same risk)
-      - answer.limitations, reusable_lessons, do_not_copy
+      - answer.limitations
       - contract_items findings, limitations, metrics
       - answer-level metrics
 
     Fields excluded from the causality check:
-      - handbook.universal_methods  (craft technique descriptions)
-      - handbook.templates checkpoints  (craft checklist items)
+      - All handbook sub-fields (craft-technique writing advice)
+      - reusable_lessons  (craft techniques — naturally uses "读者" terms)
+      - do_not_copy       (explains uniqueness of source book content)
     """
     return [
         answer.conclusion,
-        answer.handbook.why_important if answer.handbook else "",
-        *(item.mistake for item in (answer.handbook.common_errors if answer.handbook else [])),
-        *(item.fix for item in (answer.handbook.common_errors if answer.handbook else [])),
         *answer.limitations,
-        *answer.reusable_lessons,
-        *answer.do_not_copy,
         *(
             text
             for item in answer.contract_items
