@@ -1151,6 +1151,12 @@ function FormalWorkbench({
                         <span><b>原料</b>{activeLearningQuestion.material_status === "READY" ? "已就绪" : activeLearningQuestion.material_status === "GENERATING" ? "生成中" : activeLearningQuestion.material_status === "OUTDATED" ? "已过期" : activeLearningQuestion.material_status === "FAILED" ? "失败" : activeLearningQuestion.material_status === "NOT_ASSESSED" ? "未审计" : "未就绪"}</span>
                         <span><b>正式答案</b>{activeLearningQuestion.has_current_answer ? "当前有效" : activeLearningQuestion.answer_status === "OUTDATED" ? "已过期" : "尚无"}</span>
                       </div>
+                      {(activeLearningQuestion.handbook as any)?.why_important && (
+                        <aside className="handbook-why-important">
+                          <strong>为什么重要</strong>
+                          <p>{(activeLearningQuestion.handbook as any).why_important}</p>
+                        </aside>
+                      )}
                       <p>{activeLearningQuestion.conclusion || (viewData.learning_report_status === "GENERATING" ? "系统正在根据拆解证据生成这项答案。" : "这项专项答案尚未生成。")}</p>
                       {activeLearningQuestion.metrics.length > 0 && (
                         <div className="learning-metric-row">
@@ -1161,6 +1167,65 @@ function FormalWorkbench({
                             </div>
                           ))}
                         </div>
+                      )}
+                      {(activeLearningQuestion.handbook as any)?.universal_methods?.length > 0 && (
+                        <section className="handbook-universal-methods">
+                          <strong>通用方法</strong>
+                          <ul>
+                            {(activeLearningQuestion.handbook as any).universal_methods.map((method: string, i: number) => (
+                              <li key={i}>{method}</li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+                      {(activeLearningQuestion.handbook as any) && (
+                        ((activeLearningQuestion.handbook as any).checklist?.length > 0
+                          || (activeLearningQuestion.handbook as any).common_errors?.length > 0
+                          || (activeLearningQuestion.handbook as any).templates?.length > 0)
+                      ) && (
+                        <section className="handbook-toolkit">
+                          <strong>实操工具包</strong>
+                          {(activeLearningQuestion.handbook as any).checklist?.length > 0 && (
+                            <div className="handbook-checklist">
+                              <b>自检清单</b>
+                              <ul>
+                                {(activeLearningQuestion.handbook as any).checklist.map((item: string, i: number) => (
+                                  <li key={i}><label><input type="checkbox" /><span>{item}</span></label></li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {(activeLearningQuestion.handbook as any).common_errors?.length > 0 && (
+                            <div className="handbook-errors">
+                              <b>常见错误</b>
+                              {(activeLearningQuestion.handbook as any).common_errors.map((err: any, i: number) => (
+                                <div key={i} className="handbook-error-item">
+                                  <span className="handbook-error-mistake">❌ {err.mistake}</span>
+                                  <span className="handbook-error-fix">✅ {err.fix}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {(activeLearningQuestion.handbook as any).templates?.length > 0 && (
+                            <details className="handbook-templates">
+                              <summary>可套模板（{(activeLearningQuestion.handbook as any).templates.length} 个）</summary>
+                              {(activeLearningQuestion.handbook as any).templates.map((tmpl: any, i: number) => (
+                                <div key={i} className="handbook-template-item">
+                                  <strong>{tmpl.name}</strong>
+                                  <pre>{tmpl.structure}</pre>
+                                  {tmpl.checkpoints?.length > 0 && (
+                                    <ul>{tmpl.checkpoints.map((cp: string, j: number) => <li key={j}>{cp}</li>)}</ul>
+                                  )}
+                                </div>
+                              ))}
+                            </details>
+                          )}
+                        </section>
+                      )}
+                      {(activeLearningQuestion.handbook as any)?.genre_note && (
+                        <aside className="handbook-genre-note">
+                          <small>📋 题材差异：{(activeLearningQuestion.handbook as any).genre_note}</small>
+                        </aside>
                       )}
                       {activeLearningQuestion.contract_items.length > 0 && (
                         <details className="learning-contract-details">
@@ -1225,8 +1290,11 @@ function FormalWorkbench({
                         </>
                       )}
                       {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix && (
-                        <div className="learning-answer-block">
-                          <strong>类型与强度交叉关系</strong>
+                        <details className="learning-contract-details">
+                          <summary>
+                            <strong>章末钩类型与强度交叉关系</strong>
+                            <span>全书 {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix.rows.length} 类，默认收起</span>
+                          </summary>
                           <ul>
                             {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix.rows.map((row) => (
                               <li key={row.hook_type}>
@@ -1240,7 +1308,7 @@ function FormalWorkbench({
                               </li>
                             ))}
                           </ul>
-                        </div>
+                        </details>
                       )}
                       {activeLearningQuestion.program_artifacts.opening_structure_ledger && (
                         <details className="learning-contract-details opening-structure-ledger">

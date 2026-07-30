@@ -820,6 +820,14 @@ export type WorkbenchLearningQuestion = {
   reusable_lessons: string[];
   do_not_copy: string[];
   has_current_answer: boolean;
+  handbook: {
+    why_important: string;
+    universal_methods: string[];
+    checklist: string[];
+    common_errors: Array<{ mistake: string; fix: string }>;
+    templates: Array<{ name: string; structure: string; checkpoints: string[] }>;
+    genre_note: string;
+  } | null;
 };
 
 export type WorkbenchLearningStage = {

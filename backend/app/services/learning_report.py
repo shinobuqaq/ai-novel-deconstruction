@@ -899,6 +899,32 @@ class LearningContractItemProposal(BaseModel):
     )
 
 
+class LearningCommonError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mistake: str = Field(min_length=1, max_length=300)
+    fix: str = Field(min_length=1, max_length=300)
+
+
+class LearningTemplate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    structure: str = Field(min_length=1, max_length=800)
+    checkpoints: list[str] = Field(default_factory=list, max_length=4)
+
+
+class LearningHandbook(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    why_important: str = Field(min_length=1, max_length=300)
+    universal_methods: list[str] = Field(default_factory=list, max_length=6)
+    checklist: list[str] = Field(default_factory=list, max_length=8)
+    common_errors: list[LearningCommonError] = Field(default_factory=list, max_length=6)
+    templates: list[LearningTemplate] = Field(default_factory=list, max_length=2)
+    genre_note: str = Field(default="", max_length=200)
+
+
 class LearningAnswerProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -915,6 +941,7 @@ class LearningAnswerProposal(BaseModel):
         default_factory=list,
         max_length=16,
     )
+    handbook: LearningHandbook | None = None
 
 
 class AuthorDecisionProposal(BaseModel):
@@ -2890,6 +2917,15 @@ def _answer_user_visible_texts(
 ) -> list[str]:
     return [
         answer.conclusion,
+        answer.handbook.why_important if answer.handbook else "",
+        *(answer.handbook.universal_methods if answer.handbook else []),
+        *(item.mistake for item in (answer.handbook.common_errors if answer.handbook else [])),
+        *(item.fix for item in (answer.handbook.common_errors if answer.handbook else [])),
+        *(
+            checkpoint
+            for template in (answer.handbook.templates if answer.handbook else [])
+            for checkpoint in template.checkpoints
+        ),
         *answer.limitations,
         *answer.reusable_lessons,
         *answer.do_not_copy,
@@ -6581,6 +6617,7 @@ def build_learning_report_projection(
             "limitations": answer.get("limitations", []),
             "reusable_lessons": answer.get("reusable_lessons", []),
             "do_not_copy": answer.get("do_not_copy", []),
+            "handbook": answer.get("handbook"),
             "has_current_answer": has_current_answer,
         })
     stages: list[dict[str, object]] = []
