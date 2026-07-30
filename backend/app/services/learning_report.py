@@ -586,6 +586,9 @@ INITIAL_INCREMENTAL_QUESTION_IDS = (
     "5.3",
     "2.9",
     "2.10",
+    "4.10",
+    "4.4",
+    "2.8",
 )
 QG1_QUESTION_IDS = ("1.4", "3.1", "3.2", "3.4")
 _RECOMMENDED_RANK = {
@@ -898,6 +901,57 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "power_ceiling_assessment",
             "天花板评估",
             "当前揭示的最高战力是否留有成长空间？主角与天花板的距离是否合理？如果无法判断，明确标为证据不足。",
+        ),
+    ),
+    "2.8": (
+        LearningContractItemDefinition(
+            "ultimate_mystery_segments",
+            "终极悬念分段揭示表",
+            "列出终极悬念（影响全局命运的最大谜题）的各次部分揭示：揭示内容、位置、剩余未知，以及每次揭示同时抛出了什么新问题。",
+        ),
+        LearningContractItemDefinition(
+            "suspense_burial_gaps",
+            "悬念间隔与保温手法",
+            "各次揭示之间间隔多久？作者用什么方式在间隔期间持续提醒读者悬念存在？",
+        ),
+        LearningContractItemDefinition(
+            "payoff_completeness",
+            "兑现完整度",
+            "当前书中终极悬念是否已经完全兑现？如果尚未兑现，当前揭示到了哪一阶段？",
+        ),
+    ),
+    "4.4": (
+        LearningContractItemDefinition(
+            "subplot_ratio",
+            "主支线配比",
+            "估算全书主线与支线事件的比例；说明支线出现的主要位置（卷初/卷中/高潮后）及典型时长。",
+        ),
+        LearningContractItemDefinition(
+            "subplot_insertion_pattern",
+            "支线插入位置规律",
+            "找出至少2个支线与主线的交替节点，说明支线是在什么节奏节点插入的（主线高潮后冷却期？主线推进中穿插？）",
+        ),
+        LearningContractItemDefinition(
+            "callback_hooks",
+            "回勾主线的机制",
+            "说明支线如何与主线建立联系：是否有回应主线的时机节点、信息揭示、人物关联或情感呼应？如果支线与主线基本独立，明确说明。",
+        ),
+    ),
+    "4.10": (
+        LearningContractItemDefinition(
+            "suspense_stock_inventory",
+            "悬念存量账本",
+            "在关键章节节点（开篇、卷末、书中）估算当前未解决的悬念数量；说明存量是增加还是减少。",
+        ),
+        LearningContractItemDefinition(
+            "suspense_resolution_timing",
+            "悬念兑现节奏",
+            "说明悬念兑现的节奏模式：是密集快速回答还是保持长线积累？悬念是否按层级（小悬念→大悬念）依次兑现？",
+        ),
+        LearningContractItemDefinition(
+            "unresolved_suspense_list",
+            "未收束悬念清单",
+            "到最后一章为止，有哪些重要悬念没有得到明确解答？这是有意为之的开放式结尾，还是情节遗漏？",
         ),
     ),
 }
@@ -2816,6 +2870,90 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         source_material={
             "world_rule_count": _world_rule_count_210,
             "character_count": character_count,
+        },
+    )
+
+    # 4.10 悬念账本 - 复用 foreshadowing_ledger（与 5.3 共享数据）
+    foreshadowing_ledger_410 = projection.get("foreshadowing_ledger") or {}
+    ledger_coverage_410 = int(foreshadowing_ledger_410.get("covered_chapter_count") or 0)
+    suspense_gaps: list[str] = []
+    if ledger_coverage_410 == 0:
+        suspense_gaps.append("全书伏笔生命周期账本尚未生成，无法系统追踪悬念埋设和兑现。")
+    if event_count < 5:
+        suspense_gaps.append(f"只有 {event_count} 个事件，不足以定位悬念的关键转折节点。")
+    checks["4.10"] = _readiness_check(
+        "4.10",
+        ready=not suspense_gaps,
+        observed={
+            "foreshadowing_ledger_coverage": ledger_coverage_410,
+            "event_count": event_count,
+        },
+        gaps=(
+            suspense_gaps
+            or ["悬念兑现质量和存量曲线需要全书覆盖；当前只能给单书观察。"]
+        ),
+        required_artifact="伏笔生命周期账本（用于悬念存量与兑现节奏分析）",
+        answer_scope="PARTIAL" if not suspense_gaps else "NOT_READY",
+        source_material={
+            "foreshadowing_ledger_coverage": ledger_coverage_410,
+        },
+    )
+
+    # 4.4 主支线配比 - 使用事件和剧情阶段数据
+    phases = projection.get("phases", [])
+    phase_count = len(phases)
+    subplot_gaps: list[str] = []
+    if event_count < 8:
+        subplot_gaps.append(f"只有 {event_count} 个事件，不足以识别支线模式。")
+    if phase_count < 2:
+        subplot_gaps.append(f"只有 {phase_count} 个剧情阶段，不足以分析跨阶段的主支线交替节奏。")
+    if not str(overview.get("premise") or "").strip():
+        subplot_gaps.append("缺少故事前提，无法区分主线与支线事件。")
+    checks["4.4"] = _readiness_check(
+        "4.4",
+        ready=not subplot_gaps,
+        observed={
+            "event_count": event_count,
+            "phase_count": phase_count,
+            "has_overview": bool(str(overview.get("premise") or "").strip()),
+        },
+        gaps=(
+            subplot_gaps
+            or ["主支线配比只能给单书观察；跨书规律需要多书同口径数据。"]
+        ),
+        required_artifact="事件与剧情阶段列表（用于主支线配比分析）",
+        answer_scope="PARTIAL" if not subplot_gaps else "NOT_READY",
+        source_material={
+            "event_count": event_count,
+            "phase_count": phase_count,
+        },
+    )
+
+    # 2.8 世界级终极悬念 - 使用 foreshadowing + story_overview
+    foreshadowing_items = deep.get("foreshadowing", [])
+    ultimate_gaps: list[str] = []
+    if not str(overview.get("premise") or "").strip():
+        ultimate_gaps.append("缺少故事前提，无法判断什么是'世界级'终极悬念。")
+    if event_count < 5:
+        ultimate_gaps.append(f"只有 {event_count} 个事件，不足以追踪终极悬念的分段揭示。")
+    checks["2.8"] = _readiness_check(
+        "2.8",
+        ready=not ultimate_gaps,
+        observed={
+            "foreshadowing_item_count": len(foreshadowing_items),
+            "event_count": event_count,
+            "has_overview": bool(str(overview.get("premise") or "").strip()),
+        },
+        gaps=(
+            ultimate_gaps
+            or ["终极悬念的识别依赖对全书结构的理解；当前只能给单书观察，"
+                "多书规律需要跨书数据。"]
+        ),
+        required_artifact="深层拆解伏笔与事件列表（用于终极悬念分段分析）",
+        answer_scope="PARTIAL" if not ultimate_gaps else "NOT_READY",
+        source_material={
+            "foreshadowing_item_count": len(foreshadowing_items),
+            "event_count": event_count,
         },
     )
 
