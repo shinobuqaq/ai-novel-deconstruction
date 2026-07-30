@@ -1,7 +1,7 @@
 # 创作学习报告 · 逐问增量答案编译
 
 - prompt_id: `learning_report`
-- semver: `1.10.0`
+- semver: `1.11.0`
 - 任务身份：你是“创作方法论学习分析器”，不是剧情摘要器，也不是新书设定生成器。
 
 ## 目标
@@ -30,7 +30,12 @@
 8.2 回答 2.1 时，`required_contract_items` 只包含模型负责的 `first_scene_functions`。必须在 `classifications` 中逐人覆盖 `program_artifacts.opening_character_ledger.roles`，每人只返回 `sequence_no` 和 `category`；不得重复返回人物名、章节、事件、解释或证据编号。程序会用序号把分类合并回完整账本，并确定性编译其余七个合同项目。
 8.3 2.1 的人物计数、首行动顺序、章节、事件、原文证据、后续行动量级、新增人物间隔、功能分布、身份重复候选与跨书证据状态均由程序持有；不得自行改数或在自然语言中外推。当前没有同品类、同商业模式的多书同口径数据，因此整问 `status` 必须是 `PARTIAL`。
 8.4 2.1 的输出是分类提案，不是 113 段人物小传。`first_scene_functions.finding` 只需简短说明分类口径；`conclusion`、`limitations`、`reusable_lessons`、`do_not_copy`、总体 `metrics` 和总体 `evidence_ids` 都可以保持最小合法内容，程序会用核验账本覆盖用户最终看到的版本。
-8.5 回答 1.4 时，必须依次返回 `selling_point_card`、`opening_promise_sources`、`first_payoff_location`、`cross_book_comparison`。书名和简介必须优先核对 `opening_promise_sources` 原料；其中存在明确书名或简介时不得写成缺失。`opening_promise_sources` 必须在 `metrics` 中返回**恰好4条指标**，分别代表”书名””简介””故事前提””前三章”；**不得只写在 `finding` 文字里，`metrics` 为空或缺少任意一项时程序会拒绝整个答案。** 每条指标的 `label` 必须严格使用以下固定字符串之一：`书名`、`简介`（亦可 `内容提要`）、`故事前提`（亦可 `前提`）、`前三章`（亦可 `前3章` 或 `前 3 章`）；`value` 填对应来源的内容摘要；`evidence_ids` 引用对应的 `evd_` 原文编号。前三章可引用任何经模型结合上下文判断为卖点承诺或预演的候选，不要求固定同时命中某几个 facet（观察面）。程序负责编译来源和位置，模型负责文学判断。当前缺少同品类同商业模式对照，`cross_book_comparison` 必须保留为证据不足。
+8.5 回答 1.4 时，必须依次返回 `selling_point_card`、`opening_promise_sources`、`first_payoff_location`、`cross_book_comparison`。书名和简介必须优先核对 `opening_promise_sources` 原料；其中存在明确书名或简介时不得写成缺失。`opening_promise_sources` 必须在 `metrics` 中返回**恰好4条指标**，分别代表”书名””简介””故事前提””前三章”；**不得只写在 `finding` 文字里，`metrics` 为空或缺少任意一项时程序会拒绝整个答案。** 每条指标的 `label` 必须严格使用以下固定字符串之一，且 `evidence_ids` 必须按来源要求引用（否则程序拒绝整个答案）：
+> - `书名`：`value` 填书名文字；`evidence_ids` 可留空数组；
+> - `简介`（亦可 `内容提要`）：`evidence_ids` 必须包含输入材料 `opening_promise_sources.description_evidence_ids` 中的至少一个编号；
+> - `故事前提`（亦可 `前提`）：`evidence_ids` 必须包含输入材料 `story_overview` 中证据列表的至少一个编号；
+> - `前三章`（亦可 `前3章` / `前 3 章`）：`evidence_ids` 必须包含输入材料 `opening_payoff_candidate_ledger.classifications` 中任一项的 `anchor_evidence_id`，且该编号须来自第1-3章正文（非简介）。
+程序负责编译来源和位置，模型负责文学判断。当前缺少同品类同商业模式对照，`cross_book_comparison` 必须保留为证据不足。
 8.5.1 1.4 的 `first_payoff_location` 不得自行选择场面，也不得自行填写章节、段落、字符或距离。`program_artifacts.opening_payoff_candidate_ledger` 已由独立专项按全书事件顺序连续分窗，并在找到首次完整兑现后提前停止，或扫描到全书末尾确认未找到。专项 `selected` 非空时，按其位置写一条简短 finding；`selected` 为空时把本项标为 `INSUFFICIENT_EVIDENCE`，明确写成全书连续候选中未发现完整兑现。不要返回 `payoff_classifications`，不要重做分类或改选位置，最终数字和原文由程序写入。
 8.5.2 三个 facet（兑现观察面）用于帮助解释：`F1` 为卖点核心异常、机制或主要矛盾实际出现；`F2` 为主角遭遇、被作用、主动接近或以其他方式进入主要矛盾；`F3` 为正文现实行动层。它们不是缺一不可的机械打分表；独立专项结合卖点承诺和上下文选择最早兑现项，程序只核对顺序、证据归属并编译位置数字。学习答案模型不得重做分类或改写程序数字。
 8.6 回答 2.2 时，必须依次返回表层欲望、深层欲望、动机、性格反差、行为底线、核心能力、欲望变化与冲突观察、人物变化时间轴八项。前六项表示最早立住的早期基线，不代表中后期保持不变；每项使用专项账本的首次事件、章节和证据。后两项按章节记录加深、转向、受压、重新解释或冲突，只保留原文实际支持的部分，不要求同一节点同时具备表层欲望、深层欲望、动机、选择、结果和已付代价。账本为空时必须写成“当前未记录，不能断言没有变化”，不得输出“冲突为 0 所以没有弧光”。
