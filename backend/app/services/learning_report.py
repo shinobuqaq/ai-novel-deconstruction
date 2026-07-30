@@ -584,6 +584,8 @@ INITIAL_INCREMENTAL_QUESTION_IDS = (
     "2.4",
     "1.5",
     "5.3",
+    "2.9",
+    "2.10",
 )
 QG1_QUESTION_IDS = ("1.4", "3.1", "3.2", "3.4")
 _RECOMMENDED_RANK = {
@@ -862,6 +864,40 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "scope_boundary",
             "与 3.4、4.10 的职责边界",
             "明确 4.9 不追踪逐章后续回应；前三章首次回应属于 3.4，重要悬念生命周期属于 4.10。",
+        ),
+    ),
+    "2.9": (
+        LearningContractItemDefinition(
+            "faction_detail_levels",
+            "势力圈层详略表",
+            "列出主要势力及其在叙事中的详略程度（核心聚焦/重要但简写/背景提及），并说明详略选择与主角路径的关系。",
+        ),
+        LearningContractItemDefinition(
+            "relationship_reorganization",
+            "关系重组节点",
+            "找出主角在各势力间身份或关系发生显著变化的关键事件，包括加入、背叛、合作、对立等。",
+        ),
+        LearningContractItemDefinition(
+            "protagonist_climb_path",
+            "主角晋级路径",
+            "按事件顺序说明主角从哪个势力位置起步、通过什么方式向更高圈层移动，并引用关键事件证据。",
+        ),
+    ),
+    "2.10": (
+        LearningContractItemDefinition(
+            "power_tier_ladder",
+            "力量体系阶梯",
+            "从已知最低层级到已揭示最高层级，列出可识别的战力阶梯及各层代表角色；如果阶梯尚未完整揭示，明确标出已知部分和未知上限。",
+        ),
+        LearningContractItemDefinition(
+            "hard_rules_and_costs",
+            "硬规则与代价",
+            "列出力量体系的明确约束（能做什么/不能做什么/必须付出什么）；必须引用事件证据说明规则被真实执行，而不是仅凭设定描述。",
+        ),
+        LearningContractItemDefinition(
+            "power_ceiling_assessment",
+            "天花板评估",
+            "当前揭示的最高战力是否留有成长空间？主角与天花板的距离是否合理？如果无法判断，明确标为证据不足。",
         ),
     ),
 }
@@ -2720,6 +2756,66 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "character_count": character_count,
             "event_count": event_count,
             "has_overview": bool(overview.get("premise")),
+        },
+    )
+
+    # 2.9 势力圈层 - 使用现有人物、关系和事件数据
+    relations = projection.get("relations", [])
+    factions_gaps: list[str] = []
+    if not str(overview.get("premise") or "").strip():
+        factions_gaps.append("缺少故事前提，无法识别势力边界与主角路径。")
+    if character_count < 3:
+        factions_gaps.append(f"当前只有 {character_count} 名人物，不足以形成势力圈层分析。")
+    if event_count < 5:
+        factions_gaps.append(f"事件数量只有 {event_count} 个，不足以追踪主角在势力间的移动路径。")
+    checks["2.9"] = _readiness_check(
+        "2.9",
+        ready=not factions_gaps,
+        observed={
+            "character_count": character_count,
+            "event_count": event_count,
+            "relation_count": len(relations),
+        },
+        gaps=(
+            factions_gaps
+            or ["势力详略与晋级速度只能给单书观察；跨书圈层结构比较需要多书数据。"]
+        ),
+        required_artifact="人物、关系与事件列表（用于势力圈层分析）",
+        answer_scope="PARTIAL" if not factions_gaps else "NOT_READY",
+        source_material={
+            "character_count": character_count,
+            "event_count": event_count,
+            "relation_count": len(relations),
+        },
+    )
+
+    # 2.10 力量体系阶梯 - 使用world_rules和人物数据
+    _event_count_210 = len(events)
+    _world_rule_count_210 = len(world_rules)
+    power_gaps: list[str] = []
+    if _world_rule_count_210 == 0:
+        power_gaps.append("深层拆解尚未提取任何世界规则，无法识别力量体系约束和代价。")
+    if character_count < 2:
+        power_gaps.append("人物数量不足，无法形成有意义的战力层级对比。")
+    if _event_count_210 < 5:
+        power_gaps.append(f"事件数量只有 {_event_count_210} 个，不足以确认硬规则是否真实被执行。")
+    checks["2.10"] = _readiness_check(
+        "2.10",
+        ready=not power_gaps,
+        observed={
+            "world_rule_count": _world_rule_count_210,
+            "character_count": character_count,
+            "event_count": _event_count_210,
+        },
+        gaps=(
+            power_gaps
+            or ["力量上限和代价需要书内执行证据；同类力量体系对比需要多书数据。"]
+        ),
+        required_artifact="世界规则与人物状态（用于力量体系分析）",
+        answer_scope="PARTIAL" if not power_gaps else "NOT_READY",
+        source_material={
+            "world_rule_count": _world_rule_count_210,
+            "character_count": character_count,
         },
     )
 
