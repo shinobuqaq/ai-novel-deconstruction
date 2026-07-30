@@ -582,6 +582,8 @@ INITIAL_INCREMENTAL_QUESTION_IDS = (
     "4.9",
     "2.3",
     "2.4",
+    "1.5",
+    "5.3",
 )
 QG1_QUESTION_IDS = ("1.4", "3.1", "3.2", "3.4")
 _RECOMMENDED_RANK = {
@@ -772,6 +774,23 @@ LEARNING_QUESTION_ITEM_CONTRACTS: dict[
             "cross_book_rhythm_range",
             "同类书标准节奏区间",
             "只有同品类多书按同一段落和字符口径分析后才能回答。",
+        ),
+    ),
+    "1.5": (
+        LearningContractItemDefinition(
+            "ability_spec_card",
+            "金手指五要素规格卡",
+            "依次说明核心能力名称、触发或激活条件、代价或限制、成长轨道（如何升级/扩展）、主要产生的爽点类型；每项必须引用原文证据。",
+        ),
+        LearningContractItemDefinition(
+            "limit_trigger_log",
+            "限制触发事件表",
+            "列出限制条款被真实触发的事件，包括触发时的章节、情境、后果和例外；没有记录到触发事件时必须明确标为证据不足，不能用设定说明代替执行证据。",
+        ),
+        LearningContractItemDefinition(
+            "cross_book_comparison",
+            "同期同类对比",
+            "只有同品类同商业模式多本作品使用同一口径分析后才能回答；单书阶段必须标为证据不足。",
         ),
     ),
     "2.3": (
@@ -2563,8 +2582,9 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
             "lifecycle_count": len(valid_lifecycles),
             "generic_foreshadowing_count": len(deep.get("foreshadowing", [])),
         },
-        gaps=foreshadowing_gaps,
+        gaps=foreshadowing_gaps or ["当前只能给单书观察；跨书伏笔手法对比需要多书数据。"],
         required_artifact="全书伏笔埋设—保温—回收生命周期账本",
+        answer_scope="PARTIAL" if not foreshadowing_gaps else "NOT_READY",
     )
 
     decision_dependencies = [checks[question_id] for question_id in ("1.4", "2.1", "2.2")]
@@ -2609,6 +2629,37 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
         },
         gaps=method_gaps,
         required_artifact="单书方法候选三栏结算表",
+    )
+
+    # 1.5 金手指五要素规格 - 使用world_rules和events数据
+    world_rules = deep.get("world_rules", [])
+    world_rule_count = len(world_rules)
+    _event_count_15 = len(events)
+    gold_finger_gaps: list[str] = []
+    if world_rule_count == 0:
+        gold_finger_gaps.append("深层拆解尚未提取任何世界规则，无法核验金手指能力条款和代价。")
+    if _event_count_15 < 3:
+        gold_finger_gaps.append(f"事件数量只有 {_event_count_15} 个，不足以确认限制被真实触发。")
+    if not str(overview.get("premise") or "").strip():
+        gold_finger_gaps.append("缺少故事前提，无法确认金手指和主线的关系。")
+    checks["1.5"] = _readiness_check(
+        "1.5",
+        ready=not gold_finger_gaps,
+        observed={
+            "world_rule_count": world_rule_count,
+            "event_count": _event_count_15,
+            "has_overview": bool(str(overview.get("premise") or "").strip()),
+        },
+        gaps=(
+            gold_finger_gaps
+            or ["限制触发需要事件证据；同类对照需要同品类多书数据；当前只能给单书观察。"]
+        ),
+        required_artifact="世界规则与事件列表（用于金手指规格分析）",
+        answer_scope="PARTIAL" if not gold_finger_gaps else "NOT_READY",
+        source_material={
+            "world_rule_count": world_rule_count,
+            "event_count": _event_count_15,
+        },
     )
 
     # 2.3 配角功能分工矩阵 - 使用现有人物和事件数据

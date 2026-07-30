@@ -350,9 +350,9 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
     )
 
     assert readiness["ready"] is True
-    assert readiness["ready_question_count"] == 6
+    assert readiness["ready_question_count"] == 7
     assert readiness["complete_question_count"] == 2
-    assert readiness["partial_question_count"] == 4
+    assert readiness["partial_question_count"] == 5
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
         "2.1",
@@ -360,10 +360,12 @@ def test_specialized_ledgers_keep_3_4_blocked_until_its_own_payoff_tracking() ->
         "4.9",
         "2.3",
         "2.4",
+        "5.3",
     ]
     assert readiness["next_required_artifacts"] == [
         "前三章逐段任务与信息装载共享账本",
-        "前三章章末钩兑现追踪表（独立于 4.9）"
+        "前三章章末钩兑现追踪表（独立于 4.9）",
+        "世界规则与事件列表（用于金手指规格分析）",
     ]
 
 
@@ -395,7 +397,7 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
 
     readiness = assess_learning_report_readiness(projection)
 
-    assert readiness["ready_question_count"] == 7
+    assert readiness["ready_question_count"] == 8
     assert readiness["complete_question_count"] == 3
     assert readiness["generation_ready_question_ids"] == [
         "1.4",
@@ -405,6 +407,7 @@ def test_independent_opening_payoff_ledger_unlocks_3_4() -> None:
         "4.9",
         "2.3",
         "2.4",
+        "5.3",
     ]
 
 
