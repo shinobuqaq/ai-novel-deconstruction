@@ -1,0 +1,485 @@
+{
+  "name": "F-01 章节标题识别格式测试样本库",
+  "created": "2026-07-26",
+  "origin": "预注册验收单(process/acceptance_2026-07-26/预注册验收单.md)第 5 节 F-01;用户 2026-07-26 反馈",
+  "current_recognizer_source": "backend/app/services/source_import.py _CHAPTER_LINE/_HEADING(2026-07-26 实测)",
+  "acceptance_rule": "改造识别器后,以下每个样本导入结果必须满足 expected_units 与 assertions 全绿;confidence=candidate 的单元必须出现在 4.3 待确认通道而非静默硬切;current_recognizer 字段仅为改造前基线记录,不参与判定。",
+  "confidence_semantics": {
+    "high": "直接切章,无需人工确认",
+    "candidate": "切分建议进待确认队列,用户裁决后生效",
+    "high_if_sequence": "孤立出现为 candidate;与相邻候选构成连续编号且间隔规律时升为 high"
+  },
+  "samples": [
+    {
+      "id": "s01_zh_numeral",
+      "file": "samples/s01_zh_numeral.txt",
+      "description": "中文数字章号+标题(最常见网文格式)",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第一章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第二章",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "两章齐全",
+        "无正文被并入标题单元"
+      ]
+    },
+    {
+      "id": "s02_arabic",
+      "file": "samples/s02_arabic.txt",
+      "description": "阿拉伯数字章号",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第1章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第2章",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "两章齐全"
+      ]
+    },
+    {
+      "id": "s03_bare_number_inline",
+      "file": "samples/s03_bare_number_inline.txt",
+      "description": "裸数字+空格+标题同行(「1 我重生了」)",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "我重生了",
+          "confidence": "high_if_sequence"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "旧债",
+          "confidence": "high_if_sequence"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "归途",
+          "confidence": "high_if_sequence"
+        }
+      ],
+      "assertions": [
+        "连续递增数列(1,2,3)+间隔规律 → 可升高置信;孤立出现时必须走待确认"
+      ]
+    },
+    {
+      "id": "s04_bare_number_line",
+      "file": "samples/s04_bare_number_line.txt",
+      "description": "裸数字独占一行,标题在下一行",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "我重生了",
+          "confidence": "candidate"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "旧债",
+          "confidence": "candidate"
+        }
+      ],
+      "assertions": [
+        "数字行+短标题行合并为一个章标题",
+        "拿不准时进待确认,不得静默硬切"
+      ]
+    },
+    {
+      "id": "s05_longzu_regression",
+      "file": "samples/s05_longzu_regression.txt",
+      "description": "龙族回归样本:引子无分隔符直连标题+书名号尾声(本次验收实际踩坑格式)",
+      "current_recognizer": "不认(引子/尾声),认(第一幕)",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "引子",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第一幕",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "尾声",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "引子/尾声不得被吞进相邻单元(本次 2.5 万字事故的回归用例)",
+        "书名号《》内容保留为标题"
+      ]
+    },
+    {
+      "id": "s06_wrapper_keywords",
+      "file": "samples/s06_wrapper_keywords.txt",
+      "description": "结构词全家桶:楔子/序章/终章/番外/后记 + 间隔号变体",
+      "current_recognizer": "不认(全部结构词)",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "楔子",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "序章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第一章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "终章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "番外",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "后记",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "单独结构词与「结构词·标题」「结构词 标题」均识别",
+        "番外/后记应可标记为非正文主线单元(类型或标签区分)"
+      ]
+    },
+    {
+      "id": "s07_hua_counter",
+      "file": "samples/s07_hua_counter.txt",
+      "description": "「第X话」量词(现行字符类缺「话」)",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第1话",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第2话",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "「话」并入既有量词字符类即可,风险最低的一类"
+      ]
+    },
+    {
+      "id": "s08_fullwidth_digits",
+      "file": "samples/s08_fullwidth_digits.txt",
+      "description": "全角数字章号",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "１２",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "１３",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "全角数字不退化"
+      ]
+    },
+    {
+      "id": "s09_uppercase_zh_numeral",
+      "file": "samples/s09_uppercase_zh_numeral.txt",
+      "description": "大写中文数字(壹贰叁,现行字符类不含)",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第壹章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第贰章",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "壹贰叁肆伍陆柒捌玖拾佰仟并入数字字符类"
+      ]
+    },
+    {
+      "id": "s10_roman_bare",
+      "file": "samples/s10_roman_bare.txt",
+      "description": "裸罗马数字编号(无 chapter 前缀)",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "初雪",
+          "confidence": "candidate"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "融冰",
+          "confidence": "candidate"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "春汛",
+          "confidence": "candidate"
+        }
+      ],
+      "assertions": [
+        "罗马数字易与正文英文混淆,默认候选置信,连续数列可升高"
+      ]
+    },
+    {
+      "id": "s11_chapter_en",
+      "file": "samples/s11_chapter_en.txt",
+      "description": "英文 Chapter N",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "Chapter 5",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "Chapter 6",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "现状保持"
+      ]
+    },
+    {
+      "id": "s12_volume_chapter",
+      "file": "samples/s12_volume_chapter.txt",
+      "description": "卷+章两级结构",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "volume",
+          "title_contains": "卷一",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "出发",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "抵达",
+          "confidence": "high"
+        },
+        {
+          "type": "volume",
+          "title_contains": "卷二",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "重逢",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "卷标题单元不吞正文",
+        "跨卷章号重置(两个第一章)不报错"
+      ]
+    },
+    {
+      "id": "s13_markdown",
+      "file": "samples/s13_markdown.txt",
+      "description": "Markdown 标题层级",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "volume",
+          "title_contains": "卷一",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "出发",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "抵达",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "现状保持"
+      ]
+    },
+    {
+      "id": "s14_false_positive_guard",
+      "file": "samples/s14_false_positive_guard.txt",
+      "description": "防误切:正文内孤立数字行与类标题行",
+      "current_recognizer": "现状不误切(因为根本不认裸数字);改造后必须仍不误切",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "倒计时",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "复盘",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "正文中的 3/2/1 倒数与「一、二、」列表不得切章(总单元数=2)",
+        "统计启发:候选切分导致单章异常短(<数百字)时自动降置信"
+      ]
+    },
+    {
+      "id": "s15_physical_book",
+      "file": "samples/s15_physical_book.txt",
+      "description": "实体书形态:无卷、章极长、含后记",
+      "current_recognizer": "认(章),不认(后记)",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第一章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第二章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "后记",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "无标题文字的裸「第一章」可识别",
+        "长章不触发密度告警(长度启发用相对分布而非绝对阈值)"
+      ]
+    },
+    {
+      "id": "s16_dense_webnovel",
+      "file": "samples/s16_dense_webnovel.txt",
+      "description": "网文形态:短章高频(按比例缩小的 3000-4000 字/章)",
+      "current_recognizer": "认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第1章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第2章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第3章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第4章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第5章",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "第6章",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "6 章齐全且间隔规律",
+        "章长规律性可作为其他候选的交叉验证信号"
+      ]
+    },
+    {
+      "id": "s17_front_matter",
+      "file": "samples/s17_front_matter.txt",
+      "description": "书名/作者/简介前置区(不属于任何章节)",
+      "current_recognizer": "前置区被并入首个单元(现状无前言概念)",
+      "expected_units": [
+        {
+          "type": "front_matter",
+          "title_contains": "河堤往事",
+          "confidence": "candidate"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "出发",
+          "confidence": "high"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "抵达",
+          "confidence": "high"
+        }
+      ],
+      "assertions": [
+        "书名/作者/简介归入前置单元或待确认,不得算进第一章正文"
+      ]
+    },
+    {
+      "id": "s18_number_blank_title",
+      "file": "samples/s18_number_blank_title.txt",
+      "description": "数字行与标题行之间隔空行",
+      "current_recognizer": "不认",
+      "expected_units": [
+        {
+          "type": "chapter",
+          "title_contains": "第三个夏天",
+          "confidence": "candidate"
+        },
+        {
+          "type": "chapter",
+          "title_contains": "最后一场雨",
+          "confidence": "candidate"
+        }
+      ],
+      "assertions": [
+        "跨空行的数字+标题组合仅作候选,必须过待确认"
+      ]
+    }
+  ]
+}
