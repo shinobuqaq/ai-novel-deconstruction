@@ -86,14 +86,23 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```text
 ai-novel-deconstruction/
 ├─ backend/               FastAPI、Worker、领域与持久化
-├─ frontend/              React + TypeScript + Vite
-├─ docs/                  当前设计基线、ADR 和工程专项说明
+├─ frontend/              React + TypeScript + Vite（创作学习手册 UI）
+├─ docs/                  统一文档中心
+│  ├─ CURRENT_BASELINE.md 唯一系统设计与产品基线
+│  ├─ planning/           创作问题分级建议与交付计划
+│  ├─ research/           P01~P19 技术调研报告与 Claude 对话索引
+│  ├─ question_examples/  学习手册标准示例（含实操工具包格式）
+│  ├─ engineering/        持续集成与质量门禁
+│  └─ export/             基线 Word 导出版
+├─ samples/               样书语料库（《龙族》等原始测试样本）
 ├─ prompts/               已进入真实调用链的版本化提示词
 ├─ schemas/               Structured Output JSON Schema
 ├─ fixtures/              小型可重复测试语料
-├─ scripts/               Windows 开发脚本
-├─ workspace/             本地数据库、Artifact 与用户数据（不进 Git）
-└─ .env.example
+├─ scripts/               Windows 开发、诊断与导出脚本
+│  ├─ diagnostics/        状态排查与诊断脚本
+│  └─ export/             文档构建与格式导出工具
+├─ workspace/             本地数据库（app.db）、Artifact 与用户数据（不进 Git）
+└─ 启动AI小说拆解工作台.bat
 ```
 
 ## 5. 当前开发入口
@@ -107,6 +116,8 @@ ai-novel-deconstruction/
 本仓库不是从 P01—P19 中选择一个项目 Fork 而来。产品需求先决定需要什么零件，再从参考项目吸收适用的机制、思想或实现边界；不因为原项目存在某项功能就照搬同名产品功能。
 
 - [当前基线 V1.0](docs/CURRENT_BASELINE.md)：完整产品、系统、数据、质量、参考机制、进度和开发顺序；不需要拼接旧总览
+- [参考项目档案库](docs/research/reference_projects/)：P01—P19 评估报告与参考源码
+- [创作问题分级建议](docs/planning/42问分级与开发顺序建议.md)：创作者开书视角的 P0/P1/P2 问题分解与优先级
 - [第三方代码登记](docs/THIRD_PARTY_CODE.md)：当前未复制 P01—P19 源码；未来引入必须固定来源、版本和许可证
 - [工程专项文档](docs/engineering/)：当前持续集成等工程说明
 - [架构决策](docs/adr/)：已经接受的架构选择及原因
@@ -114,7 +125,7 @@ ai-novel-deconstruction/
 ## 7. 文档权威
 
 1. [当前基线 V1.0](docs/CURRENT_BASELINE.md)：唯一当前产品与系统判断入口
-2. `P01—P19` 单项目档案：需要具体零件时回查的研究证据
+2. [参考项目档案库](docs/research/reference_projects/)：需要具体零件时回查的研究证据
 3. [工程专项文档](docs/engineering/) 与 [架构决策](docs/adr/)：当前专项实现和验证依据，不能修改产品目标
 4. 本 README：启动和开发入口，不替代当前基线
 
