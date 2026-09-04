@@ -6430,8 +6430,8 @@ def _validate_selected_answers_against_projection(
 
 
 def _learning_report_json_default(value: object) -> str:
-    if isinstance(value, datetime):
-        return value.isoformat()
+    if hasattr(value, "isoformat"):  # handles datetime, date, time regardless of import path
+        return value.isoformat()  # type: ignore[union-attr]
     raise TypeError(
         f"Object of type {type(value).__name__} is not JSON serializable"
     )

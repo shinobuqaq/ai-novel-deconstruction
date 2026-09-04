@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import LearningHandbook from "./LearningHandbook";
 import {
   AnalysisCallContent,
   AnalysisIssue,
@@ -788,7 +789,7 @@ function FormalWorkbench({
   ];
 
   return (
-    <section className="formal-workbench" aria-label="创作方法学习工作台">
+    <section className={`formal-workbench${view === "learn" ? " wb-learn-mode" : ""}`} aria-label="创作方法学习工作台">
       <div className="formal-workbench-heading">
         <div>
           <p>{viewData.narrative_status === "READY" ? "已有故事证据，可以开始学习" : viewData.narrative_status === "INCOMPLETE" ? "故事证据需要补全" : "基础人物与事件已整理"}</p>
@@ -849,30 +850,16 @@ function FormalWorkbench({
         </div>
       )}
 
-      <div className="workbench-navigation">
-        <section className="learning-navigation" aria-label="创作学习入口">
-          <div>
-            <strong>默认入口</strong>
-            <span>按创作者真正要解决的问题阅读</span>
-          </div>
-          <button type="button" className={view === "learn" ? "active" : ""} onClick={() => { setSearchQuery(""); onViewChange("learn"); }}>
-            创作学习报告
+      <div className="workbench-tabs-bar" role="tablist">
+        <button type="button" role="tab" aria-selected={view === "learn"} className={`wb-tab-learn${view === "learn" ? " active" : ""}`} onClick={() => { setSearchQuery(""); onViewChange("learn"); }}>
+          学习
+        </button>
+        <div className="wb-tab-sep" aria-hidden="true" />
+        {evidenceTabs.map(({ key, label, count }) => (
+          <button type="button" role="tab" key={key} aria-selected={view === key} className={`wb-tab${view === key ? " active" : ""}`} onClick={() => { setSearchQuery(""); onViewChange(key); }}>
+            {label}{count !== undefined && <span>{count}</span>}
           </button>
-        </section>
-        <section className="evidence-navigation" aria-label="证据资料库">
-          <header>
-            <strong>证据资料库</strong>
-            <span>核对答案、回看原文、修正问题</span>
-          </header>
-          <nav className="formal-workbench-tabs" aria-label="证据资料版块">
-            {evidenceTabs.map(({ key, label, count }) => (
-              <button type="button" key={key} className={view === key ? "active" : ""} onClick={() => { setSearchQuery(""); onViewChange(key); }}>
-                {label}
-                {count !== undefined && <span>{count}</span>}
-              </button>
-            ))}
-          </nav>
-        </section>
+        ))}
       </div>
 
       {view !== "learn" && (
@@ -883,7 +870,7 @@ function FormalWorkbench({
         </div>
       )}
 
-      <div className={`formal-workbench-body${view === "source" || evidenceContext ? " has-evidence" : " reading-wide"}`}>
+      <div className={`formal-workbench-body${(view === "source" || evidenceContext) && view !== "learn" ? " has-evidence" : " reading-wide"}`}>
         <div className="formal-workbench-content">
           {searchQuery.trim() && (
             <section className="search-results">
@@ -903,25 +890,16 @@ function FormalWorkbench({
 
           {!searchQuery.trim() && view === "learn" && (
             <div className="learning-report">
-              <section className="learning-report-hero">
-                <span>北极星 42 问 · 默认学习入口</span>
-                <h3>先看这本书能教我什么</h3>
-                <p>系统按写书顺序逐问形成答案，每问独立检查原料；原料只够回答一部分时会明确保留缺口，不再等待无关问题一起就绪。</p>
-                <div>
-                  <strong>{generatedLearningCount}/42 已生成</strong>
-                  <strong>{answeredLearningCount} 项已有可用答案</strong>
-                  <strong>{learningReadiness.complete_question_count} 项可完整回答</strong>
-                  <strong>{learningReadiness.partial_question_count} 项可部分回答</strong>
-                </div>
-                <div className="learning-report-action">
+              {viewData.learning_report_status !== "READY" && (
+                <div className="learn-action-strip">
                   <span>{LEARNING_REPORT_STATUS_LABELS[viewData.learning_report_status] ?? "状态未知"}</span>
-                  {!isHistoricalRevision && learningReadiness.ready && viewData.deep_status === "READY" && viewData.learning_report_status !== "READY" && viewData.learning_report_status !== "GENERATING" && (
+                  {!isHistoricalRevision && learningReadiness.ready && viewData.deep_status === "READY" && viewData.learning_report_status !== "GENERATING" && (
                     <button type="button" disabled={busy === "start-learning-report"} onClick={onStartLearningReport}>
-                      {busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "基于最新拆解重新生成" : "生成候选学习答案"}
+                      {busy === "start-learning-report" ? "正在准备报告" : viewData.learning_report_status === "OUTDATED" ? "更新答案" : "生成学习答案"}
                     </button>
                   )}
                 </div>
-              </section>
+              )}
 
               {!learningReadiness.ready && (
                 <section className="learning-report-section">
@@ -941,451 +919,13 @@ function FormalWorkbench({
                 </section>
               )}
 
-              <section className="learning-coverage" aria-label="八个创作阶段目录">
-                {learningReport.stages.map((stage) => (
-                  <button
-                    type="button"
-                    className={activeLearningQuestion?.stage_id === stage.stage_id ? "active" : ""}
-                    disabled={!learningRouteQuestions.some((question) => question.stage_id === stage.stage_id)}
-                    onClick={() => {
-                      const firstQuestion = learningRouteQuestions.find(
-                        (question) => question.stage_id === stage.stage_id,
-                      );
-                      if (firstQuestion) setActiveLearningQuestionId(firstQuestion.question_id);
-                    }}
-                    key={stage.stage_id}
-                  >
-                    <span>{stage.stage_id}</span>
-                    <strong>{stage.stage_name}</strong>
-                    <small>{stage.generated_count}/{stage.total_count} 已生成</small>
-                  </button>
-                ))}
-              </section>
 
-              {view !== "learn" && <section className="learning-report-section character-design-ledger">
-                <header>
-                  <div><span>{characterDesignReadiness?.ready ? "已完成专项 · 北极星 2.2" : "当前专项 · 北极星 2.2"}</span><h3>主角双层欲望与最小完整集证据表</h3></div>
-                  <p>从已经拆出的全书主角事件中定位六项人物要素的首次行动证据；这是供 2.2 独立编译答案的证据账本，不是新书人设。</p>
-                </header>
-                <div className={`character-design-state ${viewData.character_design_status.toLowerCase()}`}>
-                  <div>
-                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.character_design_status] ?? "状态未知"}</strong>
-                    <span>{viewData.character_design_status === "GENERATING" ? "后台正在核对全部主角事件和对应原文，完成后会保存为独立版本。" : characterDesignReadiness?.ready ? "六项首次展示均有事件、章节和原文对应关系。" : characterDesignReadiness?.gaps.join("；") || "需要先完成故事结构和深层拆解。"}</span>
-                  </div>
-                  {!isHistoricalRevision && viewData.deep_status === "READY" && viewData.character_design_status !== "GENERATING" && (
-                    <button type="button" disabled={busy === "start-character-design"} onClick={() => onStartCharacterDesign(viewData.character_design_status === "READY")}>
-                      {busy === "start-character-design" ? "正在准备证据分析" : viewData.character_design_status === "READY" ? "重新分析 2.2" : viewData.character_design_status === "OUTDATED" ? "基于最新拆解重新生成" : viewData.character_design_status === "FAILED" ? "重新生成证据表" : "生成 2.2 证据表"}
-                    </button>
-                  )}
-                </div>
-
-                {characterDesign && (
-                  <>
-                    {!characterDesign.is_current && <div className="character-design-warning">当前显示的是旧版结果，只供回看；最新故事结构或深层拆解已经变化。</div>}
-                    <div className="character-design-coverage">
-                      <div><strong>{characterDesign.coverage.covered_event_count}/{characterDesign.coverage.protagonist_event_count}</strong><span>主角事件已纳入</span></div>
-                      <div><strong>{characterDesign.coverage.source_chapter_count}</strong><span>全书章节</span></div>
-                      <div><strong>{characterDesign.coverage.first_30_chapter_event_count}</strong><span>前 30 章主角事件</span></div>
-                      <div><strong>第 {characterDesign.revision} 版</strong><span>{characterDesign.is_current ? "对应当前拆解" : "旧版结果"}</span></div>
-                    </div>
-                    <div className="character-design-fields">
-                      {characterDesign.fields.map((item) => (
-                        <article className={item.status === "SUPPORTED" ? "supported" : "insufficient"} key={item.field}>
-                          <header><strong>{CHARACTER_DESIGN_FIELD_LABELS[item.field] ?? item.field}</strong><span>{item.status === "SUPPORTED" ? `首次展示：第 ${item.first_display_chapter_ordinal} 章` : "证据不足"}</span></header>
-                          <h4>{item.value || "当前材料无法形成可靠判断"}</h4>
-                          {item.display_event && <p>{item.display_event}</p>}
-                          <small>{item.explanation}</small>
-                          {evidenceButtons(item.evidence_ids, "查看首次展示原文")}
-                        </article>
-                      ))}
-                    </div>
-                    <article className="character-design-arc">
-                      <span>全书人物弧光</span>
-                      <p>{characterDesign.arc_summary}</p>
-                    </article>
-                    <div className="desire-conflict-list">
-                      <header><strong>两层欲望冲突节点</strong><span>{characterDesign.desire_conflicts.length} 个可核查节点</span></header>
-                      {characterDesign.desire_conflicts.map((item, index) => (
-                        <article key={`${item.event_id}-${index}`}>
-                          <header><strong>第 {item.chapter_ordinal} 章</strong><span>表层目标与深层需要发生冲突</span></header>
-                          <dl><div><dt>表层欲望</dt><dd>{item.surface_desire}</dd></div><div><dt>深层欲望</dt><dd>{item.deep_desire}</dd></div><div><dt>现场动机原文</dt><dd>{item.motive}</dd></div><div><dt>实际选择原文</dt><dd>{item.choice}</dd></div><div><dt>现场结果原文</dt><dd>{item.result}</dd></div><div><dt>付出代价原文</dt><dd>{item.sacrifice}</dd></div><div><dt>弧光变化</dt><dd>{item.arc_change}</dd></div></dl>
-                          {evidenceButtons(item.motive_evidence_ids, "查看欲望与动机原文")}
-                          {evidenceButtons(item.choice_evidence_ids, "查看实际选择原文")}
-                          {evidenceButtons(item.result_evidence_ids, "查看现场结果原文")}
-                          {evidenceButtons(item.sacrifice_evidence_ids, "查看选择代价原文")}
-                        </article>
-                      ))}
-                      {!characterDesign.desire_conflicts.length && <p className="result-empty">当前没有找到能由同一事件原文证明的双层欲望冲突节点，系统没有凑数。</p>}
-                    </div>
-                  </>
-                )}
-              </section>}
-
-              {view !== "learn" && <section className="learning-report-section chapter-end-hooks-ledger">
-                <header>
-                  <div><span>{chapterEndHooksReadiness?.ready ? "已完成专项 · 北极星 4.9" : "当前专项 · 北极星 4.9"}</span><h3>逐章章末钩类型与节律账本</h3></div>
-                  <p>程序固定真实章末原文，模型只提议类型与强度；全书按连续窗口覆盖，无钩章节同样保留证据并计入覆盖。</p>
-                </header>
-                <div className={`character-design-state ${viewData.chapter_end_hooks_status.toLowerCase()}`}>
-                  <div>
-                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.chapter_end_hooks_status] ?? "状态未知"}</strong>
-                    <span>{viewData.chapter_end_hooks_status === "GENERATING" ? "后台正在按连续窗口核对章末类型和强度，全部窗口完成后由程序统一计数。" : chapterEndHooksReadiness?.ready ? "逐章结尾证据、全书覆盖和顺序指标已通过程序校验。" : chapterEndHooksReadiness?.gaps.join("；") || "需要先完成故事结构和深层拆解。"}</span>
-                  </div>
-                  {!isHistoricalRevision && characterDesignReadiness?.ready && viewData.deep_status === "READY" && viewData.chapter_end_hooks_status !== "GENERATING" && (
-                    <button type="button" disabled={busy === "start-chapter-end-hooks"} onClick={() => onStartChapterEndHooks(viewData.chapter_end_hooks_status === "READY")}>
-                      {busy === "start-chapter-end-hooks" ? "正在准备逐章分析" : viewData.chapter_end_hooks_status === "READY" ? "重新分析 4.9" : viewData.chapter_end_hooks_status === "OUTDATED" ? "基于最新拆解重新生成" : viewData.chapter_end_hooks_status === "FAILED" ? "重新生成章末钩账本" : "生成 4.9 逐章账本"}
-                    </button>
-                  )}
-                </div>
-
-                {chapterEndHooks && (
-                  <>
-                    {!chapterEndHooks.is_current && <div className="character-design-warning">当前显示的是旧版章末钩结果，只供回看；最新正文或深层拆解已经变化。</div>}
-                    <div className="character-design-coverage">
-                      <div><strong>{chapterEndHooks.coverage.sampled_chapter_count}/{chapterEndHooks.coverage.required_sample_count}</strong><span>真实章末已覆盖</span></div>
-                      <div><strong>{chapterEndHooks.summary.max_consecutive_strong} 章</strong><span>最长连续强钩</span></div>
-                      <div><strong>{chapterEndHooks.summary.no_hook_count} 章</strong><span>无钩章节</span></div>
-                      <div><strong>{chapterEndHooks.coverage.window_count ?? 1}</strong><span>连续分析窗口</span></div>
-                    </div>
-                    <div className="hook-type-summary">
-                      {chapterEndHooks.summary.type_distribution.filter((item) => item.count > 0).map((item) => (
-                        <div key={item.hook_type}><strong>{item.count}</strong><span>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</span><small>{Math.round(item.ratio * 100)}%</small></div>
-                      ))}
-                    </div>
-                    <div className="chapter-hook-list">
-                      {chapterEndHooks.chapters.map((item) => (
-                        <article key={item.chapter_ordinal} className={item.hook_type === "NONE" ? "none" : item.strength.toLowerCase()}>
-                          <header>
-                            <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{item.phase_title || "未归入剧情阶段"}</span></div>
-                            <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
-                          </header>
-                          <h4>{item.hook_question || "本章没有形成具体未闭合问题"}</h4>
-                          <p>{item.rationale}</p>
-                          {item.retention_basis && <small>章末依据：{item.retention_basis}</small>}
-                          <div className="chapter-hook-evidence-actions">
-                            {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </section>}
-
-              {view !== "learn" && <section className="learning-report-section chapter-end-hooks-ledger">
-                <header>
-                  <div><span>{openingHookPayoffsReadiness?.ready ? "已完成专项 · 北极星 3.4" : "当前专项 · 北极星 3.4"}</span><h3>前三章章末钩与首次回应</h3></div>
-                  <p>这里只追踪前三章各自留下的追读问题及其最早回应。程序连续覆盖后续正文并计算章数与字数距离，页面只展示三条结论。</p>
-                </header>
-                <div className={`character-design-state ${viewData.opening_hook_payoffs_status.toLowerCase()}`}>
-                  <div>
-                    <strong>{CHARACTER_DESIGN_STATUS_LABELS[viewData.opening_hook_payoffs_status] ?? "状态未知"}</strong>
-                    <span>{viewData.opening_hook_payoffs_status === "GENERATING" ? "后台正在连续检查前三章之后的正文，寻找每个钩子的最早真实回应。" : openingHookPayoffsReadiness?.ready ? "前三章钩子、回应位置和距离已经通过程序校验。" : openingHookPayoffsReadiness?.gaps.join("；") || "需要先完成当前版 4.9 章末钩类型账本。"}</span>
-                  </div>
-                  {!isHistoricalRevision && chapterEndHooksReadiness?.ready && viewData.opening_hook_payoffs_status !== "GENERATING" && (
-                    <button type="button" disabled={busy === "start-opening-hook-payoffs"} onClick={() => onStartOpeningHookPayoffs(viewData.opening_hook_payoffs_status === "READY")}>
-                      {busy === "start-opening-hook-payoffs" ? "正在准备回应核对" : viewData.opening_hook_payoffs_status === "READY" ? "重新分析 3.4" : viewData.opening_hook_payoffs_status === "OUTDATED" ? "基于最新章末钩重新生成" : "生成 3.4 回应账本"}
-                    </button>
-                  )}
-                </div>
-                {openingHookPayoffs && (
-                  <>
-                    {!openingHookPayoffs.is_current && <div className="character-design-warning">当前显示的是旧版结果，只供回看；最新正文或章末钩账本已经变化。</div>}
-                    <div className="chapter-hook-list">
-                      {openingHookPayoffs.hooks.map((item) => (
-                        <article key={`opening-payoff-${item.chapter_ordinal}`} className={item.hook_type === "NONE" ? "none" : item.strength.toLowerCase()}>
-                          <header>
-                            <div><strong>第 {item.chapter_ordinal} 章 · {item.chapter_title}</strong><span>{CHAPTER_END_HOOK_RESPONSE_LABELS[item.response_status]}</span></div>
-                            <div><b>{CHAPTER_END_HOOK_TYPE_LABELS[item.hook_type]}</b><i>{CHAPTER_END_HOOK_STRENGTH_LABELS[item.strength]}</i></div>
-                          </header>
-                          <h4>{item.hook_question || "本章没有形成具体追读问题"}</h4>
-                          <p>{item.response_summary || item.response_rationale || "当前证据没有形成可靠回应结论。"}</p>
-                          <small>{item.response_chapter_ordinal ? `首次回应：第 ${item.response_chapter_ordinal} 章 · 间隔 ${item.response_distance_chapters} 章 · 约 ${formatNumber(item.response_distance_chars ?? 0)} 字` : item.response_status === "NOT_APPLICABLE" ? "本章无钩，不计算回应距离。" : "已连续检查全书，未找到可由原文证明的回应。"}</small>
-                          <div className="chapter-hook-evidence-actions">
-                            {evidenceButtons(item.ending_evidence_ids, "查看真实章末")}
-                            {evidenceButtons(item.response_evidence_ids, "查看回应原文")}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </section>}
-
-              <section className="learning-report-section learning-question-reader">
-                <header>
-                  <div><span>按写书顺序阅读 · 一次只看一问</span><h3>先判断当前答案有没有用、有没有抓住重点</h3></div>
-                  <p>42 问是系统内部的完整主尺，不会一次铺满页面。你只需要顺着阶段目录阅读当前问题，需要核实时再打开证据资料。</p>
-                </header>
-                {activeLearningQuestion ? (
-                  <>
-                    <nav className="learning-question-pager" aria-label="问题切换">
-                      <button
-                        type="button"
-                        disabled={activeLearningQuestionIndex === 0}
-                        onClick={() => setActiveLearningQuestionId(
-                          learningRouteQuestions[activeLearningQuestionIndex - 1].question_id,
-                        )}
-                      >
-                        上一问
-                      </button>
-                      <span>当前路线第 {activeLearningQuestionIndex + 1}/{learningRouteQuestions.length} 问</span>
-                      <button
-                        type="button"
-                        disabled={activeLearningQuestionIndex >= learningRouteQuestions.length - 1}
-                        onClick={() => setActiveLearningQuestionId(
-                          learningRouteQuestions[activeLearningQuestionIndex + 1].question_id,
-                        )}
-                      >
-                        下一问
-                      </button>
-                    </nav>
-                    <article className="learning-question-card active-question" key={activeLearningQuestion.question_id}>
-                      <header>
-                        <span>{activeLearningQuestion.question_id} · {activeLearningQuestion.stage_name}</span>
-                        <i>{LEARNING_ANSWER_STATUS_LABELS[activeLearningQuestion.status] ?? "状态未知"}</i>
-                      </header>
-                      <h4>{activeLearningQuestion.question}</h4>
-                      <div className="learning-progress-columns" aria-label="问题三栏进度">
-                        <span><b>合同</b>{activeLearningQuestion.contract_status === "COMPLETE" ? "已完成" : "未完成"}</span>
-                        <span><b>原料</b>{activeLearningQuestion.material_status === "READY" ? "已就绪" : activeLearningQuestion.material_status === "GENERATING" ? "生成中" : activeLearningQuestion.material_status === "OUTDATED" ? "已过期" : activeLearningQuestion.material_status === "FAILED" ? "失败" : activeLearningQuestion.material_status === "NOT_ASSESSED" ? "未审计" : "未就绪"}</span>
-                        <span><b>正式答案</b>{activeLearningQuestion.has_current_answer ? "当前有效" : activeLearningQuestion.answer_status === "OUTDATED" ? "已过期" : "尚无"}</span>
-                      </div>
-                      {(activeLearningQuestion.handbook as any)?.why_important && (
-                        <aside className="handbook-why-important">
-                          <strong>为什么重要</strong>
-                          <p>{(activeLearningQuestion.handbook as any).why_important}</p>
-                        </aside>
-                      )}
-                      <p>{activeLearningQuestion.conclusion || (viewData.learning_report_status === "GENERATING" ? "系统正在根据拆解证据生成这项答案。" : "这项专项答案尚未生成。")}</p>
-                      {activeLearningQuestion.metrics.length > 0 && (
-                        <div className="learning-metric-row">
-                          {activeLearningQuestion.metrics.map((metric, index) => (
-                            <div key={`${metric.label}-${index}`} title={metric.method}>
-                              <strong>{metric.value}{metric.unit ? ` ${metric.unit}` : ""}</strong>
-                              <span>{metric.label}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {(activeLearningQuestion.handbook as any)?.universal_methods?.length > 0 && (
-                        <section className="handbook-universal-methods">
-                          <strong>通用方法</strong>
-                          <ul>
-                            {(activeLearningQuestion.handbook as any).universal_methods.map((method: string, i: number) => (
-                              <li key={i}>{method}</li>
-                            ))}
-                          </ul>
-                        </section>
-                      )}
-                      {(activeLearningQuestion.handbook as any) && (
-                        ((activeLearningQuestion.handbook as any).checklist?.length > 0
-                          || (activeLearningQuestion.handbook as any).common_errors?.length > 0
-                          || (activeLearningQuestion.handbook as any).templates?.length > 0)
-                      ) && (
-                        <section className="handbook-toolkit">
-                          <strong>实操工具包</strong>
-                          {(activeLearningQuestion.handbook as any).checklist?.length > 0 && (
-                            <div className="handbook-checklist">
-                              <b>自检清单</b>
-                              <ul>
-                                {(activeLearningQuestion.handbook as any).checklist.map((item: string, i: number) => (
-                                  <li key={i}><label><input type="checkbox" /><span>{item}</span></label></li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {(activeLearningQuestion.handbook as any).common_errors?.length > 0 && (
-                            <div className="handbook-errors">
-                              <b>常见错误</b>
-                              {(activeLearningQuestion.handbook as any).common_errors.map((err: any, i: number) => (
-                                <div key={i} className="handbook-error-item">
-                                  <span className="handbook-error-mistake">❌ {err.mistake}</span>
-                                  <span className="handbook-error-fix">✅ {err.fix}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {(activeLearningQuestion.handbook as any).templates?.length > 0 && (
-                            <details className="handbook-templates">
-                              <summary>可套模板（{(activeLearningQuestion.handbook as any).templates.length} 个）</summary>
-                              {(activeLearningQuestion.handbook as any).templates.map((tmpl: any, i: number) => (
-                                <div key={i} className="handbook-template-item">
-                                  <strong>{tmpl.name}</strong>
-                                  <pre>{tmpl.structure}</pre>
-                                  {tmpl.checkpoints?.length > 0 && (
-                                    <ul>{tmpl.checkpoints.map((cp: string, j: number) => <li key={j}>{cp}</li>)}</ul>
-                                  )}
-                                </div>
-                              ))}
-                            </details>
-                          )}
-                        </section>
-                      )}
-                      {(activeLearningQuestion.handbook as any)?.genre_note && (
-                        <aside className="handbook-genre-note">
-                          <small>📋 题材差异：{(activeLearningQuestion.handbook as any).genre_note}</small>
-                        </aside>
-                      )}
-                      {activeLearningQuestion.contract_items.length > 0 && (
-                        <details className="learning-contract-details">
-                          <summary>
-                            <strong>查看这一问的逐项验收</strong>
-                            <span>
-                              {activeLearningQuestion.contract_items.filter((item) => item.status === "SUPPORTED").length}
-                              /{activeLearningQuestion.contract_items.length} 项已有书内或程序依据
-                            </span>
-                          </summary>
-                          <div className="learning-contract-list">
-                            {activeLearningQuestion.contract_items.map((item) => (
-                              <article key={item.item_id} className={item.status === "SUPPORTED" ? "supported" : "insufficient"}>
-                                <header><strong>{item.label}</strong><i>{item.status === "SUPPORTED" ? "已有依据" : "仍缺数据"}</i></header>
-                                <p>{item.finding}</p>
-                                {item.limitations.length > 0 && <small>限制：{item.limitations.join("；")}</small>}
-                                {evidenceButtons(item.evidence_ids.slice(0, 3), "查看该项原文")}
-                              </article>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-                      {activeLearningQuestion.program_artifacts.opening_character_ledger && (
-                        <>
-                          <div className="learning-answer-block">
-                            <strong>高参与度人物：身份、作用与后续戏份</strong>
-                            <ul>
-                              {[...activeLearningQuestion.program_artifacts.opening_character_ledger.roles]
-                                .sort((left, right) => (
-                                  right.action_event_count_through_30 - left.action_event_count_through_30
-                                  || left.sequence_no - right.sequence_no
-                                ))
-                                .slice(0, 8)
-                                .map((item) => (
-                                  <li key={`key-role-${item.sequence_no}`}>
-                                    {item.character_name}：{item.identity_summary}；首次以“{item.first_scene_function}”
-                                    发挥作用，前 30 章参与 {item.action_event_count_through_30} 个行动事件。
-                                  </li>
-                                ))}
-                            </ul>
-                          </div>
-                          <details className="learning-contract-details opening-character-ledger">
-                            <summary>
-                              <strong>查看完整角色首行动账本</strong>
-                              <span>{activeLearningQuestion.program_artifacts.opening_character_ledger.roles.length} 人，默认收起</span>
-                            </summary>
-                            <div className="opening-character-ledger-list">
-                            {activeLearningQuestion.program_artifacts.opening_character_ledger.roles.map((item) => (
-                              <article key={`${item.sequence_no}-${item.character_name}`}>
-                                <header>
-                                  <strong>{item.sequence_no}. {item.character_name}</strong>
-                                  <i>第 {item.first_action_chapter} 章 · {item.later_role_volume}</i>
-                                </header>
-                                <p>{item.identity_summary}</p>
-                                <p>{item.first_scene_function}</p>
-                                <small>前 30 章参与有效行动事件 {item.action_event_count_through_30} 个 · 首次事件：{item.first_action_event_title}</small>
-                                {evidenceButtons(item.first_scene_function_evidence_ids, "查看首次行动原文")}
-                              </article>
-                            ))}
-                            </div>
-                          </details>
-                        </>
-                      )}
-                      {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix && (
-                        <details className="learning-contract-details">
-                          <summary>
-                            <strong>章末钩类型与强度交叉关系</strong>
-                            <span>全书 {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix.rows.length} 类，默认收起</span>
-                          </summary>
-                          <ul>
-                            {activeLearningQuestion.program_artifacts.chapter_end_hook_matrix.rows.map((row) => (
-                              <li key={row.hook_type}>
-                                {row.type_label}：强 {row.counts.STRONG}、中 {row.counts.MEDIUM}、
-                                轻 {row.counts.LIGHT}、无 {row.counts.NONE}
-                                {row.examples.length > 0 && (
-                                  `；例：${row.examples.map((item) => (
-                                    `第 ${item.chapter_ordinal} 章（${item.strength_label}）`
-                                  )).join("、")}`
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-                      {activeLearningQuestion.program_artifacts.opening_structure_ledger && (
-                        <details className="learning-contract-details opening-structure-ledger">
-                          <summary>
-                            <strong>查看前三章逐段分析原料</strong>
-                            <span>
-                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.coverage.paragraph_count} 个原文段落，
-                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.paragraph_segments.length} 个连续功能段，默认收起
-                            </span>
-                          </summary>
-                          <div className="opening-structure-ledger-list">
-                            <section>
-                              <h5>每章承担的任务</h5>
-                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.chapter_tasks.map((item) => (
-                                <article key={`opening-task-${item.chapter_ordinal}`}>
-                                  <strong>第 {item.chapter_ordinal} 章</strong>
-                                  <p>{item.tasks.join("；")}</p>
-                                  <small>{item.explanation}</small>
-                                </article>
-                              ))}
-                            </section>
-                            <section>
-                              <h5>六类信息首次位置</h5>
-                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.information_timeline.map((item) => (
-                                <article key={`opening-module-${item.module}`} className={item.status === "SUPPORTED" ? "" : "insufficient"}>
-                                  <strong>{item.module}</strong>
-                                  <p>
-                                    {item.status === "SUPPORTED" && item.first_chapter_ordinal && item.first_paragraph
-                                      ? `首次见于第 ${item.first_chapter_ordinal} 章第 ${item.first_paragraph} 段，相关内容约 ${item.character_count} 字。`
-                                      : "前三章没有足够依据确认已经出现。"}
-                                  </p>
-                                  <small>{item.finding}</small>
-                                </article>
-                              ))}
-                            </section>
-                            <section className="opening-structure-segments">
-                              <h5>逐段功能分组</h5>
-                              {activeLearningQuestion.program_artifacts.opening_structure_ledger.paragraph_segments.map((item) => (
-                                <article key={`opening-segment-${item.chapter_ordinal}-${item.paragraph_start}-${item.paragraph_end}`}>
-                                  <header>
-                                    <strong>
-                                      第 {item.chapter_ordinal} 章 · 第 {item.paragraph_start}
-                                      {item.paragraph_end === item.paragraph_start ? "" : `—${item.paragraph_end}`} 段
-                                    </strong>
-                                    <i>{item.scope === "STORY" ? "正文" : "正文外信息"}</i>
-                                  </header>
-                                  <p>{item.function}</p>
-                                  {item.information_modules.length > 0 && <small>承载信息：{item.information_modules.join("、")}</small>}
-                                  <small>{item.explanation}</small>
-                                </article>
-                              ))}
-                            </section>
-                          </div>
-                        </details>
-                      )}
-                      {activeLearningQuestion.reusable_lessons.length > 0 && (
-                        <div className="learning-answer-block">
-                          <strong>可以参考</strong>
-                          <ul>{activeLearningQuestion.reusable_lessons.map((item) => <li key={item}>{item}</li>)}</ul>
-                        </div>
-                      )}
-                      {activeLearningQuestion.do_not_copy.length > 0 && (
-                        <div className="learning-answer-block warning">
-                          <strong>不能照搬</strong>
-                          <ul>{activeLearningQuestion.do_not_copy.map((item) => <li key={item}>{item}</li>)}</ul>
-                        </div>
-                      )}
-                      {activeLearningQuestion.limitations.length > 0 && <small>限制：{activeLearningQuestion.limitations.join("；")}</small>}
-                      <div className="learning-card-actions">
-                        <button type="button" className="text-action" onClick={() => onViewChange(LEARNING_EVIDENCE_VIEWS[activeLearningQuestion.evidence_view] ?? "overview")}>打开相关证据资料</button>
-                        {evidenceButtons(activeLearningQuestion.evidence_ids.slice(0, 4), "查看关键原文")}
-                        {evidenceButtons(activeLearningQuestion.counter_evidence_ids.slice(0, 3), "查看反证或限制")}
-                      </div>
-                    </article>
-                  </>
-                ) : <p className="result-empty">当前还没有进入学习路线的问题；先完成可回答问题的原料检查。</p>}
-              </section>
+              <LearningHandbook
+                learningReport={learningReport}
+                activeLearningQuestionId={activeLearningQuestionId}
+                onSelectQuestion={setActiveLearningQuestionId}
+                evidenceButtons={evidenceButtons}
+              />
 
               <section className="learning-report-section learning-settlement">
                 <header>
@@ -2440,6 +1980,8 @@ export default function ProductWorkbench() {
 
   async function handleRepairNarrative() {
     if (!analysisRun) return;
+    // Exit learn-fullscreen before repair so the UI stays stable during background update
+    if (workbenchView === "learn") setWorkbenchView("overview");
     try {
       setBusy("repair-narrative");
       setError("");
@@ -2736,6 +2278,43 @@ export default function ProductWorkbench() {
             <div className="product-empty">
               <h2>先创建一本小说项目</h2>
               <p>创建后即可导入 TXT、Markdown、DOCX 或 EPUB 文件。</p>
+            </div>
+          ) : workbenchView === "learn" ? (
+            <div className="learn-fullscreen">
+              <div className="learn-mode-topbar">
+                <button type="button" className="text-action learn-back-btn" onClick={() => setWorkbenchView("overview")}>← 返回分析</button>
+                <span className="learn-mode-label">学习手册</span>
+              </div>
+              {workbench && analysisRun ? (
+                <FormalWorkbench
+                  data={workbench}
+                  analysisStatus={analysisRun.status === "FAILED" ? "REVIEW" : analysisRun.status}
+                  view={workbenchView}
+                  onViewChange={setWorkbenchView}
+                  evidenceContext={evidenceContext}
+                  onOpenEvidence={(evidenceId) => void handleOpenEvidence(evidenceId)}
+                  onCloseEvidence={() => setEvidenceContext(null)}
+                  sourceChapters={chapters}
+                  selectedChapterId={selectedChapter}
+                  chapterContent={chapterContent}
+                  onSelectChapter={setSelectedChapter}
+                  busy={busy}
+                  onAnalysisRunChange={(run) => void loadAnalysisResults(run)}
+                  onWorkbenchChange={setWorkbench}
+                  onRepairNarrative={() => void handleRepairNarrative()}
+                  onStartDeepAnalysis={() => void handleStartDeepAnalysis()}
+                  onStartCharacterDesign={(force) => void handleStartCharacterDesign(force)}
+                  onStartChapterEndHooks={(force) => void handleStartChapterEndHooks(force)}
+                  onStartOpeningHookPayoffs={(force) => void handleStartOpeningHookPayoffs(force)}
+                  onStartOpeningStructure={(force) => void handleStartOpeningStructure(force)}
+                  onStartLearningReport={() => void handleStartLearningReport()}
+                  onConfirmAnalysis={() => void handleConfirmAnalysis()}
+                />
+              ) : (
+                <div className="learn-loading">
+                  {!activeVersion ? "请先导入小说文件" : !analysisRun ? "请先运行拆书分析" : "正在加载…"}
+                </div>
+              )}
             </div>
           ) : (
             <>
