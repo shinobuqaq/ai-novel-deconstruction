@@ -24,6 +24,7 @@ class TaskStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     RETRY_WAIT = "RETRY_WAIT"
+    WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
     CANCEL_REQUESTED = "CANCEL_REQUESTED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
@@ -60,10 +61,16 @@ class SourceIssueStatus(StrEnum):
 class AnalysisRunStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
     REVIEW = "REVIEW"
     CONFIRMED = "CONFIRMED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+class AnalysisDigestLevel(StrEnum):
+    RANGE = "RANGE"
+    STAGE = "STAGE"
 
 
 class CandidateStatus(StrEnum):
@@ -131,7 +138,7 @@ class SourceVersion(Base):
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    parser_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    parser_version: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     original_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     text_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     total_chars: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -275,6 +282,41 @@ class AnalysisRun(Base):
         back_populates="run",
         cascade="all, delete-orphan",
     )
+    narrative_synthesis: Mapped["NarrativeSynthesis | None"] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    hierarchical_digests: Mapped[list["AnalysisDigest"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AnalysisDigest.level, AnalysisDigest.sequence_no",
+    )
+    deep_analyses: Mapped[list["DeepAnalysis"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="DeepAnalysis.revision_no",
+    )
+    learning_question_evidence: Mapped[list["LearningQuestionEvidence"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="LearningQuestionEvidence.question_id, LearningQuestionEvidence.revision_no",
+    )
+    learning_reports: Mapped[list["LearningReport"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="LearningReport.revision_no",
+    )
+    issues: Mapped[list["AnalysisIssue"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AnalysisIssue.created_at",
+    )
+    person_identity_decisions: Mapped[list["PersonIdentityDecision"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="PersonIdentityDecision.created_at",
+    )
 
 
 class AnalysisRunTask(Base):
@@ -343,6 +385,7 @@ class EventCandidate(Base):
     event_type: Mapped[str] = mapped_column(String(60), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     participants_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     start_char: Mapped[int] = mapped_column(Integer, nullable=False)
     end_char: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -353,6 +396,263 @@ class EventCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     run: Mapped[AnalysisRun] = relationship(back_populates="event_candidates")
+
+
+class NarrativeSynthesis(Base):
+    __tablename__ = "narrative_syntheses"
+    __table_args__ = (
+        Index("ux_narrative_synthesis_run", "run_id", unique=True),
+        Index("ix_narrative_syntheses_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("nsy")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="narrative_synthesis")
+
+
+class AnalysisDigest(Base):
+    """Durable, source-linked summaries used only for long-book navigation."""
+
+    __tablename__ = "analysis_digests"
+    __table_args__ = (
+        Index(
+            "ux_analysis_digest_run_level_sequence",
+            "run_id",
+            "level",
+            "sequence_no",
+            unique=True,
+        ),
+        Index("ux_analysis_digest_task", "created_by_task_id", unique=True),
+        Index("ix_analysis_digests_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("adg")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    level: Mapped[str] = mapped_column(String(20), nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_digest_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_event_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_unit_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="hierarchical_digests")
+
+
+class DeepAnalysis(Base):
+    """Evidence-backed facts, states, claims and narrative assets for a run.
+
+    The payload is immutable by analysis attempt and contains program-assigned
+    IDs for each item. Keeping the stage as one artifact lets the pipeline
+    replace a complete dependent view atomically while preserving provenance.
+    """
+
+    __tablename__ = "deep_analyses"
+    __table_args__ = (
+        Index("ux_deep_analysis_run_revision", "run_id", "revision_no", unique=True),
+        Index("ux_deep_analysis_task", "created_by_task_id", unique=True),
+        Index("ix_deep_analyses_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("dpa")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="deep_analyses")
+
+
+class LearningQuestionEvidence(Base):
+    """Versioned source ledger for one North Star question.
+
+    Each question keeps its own validated payload contract. The shared table
+    only owns provenance, revisions and invalidation so later 4.9/5.3 ledgers
+    do not need unrelated persistence paths.
+    """
+
+    __tablename__ = "learning_question_evidence"
+    __table_args__ = (
+        Index(
+            "ux_learning_question_evidence_run_question_revision",
+            "run_id",
+            "question_id",
+            "revision_no",
+            unique=True,
+        ),
+        Index("ux_learning_question_evidence_task", "created_by_task_id", unique=True),
+        Index(
+            "ix_learning_question_evidence_source_version",
+            "source_version_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("lqe")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    question_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="learning_question_evidence")
+
+
+class LearningReport(Base):
+    """Versioned, evidence-backed answers to the North Star question catalog."""
+
+    __tablename__ = "learning_reports"
+    __table_args__ = (
+        Index("ux_learning_report_run_revision", "run_id", "revision_no", unique=True),
+        Index("ux_learning_report_task", "created_by_task_id", unique=True),
+        Index("ix_learning_reports_source_version", "source_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("lrp")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_version_id: Mapped[str] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_deep_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="learning_reports")
+
+
+class AnalysisIssue(Base):
+    __tablename__ = "analysis_issues"
+    __table_args__ = (
+        Index("ix_analysis_issues_run_status", "run_id", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("ais")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_label: Mapped[str] = mapped_column(String(300), nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="issues")
+
+
+class PersonIdentityDecision(Base):
+    __tablename__ = "person_identity_decisions"
+    __table_args__ = (
+        Index(
+            "ux_person_identity_decision_run_pair",
+            "run_id",
+            "pair_key",
+            unique=True,
+        ),
+        Index(
+            "ix_person_identity_decisions_run_created",
+            "run_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("pid")
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    pair_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    left_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    right_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    canonical_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    run: Mapped[AnalysisRun] = relationship(back_populates="person_identity_decisions")
 
 
 class Task(Base):
@@ -438,6 +738,7 @@ class TaskAttempt(Base):
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    diagnostics_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
 
     task: Mapped[Task] = relationship(
         back_populates="attempt_records",

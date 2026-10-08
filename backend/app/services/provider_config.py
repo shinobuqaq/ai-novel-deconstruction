@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -23,6 +25,47 @@ CAPABILITY_FAILED = "FAILED"
 STRUCTURED_STRICT = "STRICT_JSON_SCHEMA"
 STRUCTURED_JSON_ONLY = "JSON_ONLY"
 STRUCTURED_UNSUPPORTED = "UNSUPPORTED"
+PROVIDER_FAILURE_SWITCH_THRESHOLD = 3
+PROVIDER_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+# JSON Schema files used by the application may contain document metadata such
+# as `$id` and `$schema`. Those keywords are valid JSON Schema, but several
+# OpenAI-compatible gateways (including Gemini adapters) reject them when they
+# are placed inside a structured-output request. Keep the full schema locally
+# and remove only wire-incompatible metadata at the provider boundary.
+_WIRE_SCHEMA_METADATA = {"$schema", "$id", "$comment"}
+
+
+def provider_http_headers(
+    api_key: str | None,
+    *,
+    json_content: bool = False,
+) -> dict[str, str]:
+    """Return consistent browser-compatible headers for model services."""
+    headers = {
+        "Authorization": f"Bearer {api_key or ''}",
+        "User-Agent": PROVIDER_HTTP_USER_AGENT,
+    }
+    if json_content:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def schema_for_provider(value: object) -> object:
+    """Return a provider-compatible copy of a JSON Schema value."""
+    if isinstance(value, dict):
+        return {
+            key: schema_for_provider(item)
+            for key, item in value.items()
+            if key not in _WIRE_SCHEMA_METADATA
+        }
+    if isinstance(value, list):
+        return [schema_for_provider(item) for item in value]
+    return value
 
 
 class ModelSettingsError(ValueError):
@@ -60,6 +103,282 @@ class ModelService:
         return bool(self.api_key and self.api_key.strip())
 
 
+def model_service_uses_streaming(service: ModelService) -> bool:
+    """Use streaming for every remote service and full responses only on loopback."""
+    hostname = urlparse(service.base_url).hostname
+    if not hostname:
+        return True
+    if hostname.casefold() == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return True
+
+
+def _stream_content_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_stream_content_text(item) for item in value)
+    if isinstance(value, dict):
+        return _stream_content_text(
+            value.get("text")
+            or value.get("content")
+            or value.get("value")
+            or ""
+        )
+    return ""
+
+
+def _stream_usage(value: object) -> tuple[int, int]:
+    if not isinstance(value, dict):
+        return 0, 0
+    return (
+        int(value.get("prompt_tokens") or value.get("input_tokens") or 0),
+        int(value.get("completion_tokens") or value.get("output_tokens") or 0),
+    )
+
+
+def _responses_output_text(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return "".join(
+        _stream_content_text(content.get("text"))
+        for item in value.get("output", [])
+        if isinstance(item, dict) and item.get("type") == "message"
+        for content in item.get("content", [])
+        if isinstance(content, dict) and content.get("type") == "output_text"
+    )
+
+
+def _stream_response_envelope(raw_text: str, service_type: str) -> dict[str, Any]:
+    fragments: list[str] = []
+    completed_text = ""
+    prompt_tokens = 0
+    completion_tokens = 0
+    valid_events = 0
+    completion_signal_seen = False
+
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(":") or line.startswith("event:"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            completion_signal_seen = True
+            continue
+        if not data:
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        valid_events += 1
+        error = event.get("error")
+        if error:
+            if isinstance(error, dict):
+                detail = error.get("message") or error.get("detail") or error.get("code")
+            else:
+                detail = error
+            raise ValueError(str(detail or "远程模型在流式响应中返回了错误。"))
+        event_type = str(event.get("type") or "")
+        if event_type in {
+            "error",
+            "response.failed",
+            "response.incomplete",
+        }:
+            response_detail = event.get("response")
+            if isinstance(response_detail, dict):
+                response_detail = (
+                    response_detail.get("error")
+                    or response_detail.get("incomplete_details")
+                    or response_detail.get("status")
+                )
+            detail = response_detail or event.get("message")
+            raise ValueError(
+                "远程模型的流式响应未完整完成。"
+                + (f" 服务返回：{detail}" if detail else "")
+            )
+        if service_type == "OPENAI" and event_type == "response.completed":
+            completion_signal_seen = True
+
+        current_prompt, current_completion = _stream_usage(event.get("usage"))
+        prompt_tokens = current_prompt or prompt_tokens
+        completion_tokens = current_completion or completion_tokens
+
+        response = event.get("response")
+        if isinstance(response, dict):
+            current_prompt, current_completion = _stream_usage(response.get("usage"))
+            prompt_tokens = current_prompt or prompt_tokens
+            completion_tokens = current_completion or completion_tokens
+            completed_text = _responses_output_text(response) or completed_text
+
+        if service_type == "OPENAI":
+            if event.get("type") == "response.output_text.delta":
+                fragments.append(_stream_content_text(event.get("delta")))
+            elif event.get("type") == "response.output_text.done" and not fragments:
+                completed_text = _stream_content_text(event.get("text")) or completed_text
+            continue
+
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            finish_reason = str(choice.get("finish_reason") or "").strip().casefold()
+            if finish_reason and finish_reason != "stop":
+                raise ValueError(
+                    "远程模型的流式输出未正常结束："
+                    f"{finish_reason}。"
+                )
+            if finish_reason == "stop":
+                completion_signal_seen = True
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                fragment = _stream_content_text(delta.get("content"))
+            else:
+                fragment = _stream_content_text(delta)
+            fragment = fragment or _stream_content_text(choice.get("text"))
+            if fragment:
+                fragments.append(fragment)
+            elif not fragments:
+                message = choice.get("message")
+                if isinstance(message, dict):
+                    completed_text = _stream_content_text(message.get("content")) or completed_text
+
+    if valid_events == 0:
+        raise ValueError("远程模型返回了无法识别的流式数据。")
+    if not completion_signal_seen:
+        raise ValueError(
+            "远程模型的流式响应在完整结束标记前中断。"
+        )
+    output_text = "".join(fragments) or completed_text
+    if service_type == "OPENAI":
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": output_text}],
+                }
+            ],
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+            },
+        }
+    return {
+        "choices": [{"message": {"content": output_text}}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        },
+    }
+
+
+def _stream_options_rejected(response: httpx.Response) -> bool:
+    if response.status_code not in {400, 422}:
+        return False
+    detail = response.text.casefold()
+    return "stream_options" in detail or "include_usage" in detail
+
+
+async def post_model_request(
+    client: httpx.AsyncClient,
+    service: ModelService,
+    endpoint: str,
+    request_body: dict[str, Any],
+    *,
+    force_streaming: bool = False,
+) -> httpx.Response:
+    """Stream remote calls and explicitly selected long local calls."""
+    if not (force_streaming or model_service_uses_streaming(service)):
+        return await client.post(
+            endpoint,
+            headers=provider_http_headers(service.api_key, json_content=True),
+            json=request_body,
+        )
+
+    streaming_body = {**request_body, "stream": True}
+    if service.service_type == "OPENAI_COMPATIBLE":
+        streaming_body["stream_options"] = {"include_usage": True}
+
+    async def send(body: dict[str, Any]) -> httpx.Response:
+        headers = provider_http_headers(service.api_key, json_content=True)
+        headers["Accept"] = "text/event-stream"
+        async with client.stream(
+            "POST",
+            endpoint,
+            headers=headers,
+            json=body,
+        ) as response:
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                chunks.extend(chunk)
+            buffered_headers = dict(response.headers)
+            buffered_headers.pop("content-encoding", None)
+            buffered_headers.pop("transfer-encoding", None)
+            buffered_headers["content-length"] = str(len(chunks))
+            return httpx.Response(
+                response.status_code,
+                request=response.request,
+                headers=buffered_headers,
+                content=bytes(chunks),
+            )
+
+    response = await send(streaming_body)
+    if "stream_options" in streaming_body and _stream_options_rejected(response):
+        streaming_body = dict(streaming_body)
+        streaming_body.pop("stream_options", None)
+        response = await send(streaming_body)
+    if response.status_code >= 400:
+        return response
+
+    content_type = response.headers.get("content-type", "").casefold()
+    if "text/event-stream" not in content_type and not any(
+        line.lstrip().startswith("data:") for line in response.text.splitlines()
+    ):
+        return httpx.Response(
+            422,
+            request=response.request,
+            json={
+                "error": {
+                    "code": "REMOTE_STREAMING_REQUIRED",
+                    "message": (
+                        "当前模型请求需要流式传输，但服务没有返回流式数据。"
+                        "远程或中转服务必须支持流式传输；"
+                        "本机普通短任务仍可使用整包返回。"
+                    ),
+                }
+            },
+        )
+    try:
+        envelope = _stream_response_envelope(response.text, service.service_type)
+    except ValueError as exc:
+        return httpx.Response(
+            502,
+            request=response.request,
+            json={"error": {"message": str(exc)}},
+        )
+    return httpx.Response(
+        200,
+        request=response.request,
+        headers={"content-type": "application/json", "x-workbench-transport": "streaming"},
+        json=envelope,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FailoverTarget:
+    service_id: str
+    model: str
+
+
 @dataclass(frozen=True, slots=True)
 class AnalysisProfile:
     id: str
@@ -72,6 +391,8 @@ class AnalysisProfile:
     reasoning_effort: str
     timeout_seconds: float
     max_retries: int
+    context_window_tokens: int | None = None
+    failover_targets: tuple[FailoverTarget, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +523,21 @@ def _from_stored(settings: Settings, stored: dict[str, Any]) -> ModelSettings:
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=float(item.get("timeout_seconds", 180)),
                 max_retries=int(item.get("max_retries", 2)),
+                context_window_tokens=(
+                    int(item["context_window_tokens"])
+                    if item.get("context_window_tokens") is not None
+                    else None
+                ),
+                failover_targets=tuple(
+                    FailoverTarget(
+                        service_id=str(target.get("service_id") or "").strip(),
+                        model=str(target.get("model") or "").strip(),
+                    )
+                    for target in item.get("failover_targets", [])
+                    if isinstance(target, dict)
+                    and str(target.get("service_id") or "").strip()
+                    and str(target.get("model") or "").strip()
+                ),
             )
         )
     if not profiles:
@@ -237,7 +573,7 @@ def _write_model_settings(settings: Settings, value: ModelSettings) -> None:
     temp.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "services": [asdict(item) for item in value.services],
                 "analysis_profiles": [asdict(item) for item in value.analysis_profiles],
             },
@@ -310,7 +646,11 @@ def delete_model_service(settings: Settings, service_id: str) -> None:
         raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到这个模型服务。")
     if len(current.services) == 1:
         raise ModelSettingsError("PROVIDER_LAST_SERVICE", "至少需要保留一个模型服务。")
-    if any(item.service_id == service_id for item in current.analysis_profiles):
+    if any(
+        item.service_id == service_id
+        or any(target.service_id == service_id for target in item.failover_targets)
+        for item in current.analysis_profiles
+    ):
         raise ModelSettingsError("PROVIDER_IN_USE", "这个服务正在被分析方案使用，请先更换分析方案中的模型服务。")
     services = tuple(item for item in current.services if item.id != service_id)
     _write_model_settings(settings, ModelSettings(services, current.analysis_profiles))
@@ -328,6 +668,8 @@ def save_analysis_profile(
     reasoning_effort: str,
     timeout_seconds: float,
     max_retries: int,
+    context_window_tokens: int | None = None,
+    failover_targets: list[dict[str, str]] | tuple[FailoverTarget, ...] = (),
 ) -> AnalysisProfile:
     current = read_model_settings(settings)
     if not any(item.id == service_id for item in current.services):
@@ -345,6 +687,39 @@ def save_analysis_profile(
         raise ModelSettingsError("TIMEOUT_INVALID", "超时时间必须在 10 到 1800 秒之间。")
     if not 0 <= max_retries <= 10:
         raise ModelSettingsError("MAX_RETRIES_INVALID", "重试次数必须在 0 到 10 之间。")
+    if context_window_tokens is not None:
+        if not 1 <= context_window_tokens <= 10_000_000:
+            raise ModelSettingsError("CONTEXT_WINDOW_INVALID", "模型上下文长度必须在 1 到 10000000 之间。")
+        if context_window_tokens < max_output_tokens + 1_000:
+            raise ModelSettingsError(
+                "CONTEXT_WINDOW_TOO_SMALL",
+                "模型上下文长度至少要比最大输出长度多 1000，才能留出分析输入空间。",
+            )
+    service_by_id = {item.id: item for item in current.services}
+    normalized_targets: list[FailoverTarget] = []
+    seen_service_ids = {service_id}
+    for raw_target in failover_targets:
+        if isinstance(raw_target, FailoverTarget):
+            target_service_id = raw_target.service_id.strip()
+            target_model = raw_target.model.strip()
+        else:
+            target_service_id = str(raw_target.get("service_id") or "").strip()
+            target_model = str(raw_target.get("model") or "").strip()
+        if not target_service_id or target_service_id in seen_service_ids:
+            raise ModelSettingsError("FAILOVER_SERVICE_INVALID", "备用服务不能重复，也不能与当前主服务相同。")
+        if target_service_id not in service_by_id:
+            raise ModelSettingsError("PROVIDER_NOT_FOUND", "没有找到所选备用模型服务。")
+        if not service_by_id[target_service_id].configured:
+            raise ModelSettingsError(
+                "PROVIDER_NOT_CONFIGURED",
+                "所选备用模型服务没有完成地址和密钥配置。",
+            )
+        if not target_model:
+            raise ModelSettingsError("MODEL_REQUIRED", "请为每个备用服务选择或填写模型。")
+        seen_service_ids.add(target_service_id)
+        normalized_targets.append(
+            FailoverTarget(service_id=target_service_id, model=target_model)
+        )
     existing = next((item for item in current.analysis_profiles if item.id == profile_id), None)
     saved = AnalysisProfile(
         id=profile_id,
@@ -357,6 +732,8 @@ def save_analysis_profile(
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
+        context_window_tokens=context_window_tokens,
+        failover_targets=tuple(normalized_targets),
     )
     profiles = tuple(saved if item.id == profile_id else item for item in current.analysis_profiles)
     if existing is None:
@@ -379,6 +756,83 @@ def resolve_analysis_profile(
     if not profile.model:
         raise ModelSettingsError("MODEL_REQUIRED", "请先到设置中心选择分析模型。")
     return service, profile
+
+
+def resolve_analysis_route(
+    settings: Settings,
+    profile_id: str,
+    *,
+    service_id: str | None = None,
+    model: str | None = None,
+) -> tuple[ModelService, AnalysisProfile]:
+    current = read_model_settings(settings)
+    profile = next((item for item in current.analysis_profiles if item.id == profile_id), None)
+    if profile is None:
+        raise ModelSettingsError("ANALYSIS_PROFILE_NOT_FOUND", "没有找到这个分析方案。")
+    selected_service_id = service_id or profile.service_id
+    selected_model = (model or profile.model).strip()
+    service = next((item for item in current.services if item.id == selected_service_id), None)
+    if service is None or not service.configured:
+        raise ModelSettingsError("PROVIDER_NOT_CONFIGURED", "所选模型服务没有完成配置。")
+    if not selected_model:
+        raise ModelSettingsError("MODEL_REQUIRED", "所选模型服务没有配置分析模型。")
+    return service, replace(
+        profile,
+        service_id=selected_service_id,
+        model=selected_model,
+    )
+
+
+def snapshot_provider_routes(
+    settings: Settings,
+    profile_id: str = ENTITIES_EVENTS_PROFILE_ID,
+) -> list[dict[str, str]]:
+    current = read_model_settings(settings)
+    profile = next((item for item in current.analysis_profiles if item.id == profile_id), None)
+    if profile is None:
+        raise ModelSettingsError("ANALYSIS_PROFILE_NOT_FOUND", "没有找到这个分析方案。")
+    service_by_id = {item.id: item for item in current.services}
+    routes = [FailoverTarget(profile.service_id, profile.model), *profile.failover_targets]
+    result: list[dict[str, str]] = []
+    for route in routes:
+        service = service_by_id.get(route.service_id)
+        if service is None:
+            raise ModelSettingsError("PROVIDER_NOT_FOUND", "分析方案引用了不存在的模型服务。")
+        if not service.configured:
+            raise ModelSettingsError(
+                "PROVIDER_NOT_CONFIGURED",
+                f"模型服务“{service.name}”没有完成地址和密钥配置。",
+            )
+        if not route.model.strip():
+            raise ModelSettingsError(
+                "MODEL_REQUIRED",
+                f"模型服务“{service.name}”没有设置分析模型。",
+            )
+        result.append({
+            "service_id": service.id,
+            "service_name": service.name,
+            "model": route.model,
+        })
+    return result
+
+
+def prepare_task_provider_routes(
+    settings: Settings,
+    payload: dict[str, Any],
+    max_attempts: int,
+) -> tuple[dict[str, Any], int]:
+    profile_id = str(payload.get("model_profile_id") or ENTITIES_EVENTS_PROFILE_ID)
+    routes = snapshot_provider_routes(settings, profile_id)
+    prepared = dict(payload)
+    prepared.update({
+        "provider_routes": routes,
+        "provider_route_index": 0,
+        "provider_failure_streak": 0,
+        "provider_failover_threshold": PROVIDER_FAILURE_SWITCH_THRESHOLD,
+    })
+    if len(routes) > 1:
+        max_attempts = max(max_attempts, len(routes) * PROVIDER_FAILURE_SWITCH_THRESHOLD)
+    return prepared, max_attempts
 
 
 def _friendly_connection_error(response: httpx.Response) -> ModelSettingsError:
@@ -409,7 +863,7 @@ async def discover_models(
         async with httpx.AsyncClient(timeout=30, transport=transport) as client:
             response = await client.get(
                 f"{service.base_url}/models",
-                headers={"Authorization": f"Bearer {service.api_key}"},
+                headers=provider_http_headers(service.api_key),
             )
     except httpx.TimeoutException as exc:
         raise ModelSettingsError("PROVIDER_TIMEOUT", "连接模型服务超时，请检查接口地址或网络。") from exc
@@ -435,6 +889,9 @@ async def discover_models(
 
 
 PROBE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "model_capability_probe.schema.json",
+    "title": "Model capability probe",
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
     "required": ["ok"],
@@ -457,6 +914,7 @@ def _probe_body(
     reasoning_effort: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     instructions = '只返回 JSON 对象 {"ok": true}，不要输出解释或 Markdown。'
+    wire_schema = schema_for_provider(PROBE_SCHEMA)
     if service.service_type == "OPENAI":
         body: dict[str, Any] = {
             "model": model,
@@ -471,7 +929,7 @@ def _probe_body(
                     "type": "json_schema",
                     "name": "model_capability_probe",
                     "strict": True,
-                    "schema": PROBE_SCHEMA,
+                    "schema": wire_schema,
                 }
             }
         if temperature is not None:
@@ -495,7 +953,7 @@ def _probe_body(
             "json_schema": {
                 "name": "model_capability_probe",
                 "strict": True,
-                "schema": PROBE_SCHEMA,
+                "schema": wire_schema,
             },
         }
     if temperature is not None:
@@ -524,13 +982,11 @@ async def _request_probe(
     )
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
-            return await client.post(
+            return await post_model_request(
+                client,
+                service,
                 endpoint,
-                headers={
-                    "Authorization": f"Bearer {service.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
+                body,
             )
     except httpx.TimeoutException as exc:
         raise ModelSettingsError("PROVIDER_TIMEOUT", "所选模型测试超时，请检查网络或稍后再试。") from exc
@@ -539,6 +995,16 @@ async def _request_probe(
 
 
 def _probe_error(response: httpx.Response) -> ModelSettingsError:
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("code") == "REMOTE_STREAMING_REQUIRED":
+        return ModelSettingsError(
+            "PROVIDER_STREAMING_UNSUPPORTED",
+            str(error.get("message") or "远程模型服务必须支持流式传输。"),
+        )
     if response.status_code in {401, 403}:
         return ModelSettingsError("PROVIDER_AUTH_FAILED", "API Key 无效，或者当前账号没有访问所选模型的权限。")
     if response.status_code == 404:
@@ -786,6 +1252,7 @@ def write_openai_config(
         reasoning_effort=profile.reasoning_effort,
         timeout_seconds=profile.timeout_seconds,
         max_retries=profile.max_retries,
+        context_window_tokens=profile.context_window_tokens,
     )
 
     # Keep the old file current for older branches and local rollback.

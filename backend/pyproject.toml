@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-novel-deconstruction-backend"
 version = "0.0.1"
-description = "M0 backend scaffold for the AI Novel Deconstruction project"
+description = "Backend for the AI Novel Deconstruction Workbench"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.128,<1.0",

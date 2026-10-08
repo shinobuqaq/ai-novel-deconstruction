@@ -35,10 +35,32 @@ function serviceDraft(service: ModelService): ServiceDraft {
 }
 
 function connectionLabel(service: ModelService) {
-  if (service.last_test_status === "CONNECTED") return "连接正常";
-  if (service.last_test_status === "FAILED") return "连接失败";
+  if (service.last_test_status === "CONNECTED") return "上次测试通过";
+  if (service.last_test_status === "FAILED") return "上次测试失败";
   if (service.configured) return "已保存，尚未测试";
   return "尚未连接";
+}
+
+function testTimeLabel(service: ModelService) {
+  if (!service.last_tested_at) return "尚未进行连接测试";
+  const parsed = new Date(service.last_tested_at);
+  if (Number.isNaN(parsed.getTime())) return "测试时间无法读取";
+  return `上次测试：${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed)}`;
+}
+
+function isLoopbackServiceUrl(value: string) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return hostname === "localhost" || hostname === "::1" || /^127\./.test(hostname);
+  } catch {
+    return false;
+  }
 }
 
 export default function SettingsPage() {
@@ -65,7 +87,12 @@ export default function SettingsPage() {
       setSelectedServiceId(selected.id);
       setDraft(serviceDraft(selected));
     }
-    setProfileDraft(loaded.analysis_profiles[0] ?? null);
+    const profile = loaded.analysis_profiles[0];
+    setProfileDraft(profile ? {
+      ...profile,
+      context_window_tokens: profile.context_window_tokens ?? null,
+      failover_targets: profile.failover_targets ?? [],
+    } : null);
   }
 
   useEffect(() => {
@@ -170,6 +197,8 @@ export default function SettingsPage() {
       reasoning_effort: profileDraft.reasoning_effort,
       timeout_seconds: profileDraft.timeout_seconds,
       max_retries: profileDraft.max_retries,
+      context_window_tokens: profileDraft.context_window_tokens,
+      failover_targets: profileDraft.failover_targets,
     });
     setProfileDraft(saved);
     await loadSettings(saved.service_id);
@@ -233,6 +262,59 @@ export default function SettingsPage() {
   const capabilityMatches = Boolean(
     profileService && profileDraft?.model && profileService.capabilities.tested_model === profileDraft.model,
   );
+  const fallbackServices = settings?.services.filter(
+    (service) => service.id !== profileDraft?.service_id,
+  ) ?? [];
+  const orderedFallbackServices = [...fallbackServices].sort((left, right) => {
+    const leftIndex = profileDraft?.failover_targets.findIndex(
+      (target) => target.service_id === left.id,
+    ) ?? -1;
+    const rightIndex = profileDraft?.failover_targets.findIndex(
+      (target) => target.service_id === right.id,
+    ) ?? -1;
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return 0;
+  });
+
+  function toggleFailoverService(service: ModelService) {
+    if (!profileDraft) return;
+    const existing = profileDraft.failover_targets.find(
+      (target) => target.service_id === service.id,
+    );
+    setProfileDraft({
+      ...profileDraft,
+      failover_targets: existing
+        ? profileDraft.failover_targets.filter((target) => target.service_id !== service.id)
+        : [
+            ...profileDraft.failover_targets,
+            { service_id: service.id, model: service.capabilities.tested_model ?? "" },
+          ],
+    });
+  }
+
+  function updateFailoverModel(serviceId: string, model: string) {
+    if (!profileDraft) return;
+    setProfileDraft({
+      ...profileDraft,
+      failover_targets: profileDraft.failover_targets.map((target) => (
+        target.service_id === serviceId ? { ...target, model } : target
+      )),
+    });
+  }
+
+  function moveFailoverService(serviceId: string, direction: -1 | 1) {
+    if (!profileDraft) return;
+    const currentIndex = profileDraft.failover_targets.findIndex(
+      (target) => target.service_id === serviceId,
+    );
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= profileDraft.failover_targets.length) return;
+    const reordered = [...profileDraft.failover_targets];
+    [reordered[currentIndex], reordered[nextIndex]] = [reordered[nextIndex], reordered[currentIndex]];
+    setProfileDraft({ ...profileDraft, failover_targets: reordered });
+  }
 
   return (
     <div className="settings-shell">
@@ -280,6 +362,7 @@ export default function SettingsPage() {
                       <span className={`connection-state ${service.last_test_status.toLowerCase()}`}>
                         {connectionLabel(service)}
                       </span>
+                      <small>{testTimeLabel(service)}</small>
                     </button>
                   ))}
                   {selectedServiceId === "new" && <button type="button" className="active"><strong>新模型服务</strong><span>尚未保存</span></button>}
@@ -301,8 +384,18 @@ export default function SettingsPage() {
                   </label>
                   {selectedService && (
                     <div className="connection-summary">
-                      <div><span>当前状态</span><strong>{connectionLabel(selectedService)}</strong></div>
-                      <p>{selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}</p>
+                      <div><span>测试状态</span><strong>{connectionLabel(selectedService)}</strong></div>
+                      <div>
+                        <span>传输方式</span>
+                        <strong>{isLoopbackServiceUrl(draft.base_url) ? "本机按任务选择" : "流式传输"}</strong>
+                      </div>
+                      <small>{testTimeLabel(selectedService)}</small>
+                      <p>
+                        {selectedService.last_test_message || "保存后执行连接测试，系统会检查密钥并尝试读取模型列表。"}
+                        {isLoopbackServiceUrl(draft.base_url)
+                          ? " 本机普通短任务可整包返回；长篇专项与学习答案强制流式传输。"
+                          : " 远程地址会自动使用流式传输，并在完整结束后校验结果。"}
+                      </p>
                     </div>
                   )}
                   <footer className="settings-actions">
@@ -335,7 +428,14 @@ export default function SettingsPage() {
                     <select
                       value={profileDraft.service_id}
                       onChange={(event) => {
-                        setProfileDraft({ ...profileDraft, service_id: event.target.value, model: "" });
+                        setProfileDraft({
+                          ...profileDraft,
+                          service_id: event.target.value,
+                          model: "",
+                          failover_targets: profileDraft.failover_targets.filter(
+                            (target) => target.service_id !== event.target.value,
+                          ),
+                        });
                         setManualModelEntry(false);
                       }}
                     >
@@ -385,6 +485,69 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+                <section className="failover-settings" aria-label="备用模型服务">
+                  <header>
+                    <div>
+                      <span>备用服务</span>
+                      <strong>当前服务连续失败 3 次后暂停</strong>
+                    </div>
+                    <small>按下方顺序逐个建议切换；你也可以继续用当前服务重试或停止。</small>
+                  </header>
+                  {fallbackServices.length ? (
+                    <div className="failover-service-list">
+                      {orderedFallbackServices.map((service) => {
+                        const target = profileDraft.failover_targets.find(
+                          (item) => item.service_id === service.id,
+                        );
+                        const targetIndex = profileDraft.failover_targets.findIndex(
+                          (item) => item.service_id === service.id,
+                        );
+                        return (
+                          <div className={`failover-service ${target ? "enabled" : ""}`} key={service.id}>
+                            <div className="failover-service-identity">
+                              <label className="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(target)}
+                                  onChange={() => toggleFailoverService(service)}
+                                />
+                                <span><strong>{service.name}</strong><small>{connectionLabel(service)}</small></span>
+                              </label>
+                              {target && (
+                                <div className="failover-priority" aria-label={`${service.name} 的备用顺序`}>
+                                  <span>第 {targetIndex + 1} 备用</span>
+                                  <button
+                                    type="button"
+                                    disabled={targetIndex === 0}
+                                    onClick={() => moveFailoverService(service.id, -1)}
+                                    aria-label={`提高 ${service.name} 的备用优先级`}
+                                  >上移</button>
+                                  <button
+                                    type="button"
+                                    disabled={targetIndex === profileDraft.failover_targets.length - 1}
+                                    onClick={() => moveFailoverService(service.id, 1)}
+                                    aria-label={`降低 ${service.name} 的备用优先级`}
+                                  >下移</button>
+                                </div>
+                              )}
+                            </div>
+                            <label>备用模型
+                              <input
+                                disabled={!target}
+                                value={target?.model ?? ""}
+                                onChange={(event) => updateFailoverModel(service.id, event.target.value)}
+                                placeholder={service.capabilities.tested_model || "填写这个服务使用的模型"}
+                              />
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="settings-empty-note">添加第二个模型服务后，可以在这里设置备用服务。</p>
+                  )}
+                </section>
+
                 <div className={`model-test-summary ${capabilityMatches ? profileService?.capabilities.ordinary_request === "SUPPORTED" ? "tested" : "failed" : "untested"}`}>
                   <div>
                     <span>所选模型状态</span>
@@ -403,7 +566,7 @@ export default function SettingsPage() {
                       ? profileService?.capabilities.ordinary_request !== "SUPPORTED"
                         ? "请查看上方失败原因，确认模型名称、权限、网络或服务状态后重新测试。"
                         : `温度：${profileService?.capabilities.temperature === "UNSUPPORTED" ? "不支持，自动忽略" : profileService?.capabilities.temperature === "SUPPORTED" ? "支持" : "使用自动设置"}；推理强度：${profileService?.capabilities.reasoning_effort === "UNSUPPORTED" ? "不支持，自动忽略" : profileService?.capabilities.reasoning_effort === "SUPPORTED" ? "支持" : "使用自动设置"}。`
-                      : "保存并测试后，系统会确认模型权限、结构化输出和当前参数。测试会发送少量内容，可能产生极少费用。"}
+                      : "保存并测试后，系统会确认模型权限、结构化输出和当前参数。测试会发送少量内容，并记录实际令牌用量。"}
                   </p>
                 </div>
 
@@ -438,6 +601,11 @@ export default function SettingsPage() {
                     <label>最大输出长度
                       <input type="number" min="1" max="128000" step="1" value={profileDraft.max_output_tokens} onChange={(event) => setProfileDraft({ ...profileDraft, max_output_tokens: Number(event.target.value) })} />
                       <small>限制单次模型返回的最大内容量；实际可用上限由所选模型决定。</small>
+                    </label>
+                    <label>模型上下文长度 <span>{profileDraft.context_window_tokens === null ? "自动" : profileDraft.context_window_tokens}</span>
+                      <span className="inline-check"><input type="checkbox" checked={profileDraft.context_window_tokens === null} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: event.target.checked ? null : Math.max(32768, profileDraft.max_output_tokens + 1000) })} />未提供可靠数值</span>
+                      <input type="number" min={profileDraft.max_output_tokens + 1000} max="10000000" step="1" disabled={profileDraft.context_window_tokens === null} value={profileDraft.context_window_tokens ?? ""} onChange={(event) => setProfileDraft({ ...profileDraft, context_window_tokens: Number(event.target.value) })} />
+                      <small>服务明确提供时可填写；系统会先扣除回复空间再安排小说材料。自动模式不会根据模型名称猜测。</small>
                     </label>
                     <label>单次超时（秒）
                       <input type="number" min="10" max="1800" value={profileDraft.timeout_seconds} onChange={(event) => setProfileDraft({ ...profileDraft, timeout_seconds: Number(event.target.value) })} />

@@ -66,7 +66,7 @@ def upgrade() -> None:
         existing_columns = {
             column["name"] for column in inspector.get_columns("task_attempts")
         }
-        if existing_columns != ATTEMPT_COLUMNS:
+        if not ATTEMPT_COLUMNS.issubset(existing_columns):
             raise RuntimeError(
                 "INCOMPATIBLE_PARTIAL_TASK_ATTEMPTS_SCHEMA:"
                 f"{sorted(existing_columns)}"

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from app.models import EvidenceSpan, SourceVersion
 from app.services.source_import import parse_chapters, parse_source
+
+
+F01_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "f01_chapter_format_samples"
 
 
 def _docx_bytes(paragraphs: list[str]) -> bytes:
@@ -81,6 +86,69 @@ def test_chapter_parser_keeps_exact_ranges_and_flags_duplicates() -> None:
     assert issues[0].severity == "BLOCKING"
 
 
+def test_f01_chapter_format_manifest_is_green() -> None:
+    manifest = json.loads(
+        (F01_FIXTURE_DIR / "manifest.json").read_text(encoding="utf-8")
+    )
+    expected_unit_types = {
+        "chapter": "CHAPTER",
+        "volume": "VOLUME",
+        "front_matter": "PREFACE",
+    }
+
+    for sample in manifest["samples"]:
+        text = (F01_FIXTURE_DIR / sample["file"]).read_text(encoding="utf-8")
+        chapters, issues = parse_chapters(text, "txt")
+        expected_units = sample["expected_units"]
+
+        assert len(chapters) == len(expected_units), sample["id"]
+        for chapter, expected in zip(chapters, expected_units, strict=True):
+            assert expected["title_contains"] in chapter.title, sample["id"]
+            assert chapter.unit_type == expected_unit_types[expected["type"]], sample["id"]
+            boundary_issues = [
+                issue
+                for issue in issues
+                if issue.unit_ordinal == chapter.ordinal
+                and issue.code in {
+                    "CHAPTER_BOUNDARY_REVIEW",
+                    "FRONT_MATTER_REVIEW",
+                }
+            ]
+            if expected["confidence"] == "candidate":
+                assert len(boundary_issues) == 1, sample["id"]
+                assert boundary_issues[0].severity == "BLOCKING", sample["id"]
+            else:
+                assert not boundary_issues, sample["id"]
+
+        if sample["id"] == "s14_false_positive_guard":
+            assert [chapter.title for chapter in chapters] == [
+                "第一章 倒计时",
+                "第二章 复盘",
+            ]
+
+
+def test_isolated_section_heading_requires_confirmation() -> None:
+    text = (
+        "第二幕 双S级任务\n前半段正文。\n\n"
+        "第四节……“英雄”救“美”\n这一节的正文。\n\n"
+        "第三幕 狩猎前奏\n后半段正文。"
+    )
+
+    chapters, issues = parse_chapters(text, "txt")
+
+    assert [item.title for item in chapters] == [
+        "第二幕 双S级任务",
+        "第四节……“英雄”救“美”",
+        "第三幕 狩猎前奏",
+    ]
+    section_issue = next(
+        item for item in issues
+        if item.code == "CHAPTER_BOUNDARY_REVIEW"
+    )
+    assert section_issue.unit_ordinal == 2
+    assert section_issue.severity == "BLOCKING"
+
+
 def test_markdown_book_title_is_kept_as_title_not_empty_chapter() -> None:
     text = "# 我的小说\n\n## 第一章 开始\n正文\n## 第二章 继续\n更多正文"
     chapters, issues = parse_chapters(text, "md")
@@ -132,6 +200,11 @@ def test_markdown_import_counts_chapters_without_preface(client) -> None:
     assert response.status_code == 201
     assert response.json()["version"]["chapter_count"] == 2
     assert len(response.json()["units"]) == 3
+    first_chapter = response.json()["units"][1]
+    content = client.get(f"/api/chapters/{first_chapter['id']}/content").json()
+    assert content["content"].startswith("正文")
+    assert not content["content"].startswith("## 第一章")
+    assert content["start_char"] > first_chapter["start_char"]
 
 
 def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> None:
@@ -161,7 +234,8 @@ def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> No
     assert confirmed.json()["status"] == "CONFIRMED"
 
     chapter = client.get(f"/api/chapters/{result['units'][0]['id']}/content").json()
-    assert chapter["content"] == "第一章 开始\n张三推开了门。\n"
+    assert chapter["content"] == "张三推开了门。\n"
+    assert chapter["start_char"] > result["units"][0]["start_char"]
 
     with client.app.state.session_factory() as session:
         evidence_id = session.scalar(select(EvidenceSpan.id))
@@ -169,6 +243,82 @@ def test_import_api_builds_chapters_evidence_and_confirmation_gate(client) -> No
     assert evidence.status_code == 200
     snapshot = evidence.json()["evidence"]["text_snapshot"]
     assert snapshot in evidence.json()["context_text"]
+
+
+def test_review_structure_can_rename_split_and_merge_without_changing_source(client) -> None:
+    project = client.post("/api/projects", json={"name": "卷章校正"}).json()
+    text = (
+        "第一章 开始\n"
+        "第一段正文。\n"
+        "这里是新章\n"
+        "第二段正文。\n"
+        "第二章 结束\n"
+        "最后一段正文。"
+    )
+    imported = client.post(
+        f"/api/projects/{project['id']}/sources/import?filename=edit.txt",
+        content=text.encode("utf-8"),
+    ).json()
+    version_id = imported["version"]["id"]
+    first_unit = imported["units"][0]
+
+    renamed = client.patch(
+        f"/api/chapters/{first_unit['id']}",
+        json={"title": "第一章 新开端", "unit_type": "CHAPTER"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["units"][0]["title"] == "第一章 新开端"
+
+    split_char = text.index("这里是新章")
+    split = client.post(
+        f"/api/chapters/{first_unit['id']}/split",
+        json={
+            "split_char": split_char,
+            "title": "插入章",
+            "unit_type": "CHAPTER",
+        },
+    )
+    assert split.status_code == 200
+    split_payload = split.json()
+    assert split_payload["version"]["chapter_count"] == 3
+    assert [unit["ordinal"] for unit in split_payload["units"]] == [1, 2, 3]
+    assert [unit["title"] for unit in split_payload["units"]] == [
+        "第一章 新开端",
+        "插入章",
+        "第二章 结束",
+    ]
+    assert split_payload["units"][0]["end_char"] == split_char
+    assert split_payload["units"][1]["start_char"] == split_char
+    inserted_id = split_payload["selected_unit_id"]
+    with client.app.state.session_factory() as session:
+        moved_evidence = session.scalar(
+            select(EvidenceSpan).where(
+                EvidenceSpan.source_version_id == version_id,
+                EvidenceSpan.text_snapshot == "这里是新章",
+            )
+        )
+        assert moved_evidence is not None
+        assert moved_evidence.source_unit_id == inserted_id
+
+    merged = client.post(
+        f"/api/chapters/{inserted_id}/merge",
+        json={"direction": "PREVIOUS"},
+    )
+    assert merged.status_code == 200
+    merged_payload = merged.json()
+    assert merged_payload["version"]["chapter_count"] == 2
+    assert [unit["ordinal"] for unit in merged_payload["units"]] == [1, 2]
+    assert merged_payload["selected_unit_id"] == first_unit["id"]
+    assert merged_payload["units"][0]["end_char"] == merged_payload["units"][1]["start_char"]
+
+    confirmed = client.post(f"/api/source-versions/{version_id}/confirm")
+    assert confirmed.status_code == 200
+    rejected = client.patch(
+        f"/api/chapters/{first_unit['id']}",
+        json={"title": "不应修改", "unit_type": "CHAPTER"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "SOURCE_STRUCTURE_ALREADY_CONFIRMED"
 
 
 def test_reimporting_identical_file_reuses_source_version(client) -> None:
@@ -202,7 +352,7 @@ def test_new_parser_version_reparses_unchanged_file(client) -> None:
     assert result["reused_existing"] is False
     assert result["version"]["id"] != first["version"]["id"]
     assert result["version"]["version_no"] == 2
-    assert result["version"]["parser_version"] == 2
+    assert result["version"]["parser_version"] == 3
     assert result["version"]["chapter_count"] == 1
 
 

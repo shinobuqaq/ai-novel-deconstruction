@@ -1,0 +1,11 @@
+{
+  "display_name": "续写鸡风格小说续写",
+  "loading_order": 10,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Neohero521",
+  "version": "0.1",
+  "homePage": "https://github.com/Neohero521/Continuation_machine"
+}

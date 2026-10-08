@@ -150,7 +150,7 @@ def test_0001_data_survives_upgrade_and_downgrade(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("0006_source_parser_version",)
+    assert revision == ("0015_learning_question_evidence",)
     assert task == (
         "PENDING",
         '{"message":"preserve me"}',
@@ -264,6 +264,64 @@ def test_migrated_schema_contains_task_attempt_constraints(
         source_version_indexes = {
             row[1] for row in connection.execute("PRAGMA index_list(source_versions)")
         }
+        narrative_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(narrative_syntheses)")
+        }
+        narrative_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(narrative_syntheses)")
+        }
+        deep_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(deep_analyses)")
+        }
+        deep_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(deep_analyses)")
+        }
+        issue_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(analysis_issues)")
+        }
+        issue_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(analysis_issues)")
+        }
+        event_candidate_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(event_candidates)")
+        }
+        person_identity_decision_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(person_identity_decisions)"
+            )
+        }
+        person_identity_decision_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(person_identity_decisions)"
+            )
+        }
+        learning_report_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(learning_reports)")
+        }
+        learning_report_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(learning_reports)")
+        }
+        learning_question_evidence_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(learning_question_evidence)"
+            )
+        }
+        learning_question_evidence_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(learning_question_evidence)"
+            )
+        }
 
     assert {
         "current_attempt_id",
@@ -289,6 +347,7 @@ def test_migrated_schema_contains_task_attempt_constraints(
         "error_code",
         "error_message",
         "usage_json",
+        "diagnostics_json",
     } == attempt_columns
     assert {
         "ux_task_attempt_task_no",
@@ -334,6 +393,108 @@ def test_migrated_schema_contains_task_attempt_constraints(
     assert "parser_version" in source_version_columns
     assert "ux_source_version_hash_parser" in source_version_indexes
     assert "ux_source_version_hash" not in source_version_indexes
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == narrative_columns
+    assert {
+        "ux_narrative_synthesis_run",
+        "ix_narrative_syntheses_source_version",
+    }.issubset(narrative_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "revision_no",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == deep_columns
+    assert {
+        "ux_deep_analysis_run_revision",
+        "ux_deep_analysis_task",
+        "ix_deep_analyses_source_version",
+    }.issubset(deep_indexes)
+    assert {
+        "id",
+        "run_id",
+        "target_kind",
+        "target_id",
+        "target_label",
+        "category",
+        "note",
+        "status",
+        "created_at",
+        "resolved_at",
+    } == issue_columns
+    assert {
+        "ix_analysis_issues_run_id",
+        "ix_analysis_issues_run_status",
+    }.issubset(issue_indexes)
+    assert "details_json" in event_candidate_columns
+    assert {
+        "id",
+        "run_id",
+        "pair_key",
+        "left_name",
+        "right_name",
+        "canonical_name",
+        "decision",
+        "created_at",
+        "updated_at",
+    } == person_identity_decision_columns
+    assert {
+        "ux_person_identity_decision_run_pair",
+        "ix_person_identity_decisions_run_created",
+        "ix_person_identity_decisions_run_id",
+    }.issubset(person_identity_decision_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "revision_no",
+        "source_deep_revision",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == learning_report_columns
+    assert {
+        "ux_learning_report_run_revision",
+        "ux_learning_report_task",
+        "ix_learning_reports_source_version",
+    }.issubset(learning_report_indexes)
+    assert {
+        "id",
+        "run_id",
+        "source_version_id",
+        "question_id",
+        "revision_no",
+        "source_fingerprint",
+        "payload_json",
+        "prompt_id",
+        "prompt_version",
+        "created_by_task_id",
+        "created_by_attempt_id",
+        "created_at",
+    } == learning_question_evidence_columns
+    assert {
+        "ux_learning_question_evidence_run_question_revision",
+        "ux_learning_question_evidence_task",
+        "ix_learning_question_evidence_source_version",
+    }.issubset(learning_question_evidence_indexes)
 
 
 def test_partial_auto_created_schema_is_repaired_without_data_loss(
@@ -390,7 +551,7 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision_after == ("0006_source_parser_version",)
+    assert revision_after == ("0015_learning_question_evidence",)
     assert task == ('{"message":"preserve me"}', 0)
     assert any(
         row[2] == "task_attempts"
@@ -399,3 +560,51 @@ def test_partial_auto_created_schema_is_repaired_without_data_loss(
         for row in task_foreign_keys
     )
     assert foreign_key_errors == []
+
+
+def test_existing_pre_revision_deep_table_is_upgraded_without_data_loss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "old-deep.db"
+    _configure_migration_environment(monkeypatch, database, tmp_path / "workspace")
+    _upgrade("0007_narrative_synthesis")
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE deep_analyses (
+                id VARCHAR(64) PRIMARY KEY,
+                run_id VARCHAR(64) NOT NULL,
+                source_version_id VARCHAR(64) NOT NULL,
+                payload_json TEXT NOT NULL,
+                prompt_id VARCHAR(80) NOT NULL,
+                prompt_version VARCHAR(40) NOT NULL,
+                created_by_task_id VARCHAR(64) NOT NULL,
+                created_by_attempt_id VARCHAR(64) NOT NULL,
+                created_at DATETIME NOT NULL
+            );
+            CREATE UNIQUE INDEX ux_deep_analysis_run ON deep_analyses (run_id);
+            CREATE INDEX ix_deep_analyses_source_version ON deep_analyses (source_version_id);
+            INSERT INTO deep_analyses
+            VALUES ('dpa_old', 'run_old', 'svr_old', '{}', 'deep', '1.0.0', 'tsk_old', 'att_old', '2026-07-20T00:00:00');
+            """
+        )
+        connection.commit()
+
+    _upgrade("head")
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(deep_analyses)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(deep_analyses)")}
+        row = connection.execute(
+            "SELECT id, revision_no, payload_json FROM deep_analyses WHERE id = 'dpa_old'"
+        ).fetchone()
+
+    assert "revision_no" in columns
+    assert "ux_deep_analysis_run" not in indexes
+    assert {
+        "ux_deep_analysis_run_revision",
+        "ux_deep_analysis_task",
+        "ix_deep_analyses_source_version",
+    }.issubset(indexes)
+    assert row == ("dpa_old", 1, "{}")

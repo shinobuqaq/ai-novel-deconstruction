@@ -21,13 +21,13 @@ class Settings(BaseSettings):
 
     app_name: str = "AI Novel Deconstruction"
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 18000
     database_url: str = "sqlite:///./workspace/app.db"
     workspace_dir: Path = Path("./workspace")
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
+            "http://127.0.0.1:15173",
+            "http://localhost:15173",
         ]
     )
     auto_create_schema: bool = True

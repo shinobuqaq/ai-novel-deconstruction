@@ -142,6 +142,7 @@ def claim_next_task(
 
         result = session.execute(
             update(Task)
+            .execution_options(synchronize_session=False)
             .where(
                 Task.id == candidate.id,
                 Task.attempts == candidate.attempts,
@@ -273,6 +274,7 @@ def complete_task_attempt(
     result_artifact_id: str,
     provider_name: str | None = None,
     usage_json: str = "{}",
+    diagnostics_json: str = "{}",
     now: datetime | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
@@ -292,6 +294,7 @@ def complete_task_attempt(
             finished_at=now,
             provider_name=provider_name,
             usage_json=usage_json,
+            diagnostics_json=diagnostics_json,
         )
     )
     task_result = session.execute(
@@ -336,6 +339,9 @@ def fail_task_attempt(
     retryable: bool,
     retry_after_seconds: float | None,
     provider_name: str | None = None,
+    usage_json: str = "{}",
+    diagnostics_json: str = "{}",
+    payload_json: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
@@ -373,6 +379,86 @@ def fail_task_attempt(
             error_code=error_code,
             error_message=message,
             provider_name=provider_name,
+            usage_json=usage_json,
+            diagnostics_json=diagnostics_json,
+        )
+    )
+    task_values = {
+        "status": (
+            TaskStatus.RETRY_WAIT.value
+            if retry_scheduled
+            else TaskStatus.FAILED.value
+        ),
+        "next_attempt_at": next_attempt_at,
+        "finished_at": None if retry_scheduled else now,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "last_error_code": error_code,
+        "last_error_message": message,
+        "error_code": error_code,
+        "error_message": message,
+    }
+    if payload_json is not None:
+        task_values["payload_json"] = payload_json
+    task_result = session.execute(
+        update(Task)
+        .where(
+            Task.id == task_id,
+            Task.status == TaskStatus.RUNNING.value,
+            Task.current_attempt_id == attempt_id,
+            Task.lease_generation == lease_generation,
+            Task.lease_expires_at > now,
+        )
+        .values(**task_values)
+    )
+    if attempt_result.rowcount != 1 or task_result.rowcount != 1:
+        session.rollback()
+        return False
+
+    session.commit()
+    return True
+
+
+def pause_task_for_provider_confirmation(
+    session: Session,
+    *,
+    task_id: str,
+    attempt_id: str,
+    lease_token: str,
+    lease_generation: int,
+    error_code: str,
+    error_message: str,
+    retryable: bool,
+    provider_name: str | None,
+    payload_json: str,
+    usage_json: str = "{}",
+    diagnostics_json: str = "{}",
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    message = error_message[:4000]
+    attempt_result = session.execute(
+        update(TaskAttempt)
+        .where(
+            TaskAttempt.id == attempt_id,
+            TaskAttempt.task_id == task_id,
+            TaskAttempt.lease_token == lease_token,
+            TaskAttempt.lease_generation == lease_generation,
+            TaskAttempt.status == TaskAttemptStatus.RUNNING.value,
+            TaskAttempt.lease_expires_at > now,
+        )
+        .values(
+            status=(
+                TaskAttemptStatus.RETRYABLE_FAILED.value
+                if retryable
+                else TaskAttemptStatus.PERMANENT_FAILED.value
+            ),
+            finished_at=now,
+            error_code=error_code,
+            error_message=message,
+            provider_name=provider_name,
+            usage_json=usage_json,
+            diagnostics_json=diagnostics_json,
         )
     )
     task_result = session.execute(
@@ -385,13 +471,10 @@ def fail_task_attempt(
             Task.lease_expires_at > now,
         )
         .values(
-            status=(
-                TaskStatus.RETRY_WAIT.value
-                if retry_scheduled
-                else TaskStatus.FAILED.value
-            ),
-            next_attempt_at=next_attempt_at,
-            finished_at=None if retry_scheduled else now,
+            status=TaskStatus.WAITING_CONFIRMATION.value,
+            payload_json=payload_json,
+            next_attempt_at=None,
+            finished_at=None,
             lease_owner=None,
             lease_expires_at=None,
             last_error_code=error_code,
@@ -403,9 +486,82 @@ def fail_task_attempt(
     if attempt_result.rowcount != 1 or task_result.rowcount != 1:
         session.rollback()
         return False
-
     session.commit()
     return True
+
+
+def resolve_provider_confirmation(
+    session: Session,
+    *,
+    task_id: str,
+    decision: str,
+    now: datetime | None = None,
+) -> Task | None:
+    now = now or datetime.now(timezone.utc)
+    task = session.get(Task, task_id)
+    if task is None or task.status != TaskStatus.WAITING_CONFIRMATION.value:
+        return None
+    if decision not in {"SWITCH", "RETRY_CURRENT", "STOP"}:
+        return None
+    try:
+        payload = json.loads(task.payload_json)
+    except json.JSONDecodeError:
+        return None
+    pending = payload.get("pending_provider_switch")
+    routes = payload.get("provider_routes")
+    if not isinstance(pending, dict) or not isinstance(routes, list):
+        return None
+    route_index = int(payload.get("provider_route_index") or 0)
+    history = payload.get("provider_switch_history")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "from_service_id": pending.get("current_service_id"),
+        "to_service_id": pending.get("next_service_id"),
+        "decision": decision,
+        "decided_at": now.isoformat(),
+    })
+    payload["provider_switch_history"] = history
+    payload.pop("pending_provider_switch", None)
+    if decision == "SWITCH":
+        next_index = route_index + 1
+        if next_index >= len(routes):
+            return None
+        threshold = max(1, int(payload.get("provider_failover_threshold") or 3))
+        payload["provider_route_index"] = next_index
+        payload["provider_failure_streak"] = 0
+        payload["provider_failure_reset_at"] = now.isoformat()
+        task.status = TaskStatus.PENDING.value
+        task.max_attempts = max(task.max_attempts, task.attempts + threshold)
+        task.finished_at = None
+        task.next_attempt_at = None
+        task.error_code = None
+        task.error_message = None
+        task.last_error_code = None
+        task.last_error_message = None
+    elif decision == "RETRY_CURRENT":
+        threshold = max(1, int(payload.get("provider_failover_threshold") or 3))
+        payload["provider_failure_streak"] = 0
+        payload["provider_failure_reset_at"] = now.isoformat()
+        task.status = TaskStatus.PENDING.value
+        task.max_attempts = max(task.max_attempts, task.attempts + threshold)
+        task.finished_at = None
+        task.next_attempt_at = None
+        task.error_code = None
+        task.error_message = None
+        task.last_error_code = None
+        task.last_error_message = None
+    else:
+        payload["provider_failure_streak"] = 0
+        task.status = TaskStatus.FAILED.value
+        task.finished_at = now
+        task.error_code = "PROVIDER_SWITCH_DECLINED"
+        task.error_message = "你选择不切换模型服务，本次分析已停止；已经保存的结果不会被覆盖。"
+    task.payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    task.lease_owner = None
+    task.lease_expires_at = None
+    session.flush()
+    return task
 
 
 def request_task_cancellation(
@@ -420,7 +576,11 @@ def request_task_cancellation(
         .where(
             Task.id == task_id,
             Task.status.in_(
-                (TaskStatus.PENDING.value, TaskStatus.RETRY_WAIT.value)
+                (
+                    TaskStatus.PENDING.value,
+                    TaskStatus.RETRY_WAIT.value,
+                    TaskStatus.WAITING_CONFIRMATION.value,
+                )
             ),
         )
         .values(

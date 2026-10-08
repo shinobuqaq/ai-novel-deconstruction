@@ -1,113 +1,125 @@
-# AI 小说拆解工作台
+# AI 小说拆解工作台 (AI Novel Deconstruction Studio)
 
-这是“AI 小说拆解工作台”的公开开发仓库。产品目标、页面、用户流程、参考机制、真实进度和开发顺序统一以 [当前基线 V1.0](docs/CURRENT_BASELINE.md) 为准。
+> **定位**：服务网文创作者的“方法论研习引擎”。从整本小说中抽取真实文本原料（实体、事件、事实、伏笔、冲突、节律），升华为结构化的 42 项创作方法论研报与开书工具包。
 
-当前仓库已经完成 P0 工程地基的关键可靠性能力，并跑通整本导入、章节确认、第一版人物事件分析和原文回查，但 P1、P2 尚未完成复杂样本、跨章归一和正式验收：
+---
 
-- TXT、Markdown、DOCX、EPUB 整本导入与章节确认
-- 在线模型服务、模型目录和任务分析方案
-- 第一版人物与事件候选及原文证据回查
-- 可恢复任务、重试、取消和幂等制品
-- Windows 一键安装、启动和完整自动测试
-- 普通工作台与 `/debug` 内部调试入口分离
+## 📚 权威文档导航
 
-> 当前各模块成熟度和下一步统一查看 `docs/CURRENT_BASELINE.md`，不再用一个总百分比掩盖差异。
+系统设计哲学、核心技术架构、创作问题规约与共创流程，统一以 `docs/` 下的四大核心白皮书为准：
 
+- **[01 产品哲学与创作方法论白皮书](docs/01_PRODUCT_METHODOLOGY.md)**：永久记忆锚点与权威层级、系统定位、事实硬校验与文学软包容铁律、防走偏十条警钟。
+- **[02 系统技术架构与设计基线](docs/02_SYSTEM_ARCHITECTURE.md)**：FastAPI + 独立 Worker + SQLite 模块化单体拓扑、六阶段流水线、42 问插件化体系（`QuestionPlugin`）、Pydantic V2 严格验证流、现代 Studio 前端交互规范。
+- **[03 创作学习手册规约与标准范例](docs/03_LEARNING_HANDBOOK_SPEC.md)**：42 个北极星问题 P0/P1/P2 全景分级、层级 3 实操工具包规约、3.1 开场第一幕黄金标准示范案例。
+- **[04 新书共创规范与标准开书包](docs/04_NEW_BOOK_COCREATION.md)**：从拆书输入到新书落地的 10 步共创流程、5 份标准交付文档规范、跨文档一致性校验与完整示范样本。
+- **[技术调研与参考机制总览矩阵](docs/research/REFERENCE_MATRIX.md)**：P01~P19 深度技术调研报告总览、机制落地映射与第三方参考源码索引。
 
-## 0. 环境要求
+---
 
-- Windows 10/11
-- Git
-- Python 3.12 或 3.13
-- Node.js 20 或更新版本（包含 npm）
+## 🌟 核心特色与架构设计
 
-## 1. Windows 快速启动
+1. **现代 Studio 前端交互**：
+   - **常驻工作室导航栏**（`Sidebar`）：支持多小说项目下拉切换与创建，4 大核心工作区即时跳转与状态徽章；
+   - **全局原文证据滑动抽屉**（`EvidenceDrawer`）：点击任何指标或结论的证据标签，右侧平滑滑出毛玻璃抽屉，查阅原文段落、字符偏移量与前后上下文；
+   - **四大沉浸视图**：创作学习手册（`LearningView` 双栏研报阅读与 42 问即时过滤搜索）、故事元素档案（`ArchiveView` 11 项细粒度解耦子组件库）、原文与章节（`SourceView` 书籍式纯净阅读器、长篇零依赖高性能虚拟滚动视窗与字符绝对坐标微光高亮）、分析控制中心（`AnalysisView` 向导式流水线控制）；
+   - **独立技术排查弹窗**（`DiagnosticsModal`）：底层 LLM 调用日志、Token 统计与单模块重试功能完全独立，不干扰主屏创作。
+2. **后端高内聚插件体系**：
+   - 42 个创作问题彻底解耦为独立的 `QuestionPlugin` 插件，由全局注册中心（`registry.py`）按需动态发现与分发，彻底消灭历史硬编码双轨制；支持多态就绪评估（`assess_readiness`）与多态答案校验（`validate_answer`）。
+3. **统一叙事场景与节律提取引擎（NarrativeSceneTree）**：
+   - 将传统离散孤立的章末钩子（4.9）、开局结构（3.1）、前三章兑现（3.4）与人物出场信号（2.2），收敛于全局统一的场景树与时空节律提取器（`pacing_extractor.py`），支持按需分视图极速加载。
+4. **双轨证据校验（客观事实硬约束 vs 主观文学软包容）**：
+   - 深度贯彻《01 产品哲学与创作方法论白皮书》铁律，对阅读留存等文学推论采用软性批注（Soft Annotation）与置信度衰减，严禁因文学主观性触发硬性熔断；严格禁止越界计费造假。
+5. **Pydantic V2 严格验证流**：
+   - 全面淘汰脆弱的手工字典遍历与正则，模型输出直接经过模式校验，不合格当场重试或纠偏。
+6. **长篇保真分窗与预算管理**：
+   - 引入 15 万 Token 单次请求软上限，采用连续窗口切片聚合算法，杜绝大模型长上下文遗忘。
 
-在项目根目录打开 PowerShell：
+---
 
+## 💻 环境要求
+
+- **操作系统**：Windows 10 / 11
+- **Python**：3.12 或 3.13（推荐使用项目内置 `.venv`）
+- **Node.js**：20 或更高版本（含 npm）
+
+---
+
+## 🚀 快速启动
+
+### 方式一：日常双击启动（推荐）
+双击项目根目录下的 **`启动AI小说拆解工作台.bat`**。  
+启动后将自动拉起前后端服务并打开工作台页面：
+- **工作室前台**：`http://127.0.0.1:15173`
+- **后端 API 文档**：`http://127.0.0.1:18000/docs`
+- **健康检查接口**：`http://127.0.0.1:18000/health`
+
+### 方式二：开发者命令行启动
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\setup.ps1
-.\scripts\dev.ps1
+# 1. 激活后端虚拟环境并启动 API
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 18000 --reload
+
+# 2. 启动异步任务 Worker
+.\.venv\Scripts\python.exe -m app.worker
+
+# 3. 启动前端 Vite 开发服务器
+cd frontend
+npm run dev
 ```
 
-启动后：
+---
 
-- 前端：`http://127.0.0.1:5173`
-- API 文档：`http://127.0.0.1:8000/docs`
-- 健康检查：`http://127.0.0.1:8000/health`
-
-`dev.ps1` 会分别启动 API、Worker 和 Frontend。关闭对应 PowerShell 窗口即可停止。
-
-## 2. 开发人员验证后台闭环
-
-下面的操作只用于开发人员验证后台，不是小说拆解流程，最终用户无需验收：
-
-1. 在页面创建项目。
-2. 创建一个 `fake.echo` 任务。
-3. Worker 领取任务并生成不可变 JSON Artifact。
-4. 页面刷新后可看到任务状态由 `PENDING` 变为 `SUCCEEDED`。
-5. Artifact 文件写入 `workspace/artifacts/<project_id>/`。
-
-## 3. 常用命令
+## 🛠️ 常用开发与测试命令
 
 ```powershell
-# 只初始化数据库
+# 运行后端全量测试套件 (425 个自动化测试)
+.\.venv\Scripts\python.exe -m pytest -q
+
+# 编译与构建前端生产包 (TypeScript 类型检查 + Vite 打包)
+cd frontend
+npm run build
+
+# 初始化或重置数据库
 .\scripts\init-db.ps1
-
-# 运行测试
-.\scripts\test.ps1
-
-# M0 Windows 强杀恢复与最终可靠性验收
-.\scripts\verify-m0-reliability.ps1
-
-# 只运行一次 Worker（方便调试）
-.\.venv\Scripts\python.exe -m app.worker --once
 ```
 
-## 4. 当前目录
+---
+
+## 📁 项目目录结构
 
 ```text
 ai-novel-deconstruction/
-├─ backend/               FastAPI、Worker、领域与持久化
-├─ frontend/              React + TypeScript + Vite
-├─ docs/                  Roadmap、Issue Backlog、ADR、研究追踪
-├─ prompts/               后续 Prompt Registry
-├─ schemas/               Structured Output JSON Schema
-├─ fixtures/              小型可重复测试语料
-├─ scripts/               Windows 开发脚本
-├─ workspace/             本地数据库、Artifact 与用户数据（不进 Git）
-└─ .env.example
+├── backend/                  # 后端源码 (FastAPI + Worker + 领域服务 + 插件体系)
+│   ├── app/
+│   │   ├── routers/          # 细粒度 RESTful 接口路由 (settings, projects, sources, analysis, learning, tasks, common)
+│   │   ├── api.py            # 极简向前兼容 Facade 门面
+│   │   ├── services/
+│   │   │   ├── learning_questions/  # 42问插件化体系 (QuestionPlugin 与各专属插件)
+│   │   │   ├── pacing_extractor.py  # 统一叙事场景与节律提取器 (NarrativeSceneTree 结构树与锚定投影)
+│   │   │   ├── learning_report.py   # 学习手册调度引擎
+│   │   │   ├── analysis.py          # 六阶段拆解逻辑与 Pydantic V2 校验
+│   │   │   └── ...
+│   │   └── worker.py         # 异步任务工作器
+│   └── tests/                # 425 个自动化单元与集成测试
+├── frontend/                 # 前端源码 (React 18 + TypeScript + Vite)
+│   └── src/
+│       ├── components/
+│       │   ├── layout/       # AppLayout, Sidebar (现代化工作室布局)
+│       │   ├── views/        # LearningView, ArchiveView, SourceView, AnalysisView
+│       │   ├── archive/      # 11 个细粒度独立档案资产子组件 (CharacterList, PlotView 等)
+│       │   ├── common/       # EvidenceDrawer (全局右侧原文证据抽屉)
+│       │   └── DiagnosticsModal.tsx # 技术诊断排查弹窗
+│       ├── ProductWorkbench.tsx # 主控工作台集成 (防抖持久化、分视图按需加载)
+│       ├── NewBookCocreationPage.tsx # 独立下游新书共创工作台 (游离于拆解内核之外)
+│       └── styles/           # 模块化现代领域样式层 (base, studio, archive, learning, source, pipeline)
+├── docs/                     # 统一权威文档中心 (01~04 核心白皮书)
+│   ├── 01_PRODUCT_METHODOLOGY.md
+│   ├── 02_SYSTEM_ARCHITECTURE.md
+│   ├── 03_LEARNING_HANDBOOK_SPEC.md
+│   ├── 04_NEW_BOOK_COCREATION.md
+│   └── research/             # 技术调研档案 (P01~P19 评估报告与参考源码)
+│       ├── REFERENCE_MATRIX.md
+│       ├── reference_projects/ # 第三方参考源码 (automated-novel-panel, xu-xie-ji)
+│       └── fable_route_evidence/
+├── samples/                  # 测试样书语料库
+└── scripts/                  # 启动、安装与运维脚本
 ```
-
-## 5. 当前编码顺序
-
-模型设置已经具备自动参数、所选模型测试和能力过滤；当前继续完成 P1、P2 的正式验收范围：
-
-```text
-任务级提示词、最小上下文预算和最终请求记录
-→ 复杂导入样本与章节校正
-→ 人物归一与剧情阶段
-→ 跨章事件合并
-→ 整本导入、人物事件和原文回查的第一次正式验收
-```
-
-## 6. 研究成果如何进入代码
-
-本仓库不是从 P01—P19 中选择一个项目 Fork 而来。产品需求先决定需要什么零件，再从参考项目吸收适用的机制、思想或实现边界；不因为原项目存在某项功能就照搬同名产品功能。
-
-- [当前基线 V1.0](docs/CURRENT_BASELINE.md)：完整产品、系统、数据、质量、参考机制、进度和开发顺序；不需要拼接旧总览
-- [第三方代码登记](docs/THIRD_PARTY_CODE.md)：当前未复制 P01—P19 源码；未来引入必须固定来源、版本和许可证
-- [工程专项文档](docs/engineering/)：当前持续集成等工程说明
-- [架构决策](docs/adr/)：已经接受的架构选择及原因
-
-## 7. 文档权威
-
-1. [当前基线 V1.0](docs/CURRENT_BASELINE.md)：唯一当前产品与系统判断入口
-2. `P01—P19` 单项目档案：需要具体零件时回查的研究证据
-3. [工程专项文档](docs/engineering/) 与 [架构决策](docs/adr/)：当前专项实现和验证依据，不能修改产品目标
-4. 本 README：启动和开发入口，不替代当前基线
-
-## 8. License
-
-项目仓库已经公开，但许可证尚未最终确定。公开可见不等于已经授权他人复制、修改或分发；正式发布前需补充 `LICENSE`，并完成第三方依赖与通知复核。

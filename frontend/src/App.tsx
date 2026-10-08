@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Project, Task } from "./api";
+import NewBookCocreationPage from "./NewBookCocreationPage";
 import ProductWorkbench from "./ProductWorkbench";
 import SettingsPage from "./SettingsPage";
 
@@ -341,5 +342,6 @@ export function DebugConsole() {
 export default function App() {
   if (window.location.pathname === "/debug") return <DebugConsole />;
   if (window.location.pathname === "/settings") return <SettingsPage />;
+  if (window.location.pathname === "/new-book") return <NewBookCocreationPage />;
   return <ProductWorkbench />;
 }

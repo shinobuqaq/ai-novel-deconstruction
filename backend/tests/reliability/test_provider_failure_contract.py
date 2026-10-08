@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -182,6 +183,22 @@ class CrashingProvider:
         raise RuntimeError("provider adapter crashed")
 
 
+class MalformedJsonProvider:
+    name = "fake"
+
+    async def complete(self, *, task_kind: str, payload: dict) -> ProviderResponse:
+        raise ProviderError(
+            code="PROVIDER_INVALID_OUTPUT",
+            message="在线 AI 返回的 JSON 格式无法由程序安全修复，系统会自动重试。",
+            retryable=True,
+            diagnostics={
+                "phase": "json_decode",
+                "classification": "likely_truncated_output",
+            },
+            raw_text='{"entities": [], "events": [',
+        )
+
+
 def test_unexpected_provider_exception_has_stable_error_code(
     reliability_env,
     task_factory,
@@ -234,6 +251,38 @@ def test_invalid_provider_output_is_retryable(
         assert persisted is not None
         assert persisted.status == TaskStatus.RETRY_WAIT.value
         assert persisted.error_code == "PROVIDER_INVALID_OUTPUT"
+
+
+def test_invalid_json_response_is_saved_to_local_diagnostics(
+    reliability_env,
+    task_factory,
+) -> None:
+    task_id = task_factory(max_attempts=1)
+    with reliability_env.session_factory() as session:
+        claim = claim_next_task(
+            session,
+            worker_id="worker-malformed-json",
+            lease_seconds=60,
+        )
+        assert claim is not None
+
+    assert execute_task_sync(
+        reliability_env.session_factory,
+        reliability_env.settings,
+        claim,
+        ProviderRegistry([MalformedJsonProvider()]),
+    )
+
+    with reliability_env.session_factory() as session:
+        persisted = get_task(session, task_id)
+        assert persisted is not None
+        assert persisted.current_attempt is not None
+        diagnostics = json.loads(persisted.current_attempt.diagnostics_json)
+
+    raw_path = reliability_env.settings.workspace_dir / diagnostics["raw_output_path"]
+    assert raw_path.read_text(encoding="utf-8") == '{"entities": [], "events": ['
+    assert diagnostics["classification"] == "likely_truncated_output"
+    assert "raw_text" not in diagnostics
 
 
 def test_missing_provider_is_a_permanent_configuration_error() -> None:

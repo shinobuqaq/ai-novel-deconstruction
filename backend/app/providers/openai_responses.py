@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -11,9 +12,13 @@ from ..services.provider_config import (
     STRUCTURED_STRICT,
     STRUCTURED_UNSUPPORTED,
     ModelSettingsError,
-    resolve_analysis_profile,
+    model_service_uses_streaming,
+    post_model_request,
+    resolve_analysis_route,
+    schema_for_provider,
 )
 from .base import ProviderError, ProviderResponse
+from .json_output import JsonTextParseError, parse_json_text
 
 
 class OpenAIResponsesProvider:
@@ -32,9 +37,11 @@ class OpenAIResponsesProvider:
 
     def _configuration(self, payload: dict[str, Any]):
         try:
-            return resolve_analysis_profile(
+            return resolve_analysis_route(
                 self.settings,
                 str(payload.get("model_profile_id") or "entities-events"),
+                service_id=str(payload.get("provider_service_id") or "").strip() or None,
+                model=str(payload.get("provider_model") or "").strip() or None,
             )
         except ModelSettingsError as exc:
             raise ProviderError(
@@ -45,6 +52,14 @@ class OpenAIResponsesProvider:
 
     async def complete(self, *, task_kind: str, payload: dict[str, Any]) -> ProviderResponse:
         service, profile = self._configuration(payload)
+        force_streaming = task_kind in {
+            "analysis.character_design_evidence",
+            "analysis.chapter_end_hooks",
+            "analysis.learning_report",
+            "analysis.opening_hook_payoffs",
+            "analysis.opening_payoff_candidates",
+            "analysis.opening_structure",
+        }
         schema = payload.get("output_schema")
         instructions = payload.get("instructions")
         model_input = payload.get("input")
@@ -55,6 +70,7 @@ class OpenAIResponsesProvider:
                 retryable=False,
             )
 
+        wire_schema = schema_for_provider(schema)
         capability_matches = service.capabilities.tested_model == profile.model
         capabilities = service.capabilities if capability_matches else None
         structured_mode = (
@@ -62,6 +78,24 @@ class OpenAIResponsesProvider:
             if capabilities and capabilities.structured_output in {STRUCTURED_STRICT, STRUCTURED_JSON_ONLY}
             else STRUCTURED_STRICT
         )
+        # Compatible gateways can advertise strict JSON support from a small
+        # probe while rejecting the much larger nested schemas used by later
+        # analysis stages. Keep the output contract, but move schema enforcement
+        # to the local Pydantic validator for those stages.
+        if (
+            service.service_type == "OPENAI_COMPATIBLE"
+            and task_kind in {
+                "analysis.narrative_synthesis",
+                "analysis.deep_insights",
+                "analysis.character_design_evidence",
+                "analysis.chapter_end_hooks",
+                "analysis.opening_hook_payoffs",
+                "analysis.opening_payoff_candidates",
+                "analysis.opening_structure",
+                "analysis.learning_report",
+            }
+        ):
+            structured_mode = STRUCTURED_JSON_ONLY
         reasoning_supported = not capabilities or capabilities.reasoning_effort != STRUCTURED_UNSUPPORTED
         temperature_supported = not capabilities or capabilities.temperature != STRUCTURED_UNSUPPORTED
         effective_reasoning = (
@@ -79,7 +113,7 @@ class OpenAIResponsesProvider:
         if structured_mode == STRUCTURED_JSON_ONLY:
             instructions = (
                 f"{instructions}\n输出必须是 JSON 对象，并满足以下结构："
-                f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}"
+                f"{json.dumps(wire_schema, ensure_ascii=False, separators=(',', ':'))}"
             )
 
         if service.service_type == "OPENAI":
@@ -96,7 +130,7 @@ class OpenAIResponsesProvider:
                         "type": "json_schema",
                         "name": "novel_entities_events",
                         "strict": True,
-                        "schema": schema,
+                        "schema": wire_schema,
                     }
                 }
             if effective_reasoning is not None:
@@ -121,7 +155,7 @@ class OpenAIResponsesProvider:
                     "json_schema": {
                         "name": "novel_entities_events",
                         "strict": True,
-                        "schema": schema,
+                        "schema": wire_schema,
                     },
                 }
             if effective_reasoning is not None:
@@ -132,13 +166,12 @@ class OpenAIResponsesProvider:
                 timeout=profile.timeout_seconds,
                 transport=self.transport,
             ) as client:
-                response = await client.post(
+                response = await post_model_request(
+                    client,
+                    service,
                     endpoint,
-                    headers={
-                        "Authorization": f"Bearer {service.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=request_body,
+                    request_body,
+                    force_streaming=force_streaming,
                 )
         except httpx.TimeoutException as exc:
             raise ProviderError(
@@ -167,22 +200,50 @@ class OpenAIResponsesProvider:
                 message="API Key 无效或没有使用该模型的权限。",
                 retryable=False,
             )
+        if response.status_code == 422:
+            try:
+                error = response.json().get("error", {})
+            except ValueError:
+                error = {}
+            if (
+                isinstance(error, dict)
+                and error.get("code") == "REMOTE_STREAMING_REQUIRED"
+            ):
+                raise ProviderError(
+                    code="PROVIDER_STREAMING_UNSUPPORTED",
+                    message=str(error.get("message") or "远程模型服务必须支持流式传输。"),
+                    retryable=False,
+                )
         if response.status_code >= 500:
+            detail = _response_error_detail(response)
+            message = "在线 AI 服务暂时不可用，系统会自动重试。"
+            if detail:
+                message += f" 服务返回：{detail}"
             raise ProviderError(
                 code="PROVIDER_UNAVAILABLE",
-                message="在线 AI 服务暂时不可用，系统会自动重试。",
+                message=message,
                 retryable=True,
             )
         if response.status_code >= 400:
+            detail = _response_error_detail(response)
+            message = f"在线 AI 拒绝了请求（{response.status_code}）。"
+            if detail:
+                message += f" 服务返回：{detail}"
+            message += "请检查模型、结构化输出和高级参数。"
             raise ProviderError(
                 code="PROVIDER_BAD_REQUEST",
-                message=f"在线 AI 拒绝了请求（{response.status_code}）。请检查模型和高级参数。",
+                message=message,
                 retryable=False,
             )
 
+        prompt_tokens = 0
+        completion_tokens = 0
         try:
             body = response.json()
             if service.service_type == "OPENAI":
+                usage = body.get("usage") or {}
+                prompt_tokens = int(usage.get("input_tokens") or 0)
+                completion_tokens = int(usage.get("output_tokens") or 0)
                 output_text = next(
                     content["text"]
                     for item in body.get("output", [])
@@ -190,22 +251,42 @@ class OpenAIResponsesProvider:
                     for content in item.get("content", [])
                     if content.get("type") == "output_text"
                 )
-                usage = body.get("usage") or {}
-                prompt_tokens = int(usage.get("input_tokens") or 0)
-                completion_tokens = int(usage.get("output_tokens") or 0)
             else:
-                output_text = body["choices"][0]["message"]["content"]
                 usage = body.get("usage") or {}
                 prompt_tokens = int(usage.get("prompt_tokens") or 0)
                 completion_tokens = int(usage.get("completion_tokens") or 0)
+                output_text = body["choices"][0]["message"]["content"]
             if not isinstance(output_text, str):
                 raise TypeError("OUTPUT_TEXT_MISSING")
-            parsed = json.loads(output_text)
-        except (ValueError, KeyError, StopIteration, TypeError, json.JSONDecodeError) as exc:
+            parsed_json = parse_json_text(output_text)
+            parsed = parsed_json.value
+        except JsonTextParseError as exc:
+            diagnostics = exc.diagnostics()
             raise ProviderError(
                 code="PROVIDER_INVALID_OUTPUT",
-                message="在线 AI 没有返回符合要求的结构化结果，系统会自动重试。",
+                message="在线 AI 返回的 JSON 格式无法由程序安全修复，系统会自动重试。",
                 retryable=True,
+                diagnostics=diagnostics,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                provider_name=service.id,
+                model=profile.model,
+                raw_text=exc.raw_text,
+            ) from exc
+        except (ValueError, KeyError, StopIteration, TypeError) as exc:
+            diagnostics: dict[str, object] = {
+                "phase": "response_envelope",
+                "classification": "missing_output_text",
+            }
+            raise ProviderError(
+                code="PROVIDER_INVALID_OUTPUT",
+                message="在线 AI 已响应，但响应中没有可识别的正文结果，系统会自动重试。",
+                retryable=True,
+                diagnostics=diagnostics,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                provider_name=service.id,
+                model=profile.model,
             ) from exc
         return ProviderResponse(
             raw_text=output_text,
@@ -222,5 +303,34 @@ class OpenAIResponsesProvider:
                 "structured_output": structured_mode,
                 "timeout_seconds": profile.timeout_seconds,
                 "max_retries": profile.max_retries,
+                "context_window_tokens": profile.context_window_tokens,
+                "transport_mode": (
+                    "STREAMING"
+                    if force_streaming or model_service_uses_streaming(service)
+                    else "LOCAL_FULL_RESPONSE"
+                ),
+                "json_repairs": list(parsed_json.repairs),
             },
         )
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    """Extract a short, key-free upstream error explanation for diagnostics."""
+    detail: object = None
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            detail = error.get("message") or error.get("detail") or error.get("code")
+        elif isinstance(error, str):
+            detail = error
+        detail = detail or body.get("message") or body.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        detail = response.text
+    if not isinstance(detail, str):
+        return ""
+    cleaned = re.sub(r"\s+", " ", detail).strip()
+    return cleaned[:400]

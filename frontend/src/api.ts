@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:18000";
 
 export type Project = {
   id: string;
@@ -86,6 +86,13 @@ export type SourceImport = {
   reused_existing: boolean;
 };
 
+export type SourceStructure = {
+  version: SourceVersion;
+  units: SourceUnit[];
+  issues: SourceIssue[];
+  selected_unit_id: string;
+};
+
 export type SourceUnitContent = {
   id: string;
   source_version_id: string;
@@ -133,6 +140,8 @@ export type AnalysisProfile = {
   reasoning_effort: "auto" | "none" | "low" | "medium" | "high";
   timeout_seconds: number;
   max_retries: number;
+  context_window_tokens: number | null;
+  failover_targets: Array<{ service_id: string; model: string }>;
 };
 
 export type ModelSettings = {
@@ -153,15 +162,110 @@ export type AnalysisRun = {
   id: string;
   source_version_id: string;
   stage: string;
-  status: "PENDING" | "RUNNING" | "REVIEW" | "CONFIRMED" | "FAILED" | "CANCELLED";
+  status: "PENDING" | "RUNNING" | "WAITING_CONFIRMATION" | "REVIEW" | "CONFIRMED" | "FAILED" | "CANCELLED";
   total_batches: number;
   completed_batches: number;
   failed_batches: number;
   failure_code: string | null;
   failure_message: string | null;
+  has_usable_result: boolean;
+  usable_result_level: "NONE" | "FOUNDATION" | "STORY" | "FULL";
+  latest_update_failed: boolean;
   created_at: string;
   finished_at: string | null;
   confirmed_at: string | null;
+  provider_confirmation: {
+    current_service_name: string;
+    current_model: string;
+    next_service_name: string;
+    next_model: string;
+    failure_count: number;
+    threshold: number;
+    error_code: string;
+    message: string;
+  } | null;
+};
+
+export type AnalysisStageDiagnostic = {
+  key: string;
+  label: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  task_count: number;
+  attempt_count: number;
+  retry_count: number;
+  duration_seconds: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  selected_material_count: number;
+  selected_material_chars: number;
+  omitted_material_count: number;
+  omitted_material_chars: number;
+  omitted_material_reasons: Record<string, number>;
+  latest_error: string | null;
+  calls: AnalysisCallDiagnostic[];
+};
+
+export type AnalysisCallDiagnostic = {
+  attempt_id: string;
+  task_id: string;
+  task_kind: string;
+  component: "overview" | "characters" | "plot" | "relations" | null;
+  component_label: string | null;
+  attempt_no: number;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number;
+  provider_name: string | null;
+  model: string | null;
+  transport_mode: "STREAMING" | "LOCAL_FULL_RESPONSE" | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  selected_material_count: number;
+  selected_material_chars: number;
+  omitted_material_count: number;
+  omitted_material_chars: number;
+  omitted_material_reasons: Record<string, number>;
+  error_message: string | null;
+  result_artifact_id: string | null;
+  has_input_content: boolean;
+  has_output_content: boolean;
+  can_retry_component: boolean;
+};
+
+export type AnalysisCallContent = {
+  attempt_id: string;
+  input_text: string | null;
+  output_text: string | null;
+  input_note: string | null;
+  output_note: string | null;
+};
+
+export type AnalysisRunDiagnostics = {
+  run_id: string;
+  current_step: string;
+  attempt_count: number;
+  retry_count: number;
+  duration_seconds: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  input_chars: number;
+  output_chars: number;
+  stages: AnalysisStageDiagnostic[];
+};
+
+export type AnalysisUsageEstimate = {
+  source_version_id: string;
+  batch_count: number;
+  planned_call_count: number;
+  retry_ceiling_call_count: number;
+  estimated_input_tokens: number;
+  maximum_output_tokens: number;
+  basis: string;
 };
 
 export type EntityCandidate = {
@@ -190,6 +294,700 @@ export type EventCandidate = {
   end_char: number;
   status: "VALID" | "UNCERTAIN";
   confidence: number;
+};
+
+export type WorkbenchCharacter = {
+  id: string;
+  name: string;
+  aliases: string[];
+  description: string;
+  evidence_ids: string[];
+  event_ids: string[];
+  first_chapter_ordinal: number | null;
+  first_chapter_title: string | null;
+  last_chapter_ordinal: number | null;
+  last_chapter_title: string | null;
+  appearance_count: number;
+  activity_level: string;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+  role_required: boolean;
+  role: "PROTAGONIST" | "CORE_SUPPORTING" | "IMPORTANT_SUPPORTING" | "MINOR" | "UNCLASSIFIED";
+  role_reason: string;
+  identities: string[];
+  goals: string[];
+  motivations: string[];
+  abilities: string[];
+  secrets: string[];
+  important_experiences: string[];
+  current_state: string;
+  arc_summary: string;
+  identity_notes: string[];
+};
+
+export type PersonIdentityCandidate = {
+  candidate_key: string;
+  left_name: string;
+  right_name: string;
+  left_aliases: string[];
+  right_aliases: string[];
+  recommended_name: string;
+  reason: string;
+  signals: string[];
+  confidence: number;
+  review_priority: "BLOCKING" | "OPTIONAL";
+  recommended_decision: "SAME" | "DIFFERENT";
+  cooccurrence_count: number;
+  evidence_ids: string[];
+};
+
+export type PersonIdentityDecision = {
+  id: string;
+  candidate_key: string;
+  left_name: string;
+  right_name: string;
+  canonical_name: string | null;
+  decision: "SAME" | "DIFFERENT";
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkbenchEvent = {
+  id: string;
+  title: string;
+  event_type: string;
+  summary: string;
+  people: string[];
+  related_entities: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  start_char: number;
+  end_char: number;
+  mention_count: number;
+  status: "VALID" | "UNCERTAIN";
+  confidence: number;
+  narrative_mode: "ACTUAL" | "MEMORY" | "REPORT" | "LIE" | "MISUNDERSTANDING" | "HYPOTHESIS" | "REPEATED_MENTION" | "UNCERTAIN";
+  location: string;
+  trigger: string;
+  process: string;
+  outcome: string;
+  impact: string;
+  boundary_status: "EXACT_SPAN" | "MULTI_SPAN" | "UNRESOLVED";
+  boundary_note: string;
+  discovery_routes: Array<"ACTION" | "STATE_CHANGE" | "INFORMATION_CHANGE" | "RELATION_CHANGE" | "DOCUMENT_CONTEXT">;
+};
+
+export type WorkbenchPhase = {
+  id: string;
+  title: string;
+  summary: string;
+  event_ids: string[];
+  evidence_ids: string[];
+  chapter_ordinals: number[];
+  chapter_titles: string[];
+  people: string[];
+  situation: string;
+  goal: string;
+  obstacle: string;
+  key_actions: string[];
+  outcome: string;
+  change: string;
+  next_hook: string;
+};
+
+export type WorkbenchStoryOverview = {
+  premise: string;
+  synopsis: string;
+  protagonist: string;
+  protagonist_goal: string;
+  central_conflict: string;
+  opening_situation: string;
+  development_path: string[];
+  turning_points: string[];
+  current_situation: string;
+  current_result: string;
+  unresolved_questions: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterRelation = {
+  source_name: string;
+  target_name: string;
+  relation: string;
+  current_state: string;
+  changes: string[];
+  change_history: Array<{
+    chapter_ordinal: number;
+    before: string;
+    after: string;
+    trigger_event_id: string | null;
+    evidence_ids: string[];
+  }>;
+  evidence_ids: string[];
+};
+
+export type WorkbenchEventRelation = {
+  source_event_id: string;
+  target_event_id: string;
+  relation: string;
+  explanation: string;
+  evidence_ids: string[];
+  source_title: string;
+  target_title: string;
+};
+
+export type WorkbenchFactVersion = {
+  id: string;
+  subject: string;
+  predicate: string;
+  value: string;
+  fact_type: string;
+  status: string;
+  valid_from_chapter: number;
+  valid_to_chapter: number | null;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  timeline_version: number;
+  timeline_status: "ACTIVE" | "EXPIRED" | "REESTABLISHED" | "CONFLICTING";
+  timeline_note: string;
+};
+
+export type WorkbenchStateChange = {
+  id: string;
+  subject: string;
+  aspect: string;
+  before: string;
+  after: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
+export type WorkbenchActorKnowledge = {
+  id: string;
+  actor: string;
+  proposition: string;
+  state: string;
+  chapter_ordinal: number;
+  evidence_ids: string[];
+};
+
+export type WorkbenchKnowledgeTransfer = {
+  id: string;
+  source_actor: string;
+  target_actor: string;
+  proposition: string;
+  transfer_type: "WITNESSED" | "TOLD" | "OVERHEARD" | "RUMOR" | "MISREPRESENTED" | "RETRACTED";
+  resulting_state: string;
+  chapter_ordinal: number;
+  event_id: string | null;
+  evidence_ids: string[];
+};
+
+export type WorkbenchWorldRule = {
+  id: string;
+  title: string;
+  description: string;
+  limitations: string[];
+  costs: string[];
+  exceptions: string[];
+  evidence_ids: string[];
+  discovered_chapter: number;
+};
+
+export type WorkbenchForeshadowing = {
+  id: string;
+  title: string;
+  setup: string;
+  lifecycle: string;
+  setup_chapter: number;
+  payoff_chapter: number | null;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchConflict = {
+  id: string;
+  title: string;
+  conflict_type: string;
+  participants: string[];
+  goals: string;
+  obstacles: string;
+  stakes: string;
+  escalation: string[];
+  resolution: string;
+  status: string;
+  event_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchSceneAnalysis = {
+  id: string;
+  chapter_ordinal: number;
+  function: string;
+  summary: string;
+  information_released: string[];
+  action_dialogue_balance: string;
+  pace: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchClaim = {
+  id: string;
+  claim_kind: string;
+  claim_text: string;
+  scope: string;
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  verification_status: string;
+  verification_note: string;
+  confidence: number;
+};
+
+export type WorkbenchDeepAnalysis = {
+  fact_versions: WorkbenchFactVersion[];
+  state_changes: WorkbenchStateChange[];
+  actor_knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
+  world_rules: WorkbenchWorldRule[];
+  foreshadowing: WorkbenchForeshadowing[];
+  conflicts: WorkbenchConflict[];
+  scene_analysis: WorkbenchSceneAnalysis[];
+  claims: WorkbenchClaim[];
+};
+
+export type WorkbenchLearningMetric = {
+  label: string;
+  value: string;
+  unit: string;
+  method: string;
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterDesignField = {
+  field: "surface_desire" | "deep_desire" | "motivation" | "contrast" | "boundary" | "core_ability";
+  status: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
+  value: string;
+  first_display_chapter_ordinal: number | null;
+  first_display_event_id: string | null;
+  display_event: string;
+  evidence_ids: string[];
+  explanation: string;
+};
+
+export type WorkbenchDesireConflict = {
+  chapter_ordinal: number;
+  event_id: string;
+  surface_desire_stage: "INITIAL" | "EVOLVED";
+  surface_desire: string;
+  deep_desire: string;
+  motive: string;
+  choice: string;
+  result: string;
+  sacrificed_desire: "SURFACE" | "DEEP";
+  sacrifice: string;
+  arc_change: string;
+  motive_evidence_ids: string[];
+  choice_evidence_ids: string[];
+  result_evidence_ids: string[];
+  sacrifice_evidence_ids: string[];
+  evidence_ids: string[];
+};
+
+export type WorkbenchCharacterDesignEvidence = {
+  question_id: "2.2";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  protagonist: string;
+  fields: WorkbenchCharacterDesignField[];
+  desire_conflicts: WorkbenchDesireConflict[];
+  arc_summary: string;
+  coverage: {
+    source_chapter_count: number;
+    protagonist_event_count: number;
+    covered_event_count: number;
+    event_coverage_complete: boolean;
+    first_30_chapter_event_count: number;
+  };
+};
+
+export type WorkbenchChapterEndHook = {
+  chapter_ordinal: number;
+  chapter_title: string;
+  ending_evidence_id: string;
+  ending_evidence_ids: string[];
+  hook_type: "CRISIS_SUSPENSION" | "NEW_INFORMATION" | "PAYOFF_PRIMING" | "REVERSAL" | "EMOTIONAL_FREEZE" | "NONE";
+  strength: "STRONG" | "MEDIUM" | "LIGHT" | "NONE";
+  hook_question: string;
+  rationale: string;
+  retention_basis: string;
+  response_status: "RESOLVED" | "PARTIAL" | "UNRESOLVED" | "NOT_APPLICABLE";
+  response_evidence_id: string | null;
+  response_evidence_ids: string[];
+  response_summary: string;
+  response_chapter_ordinal: number | null;
+  response_distance: number | null;
+  phase_id: string | null;
+  phase_title: string | null;
+};
+
+export type WorkbenchChapterEndHooksEvidence = {
+  question_id: "4.9";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  chapters: WorkbenchChapterEndHook[];
+  summary: {
+    type_distribution: Array<{ hook_type: WorkbenchChapterEndHook["hook_type"]; count: number; ratio: number }>;
+    strength_distribution: Array<{ strength: WorkbenchChapterEndHook["strength"]; count: number; ratio: number }>;
+    type_transition_count: number;
+    max_consecutive_strong: number;
+    max_consecutive_same_type: number;
+    no_hook_count: number;
+    no_hook_ratio: number;
+    resolved_or_partial_count?: number;
+    unresolved_count?: number;
+    response_distance?: { average: number | null; median: number | null; maximum: number | null };
+  };
+  coverage: {
+    source_chapter_count: number;
+    required_sample_count: number;
+    sampled_chapter_count: number;
+    sample_policy: "ALL_CHAPTERS" | "BALANCED_50" | "ALL_CHAPTERS_WINDOWED";
+    sampled_chapter_ordinals: number[];
+    ending_evidence_complete: boolean;
+    response_reference_complete?: boolean;
+    sequence_metrics_exact?: boolean;
+    window_count?: number;
+    completed_window_count?: number;
+    response_tracking_scope?: "OUT_OF_SCOPE_FOR_4.9";
+    ignored_trailing_boilerplate_count: number;
+  };
+};
+
+export type WorkbenchOpeningHookPayoff = {
+  chapter_ordinal: number;
+  chapter_title: string;
+  ending_evidence_id: string;
+  ending_evidence_ids: string[];
+  hook_type: WorkbenchChapterEndHook["hook_type"];
+  strength: WorkbenchChapterEndHook["strength"];
+  hook_question: string;
+  rationale: string;
+  retention_basis: string;
+  response_status: "COMPLETE" | "PARTIAL" | "UNRESOLVED" | "NOT_APPLICABLE";
+  response_evidence_id: string | null;
+  response_evidence_ids: string[];
+  response_summary: string;
+  response_rationale: string;
+  response_chapter_ordinal: number | null;
+  response_distance_chapters: number | null;
+  response_distance_chars: number | null;
+};
+
+export type WorkbenchOpeningHookPayoffsEvidence = {
+  question_id: "3.4";
+  revision: number;
+  generated_at: string;
+  is_current: boolean;
+  hooks: WorkbenchOpeningHookPayoff[];
+  summary: Record<string, number | null>;
+  coverage: Record<string, string | number | boolean>;
+};
+
+export type WorkbenchLearningQuestion = {
+  question_id: string;
+  stage_id: number;
+  stage_name: string;
+  question: string;
+  priority: "CORE";
+  analysis_requirement: string;
+  evidence_view: string;
+  output_contract: string;
+  measurement_requirements: string;
+  evidence_requirements: string;
+  scope_requirement: string;
+  external_data_policy: string;
+  recommended_rank: number | null;
+  status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
+  contract_status: "COMPLETE" | "INCOMPLETE";
+  material_status: "READY" | "NOT_READY" | "NOT_ASSESSED" | "NOT_GENERATED" | "GENERATING" | "OUTDATED" | "FAILED";
+  answer_status: "ANSWERED" | "PARTIAL" | "INSUFFICIENT_EVIDENCE" | "READY_TO_GENERATE" | "OUTDATED" | "NOT_GENERATED";
+  conclusion: string;
+  metrics: WorkbenchLearningMetric[];
+  contract_items: Array<{
+    item_id: string;
+    label: string;
+    status: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
+    finding: string;
+    metrics: WorkbenchLearningMetric[];
+    evidence_ids: string[];
+    limitations: string[];
+    classifications: Array<{
+      sequence_no: number;
+      category: string;
+    }>;
+  }>;
+  program_artifacts: {
+    opening_character_ledger?: {
+      roles: Array<{
+        sequence_no: number;
+        character_name: string;
+        first_action_chapter: number;
+        first_action_event_id: string;
+        first_action_event_title: string;
+        action_event_count_through_30: number;
+        later_role_volume: string;
+        identity_summary: string;
+        first_scene_function: string;
+        first_scene_function_evidence_ids: string[];
+      }>;
+      introduction_points: Array<{
+        chapter_ordinal: number;
+        new_character_count: number;
+        new_characters: string[];
+        chapters_since_previous_introduction: number | null;
+      }>;
+      function_distribution: Array<{ function: string; count: number }>;
+      identity_duplicate_candidates: Array<Record<string, unknown>>;
+      contract_validation: {
+        required_item_count: number;
+        covered_item_count: number;
+        character_classification_complete: boolean;
+      };
+    };
+    chapter_end_hook_matrix?: {
+      rows: Array<{
+        hook_type: WorkbenchChapterEndHook["hook_type"];
+        type_label: string;
+        counts: Record<WorkbenchChapterEndHook["strength"], number>;
+        examples: Array<{
+          chapter_ordinal: number;
+          chapter_title: string;
+          strength: WorkbenchChapterEndHook["strength"];
+          strength_label: string;
+          ending_evidence_ids: string[];
+        }>;
+      }>;
+    };
+    opening_structure_ledger?: {
+      opening_scene: {
+        opening_type: string;
+        story_start_paragraph: number;
+        protagonist_first_paragraph: number;
+        protagonist_action: string;
+        initial_trouble: string;
+        first_sentence_function: string;
+        first_paragraph_function: string;
+      };
+      chapter_tasks: Array<{
+        chapter_ordinal: number;
+        tasks: string[];
+        explanation: string;
+        key_event_positions: Array<{
+          paragraph: number;
+          source_char_start: number;
+        }>;
+      }>;
+      paragraph_segments: Array<{
+        chapter_ordinal: number;
+        paragraph_start: number;
+        paragraph_end: number;
+        scope: "FRONT_MATTER" | "STORY";
+        function: string;
+        information_modules: string[];
+        explanation: string;
+      }>;
+      information_timeline: Array<{
+        module: string;
+        status: "SUPPORTED" | "NOT_OBSERVED";
+        first_chapter_ordinal: number | null;
+        first_paragraph: number | null;
+        character_count: number;
+        finding: string;
+      }>;
+      coverage: {
+        paragraph_count: number;
+        story_character_count: number;
+      };
+    };
+  };
+  evidence_ids: string[];
+  counter_evidence_ids: string[];
+  limitations: string[];
+  reusable_lessons: string[];
+  do_not_copy: string[];
+  has_current_answer: boolean;
+  handbook: {
+    why_important: string;
+    universal_methods: string[];
+    checklist: string[];
+    common_errors: Array<{ mistake: string; fix: string }>;
+    templates: Array<{ name: string; structure: string; checkpoints: string[] }>;
+    genre_note: string;
+  } | null;
+};
+
+export type WorkbenchLearningStage = {
+  stage_id: number;
+  stage_name: string;
+  total_count: number;
+  generated_count: number;
+  answered_count: number;
+  insufficient_count: number;
+};
+
+export type WorkbenchAuthorDecision = {
+  title: string;
+  likely_timing: string;
+  inference: string;
+  evidence_ids: string[];
+  limitations: string[];
+  confidence: number;
+};
+
+export type WorkbenchMethodCandidate = {
+  title: string;
+  mechanism: string;
+  observed_result: string;
+  applicability: string[];
+  risks: string[];
+  evidence_ids: string[];
+  do_not_copy: string;
+  verification_scope: "SINGLE_BOOK_PENDING";
+};
+
+export type WorkbenchLearningReadinessCheck = {
+  question_id: string;
+  question: string;
+  ready: boolean;
+  answer_scope: "COMPLETE" | "PARTIAL" | "NOT_READY";
+  source_fingerprint: string;
+  observed: Record<string, unknown>;
+  gaps: string[];
+  required_artifact: string;
+};
+
+export type WorkbenchLearningReadiness = {
+  ready: boolean;
+  policy: string;
+  ready_question_count: number;
+  complete_question_count: number;
+  partial_question_count: number;
+  total_question_count: number;
+  assessed_question_count: number;
+  generation_ready_question_ids: string[];
+  checks: WorkbenchLearningReadinessCheck[];
+  next_required_artifacts: string[];
+};
+
+export type WorkbenchLearningReport = {
+  catalog_version: string;
+  batch_label: string;
+  revision: number | null;
+  source_deep_revision: number | null;
+  generated_at: string | null;
+  recommended_question_ids: string[];
+  questions: WorkbenchLearningQuestion[];
+  stages: WorkbenchLearningStage[];
+  readiness: WorkbenchLearningReadiness;
+  author_decisions: WorkbenchAuthorDecision[];
+  method_candidates: WorkbenchMethodCandidate[];
+};
+
+export type WorkbenchChapterRef = {
+  ordinal: number;
+  title: string;
+};
+
+export type AnalysisIssue = {
+  id: string;
+  run_id: string;
+  target_kind: string;
+  target_id: string | null;
+  target_label: string;
+  category: string;
+  note: string;
+  status: "OPEN" | "RESOLVED";
+  created_at: string;
+  resolved_at: string | null;
+};
+
+export type DeepRevisionImpactSection = {
+  key: string;
+  label: string;
+  reason: string;
+  item_count: number;
+  item_labels: string[];
+};
+
+export type DeepRevisionImpact = {
+  mode: "NONE" | "TARGETED" | "STORY_WIDE";
+  issue_count: number;
+  summary: string;
+  sections: DeepRevisionImpactSection[];
+};
+
+export type DeepAnalysisRevision = {
+  revision_no: number;
+  created_at: string;
+  prompt_version: string;
+};
+
+export type DeepAnalysisDiff = {
+  from_revision: number;
+  to_revision: number;
+  added: Record<string, string[]>;
+  removed: Record<string, string[]>;
+  changed: Record<string, string[]>;
+  changed_counts: Record<string, number>;
+};
+
+export type Workbench = {
+  run_id: string;
+  source_version_id: string;
+  status: string;
+  characters: WorkbenchCharacter[];
+  person_identity_candidates: PersonIdentityCandidate[];
+  person_identity_decisions: PersonIdentityDecision[];
+  related_entities: EntityCandidate[];
+  events: WorkbenchEvent[];
+  phases: WorkbenchPhase[];
+  narrative_status: "READY" | "INCOMPLETE" | "NOT_GENERATED";
+  story_overview: WorkbenchStoryOverview | null;
+  character_relations: WorkbenchCharacterRelation[];
+  event_relations: WorkbenchEventRelation[];
+  deep_status: "READY" | "OUTDATED" | "NOT_GENERATED";
+  deep_analysis: WorkbenchDeepAnalysis | null;
+  deep_revision: number | null;
+  character_design_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  character_design_evidence: WorkbenchCharacterDesignEvidence | null;
+  chapter_end_hooks_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  chapter_end_hooks_evidence: WorkbenchChapterEndHooksEvidence | null;
+  chapter_end_hooks: WorkbenchChapterEndHook[];
+  opening_hook_payoffs_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  opening_hook_payoffs_evidence: WorkbenchOpeningHookPayoffsEvidence | null;
+  opening_hook_payoffs: WorkbenchOpeningHookPayoff[];
+  opening_structure_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  opening_structure_evidence: Record<string, unknown> | null;
+  learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
+  learning_report: WorkbenchLearningReport;
+  chapters: WorkbenchChapterRef[];
+  narrative_scene_tree?: Record<string, unknown> | null;
+};
+
+export type WorkbenchStateAtChapter = {
+  run_id: string;
+  deep_revision: number | null;
+  chapter_ordinal: number;
+  chapter_title: string;
+  facts: WorkbenchFactVersion[];
+  states: WorkbenchStateChange[];
+  knowledge: WorkbenchActorKnowledge[];
+  knowledge_transfers: WorkbenchKnowledgeTransfer[];
+  world_rules: WorkbenchWorldRule[];
 };
 
 export type EvidenceContext = {
@@ -269,6 +1067,27 @@ export const api = {
     request<SourceIssue[]>(`/api/source-versions/${versionId}/issues`),
   chapterContent: (unitId: string) =>
     request<SourceUnitContent>(`/api/chapters/${unitId}/content`),
+  updateSourceUnit: (
+    unitId: string,
+    payload: { title: string; unit_type: string },
+  ) =>
+    request<SourceStructure>(`/api/chapters/${unitId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  splitSourceUnit: (
+    unitId: string,
+    payload: { split_char: number; title: string; unit_type: "VOLUME" | "CHAPTER" },
+  ) =>
+    request<SourceStructure>(`/api/chapters/${unitId}/split`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  mergeSourceUnit: (unitId: string, direction: "PREVIOUS" | "NEXT") =>
+    request<SourceStructure>(`/api/chapters/${unitId}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ direction }),
+    }),
   resolveSourceIssue: (issueId: string) =>
     request<SourceIssue>(`/api/source-issues/${issueId}/resolve`, { method: "POST" }),
   confirmSourceVersion: (versionId: string) =>
@@ -317,10 +1136,81 @@ export const api = {
     request<AnalysisRun>(`/api/source-versions/${versionId}/analysis/entities-events/start`, {
       method: "POST",
     }),
+  analysisEstimate: (versionId: string) =>
+    request<AnalysisUsageEstimate>(`/api/source-versions/${versionId}/analysis/entities-events/estimate`),
+  analysisDiagnostics: (runId: string) =>
+    request<AnalysisRunDiagnostics>(`/api/analysis-runs/${runId}/diagnostics`),
+  analysisCallContent: (runId: string, attemptId: string) =>
+    request<AnalysisCallContent>(`/api/analysis-runs/${runId}/attempts/${attemptId}/content`),
+  confirmProviderSwitch: (runId: string, decision: "SWITCH" | "RETRY_CURRENT" | "STOP") =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/provider-switch`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
   analysisEntities: (runId: string) =>
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
+  analysisWorkbench: (runId: string, deepRevision?: number, view?: string) => {
+    const params = new URLSearchParams();
+    if (deepRevision) params.set("deep_revision", String(deepRevision));
+    if (view) params.set("view", view);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return request<Workbench>(`/api/analysis-runs/${runId}/workbench${qs}`);
+  },
+  analysisWorkbenchPacing: (runId: string) =>
+    request<Record<string, unknown>>(`/api/analysis-runs/${runId}/workbench/pacing`),
+  decidePersonIdentity: (
+    runId: string,
+    candidateKey: string,
+    decision: "SAME" | "DIFFERENT",
+  ) =>
+    request<Workbench>(`/api/analysis-runs/${runId}/person-identity-decisions`, {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_key: candidateKey,
+        decision,
+      }),
+    }),
+  undoPersonIdentityDecision: (decisionId: string) =>
+    request<Workbench>(`/api/person-identity-decisions/${decisionId}`, {
+      method: "DELETE",
+    }),
+  stateAtChapter: (runId: string, chapterOrdinal: number, deepRevision?: number) =>
+    request<WorkbenchStateAtChapter>(`/api/analysis-runs/${runId}/state-at-chapter?chapter_ordinal=${chapterOrdinal}${deepRevision ? `&deep_revision=${deepRevision}` : ""}`),
+  startDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/start`, { method: "POST" }),
+  startCharacterDesignEvidence: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/character-design/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startChapterEndHooks: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/chapter-end-hooks/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startOpeningHookPayoffs: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/opening-hook-payoffs/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startOpeningStructure: (runId: string, force = false) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/opening-structure/start${force ? "?force=true" : ""}`, { method: "POST" }),
+  startLearningReport: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/learning-report/start`, { method: "POST" }),
+  analysisIssues: (runId: string) =>
+    request<AnalysisIssue[]>(`/api/analysis-runs/${runId}/issues`),
+  deepAnalysisImpact: (runId: string) =>
+    request<DeepRevisionImpact>(`/api/analysis-runs/${runId}/deep/recompute-impact`),
+  createAnalysisIssue: (runId: string, payload: { target_kind: string; target_id: string | null; target_label: string; category: string; note: string }) =>
+    request<AnalysisIssue>(`/api/analysis-runs/${runId}/issues`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  resolveAnalysisIssue: (issueId: string) =>
+    request<AnalysisIssue>(`/api/analysis-issues/${issueId}/resolve`, { method: "POST" }),
+  recomputeDeepAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/deep/recompute`, { method: "POST" }),
+  repairNarrativeAnalysis: (runId: string) =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/repair`, { method: "POST" }),
+  retryNarrativeComponent: (runId: string, component: "overview" | "characters" | "plot" | "relations") =>
+    request<AnalysisRun>(`/api/analysis-runs/${runId}/narrative/components/${component}/retry`, { method: "POST" }),
+  deepAnalysisRevisions: (runId: string) =>
+    request<DeepAnalysisRevision[]>(`/api/analysis-runs/${runId}/deep/revisions`),
+  deepAnalysisDiff: (runId: string) =>
+    request<DeepAnalysisDiff>(`/api/analysis-runs/${runId}/deep/diff`),
   confirmAnalysis: (runId: string) =>
     request<AnalysisRun>(`/api/analysis-runs/${runId}/confirm`, { method: "POST" }),
   evidenceContext: (evidenceId: string) =>
