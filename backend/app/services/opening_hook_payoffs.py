@@ -40,12 +40,7 @@ OPENING_HOOK_PAYOFFS_PROMPT_ID = "opening_hook_payoffs"
 OPENING_HOOK_PAYOFFS_PROMPT_VERSION = "1.1.0"
 OPENING_HOOK_PAYOFFS_WINDOW_OVERHEAD_CHARS = 16_000
 
-_TRAILING_BOILERPLATE = re.compile(
-    r"(?:https?://|www\.|\.com\b|\.net\b|"
-    r"更多精彩|更多好书|请看小说网|txt\d*\.com|"
-    r"声明[：:]?本书|本站只提供|用户上传|免费下载服务|版权.*无任何关系)",
-    re.IGNORECASE,
-)
+from .pacing_extractor import TRAILING_BOILERPLATE_REGEX as _TRAILING_BOILERPLATE
 
 
 class OpeningHookPayoffProposal(BaseModel):

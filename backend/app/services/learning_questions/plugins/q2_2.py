@@ -561,14 +561,40 @@ def _validate_2_2_answer_against_projection(
 
 class Q2_2Plugin(BaseQuestionPlugin):
     question_id = "2.2"
+    requires_projection = True
+    is_program_compiled = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
+        overview = projection.get("story_overview") or {}
+        characters = projection.get("characters", [])
+        protagonist_name = str(overview.get("protagonist") or "").strip()
+        protagonist = next(
+            (
+                character
+                for character in characters
+                if str(character.get("name") or "").strip() == protagonist_name
+                or character.get("role") == "PROTAGONIST"
+            ),
+            None,
+        )
+        if protagonist is None and projection.get("protagonist") is not None:
+            prot = projection.get("protagonist")
+            if isinstance(prot, dict):
+                protagonist = prot
+                protagonist_name = str(prot.get("name") or "").strip()
+            elif isinstance(prot, str):
+                protagonist_name = prot
+                protagonist = {"name": prot}
+
         character_design = projection.get("character_design_evidence") or {}
+        field_items = character_design.get("fields", []) if isinstance(character_design, dict) else []
         character_design_by_field = {
-            item.get("field"): item
-            for item in character_design.get("fields", [])
-            if isinstance(item, dict) and item.get("field")
+            str(item.get("field") or ""): item
+            for item in field_items
+            if isinstance(item, dict)
         }
+        if not character_design_by_field and isinstance(character_design, dict):
+            character_design_by_field = character_design
         required_character_fields = {
             "surface_desire": "表层欲望",
             "deep_desire": "深层欲望",
@@ -580,7 +606,6 @@ class Q2_2Plugin(BaseQuestionPlugin):
         character_gaps: list[str] = []
         character_limitations: list[str] = []
         insufficient_character_fields: list[str] = []
-        protagonist = projection.get("protagonist")
         if protagonist is None:
             character_gaps.append("尚未确认主角。")
         if character_design and character_design.get("is_current") is False:
@@ -624,23 +649,53 @@ class Q2_2Plugin(BaseQuestionPlugin):
             character_gaps.append("主角证据表缺少全书人物弧光总结。")
 
         ready = not character_gaps
+        observed = {
+            "protagonist": protagonist_name,
+            "existing_goal_count": len((protagonist or {}).get("goals", [])),
+            "existing_motivation_count": len((protagonist or {}).get("motivations", [])),
+            "contract_field_evidence_count": sum(
+                1
+                for key in required_character_fields
+                if isinstance(character_design_by_field.get(key), dict)
+                and character_design_by_field[key].get("status", "SUPPORTED") == "SUPPORTED"
+                and character_design_by_field[key].get("evidence_ids")
+            ),
+            "contract_field_insufficient_count": len(insufficient_character_fields),
+            "contract_field_assessed_count": sum(
+                1
+                for key in required_character_fields
+                if isinstance(character_design_by_field.get(key), dict)
+                and character_design_by_field[key].get(
+                    "status",
+                    "SUPPORTED",
+                )
+                in {"SUPPORTED", "INSUFFICIENT_EVIDENCE"}
+            ),
+            "desire_conflict_count": len(character_design.get("desire_conflicts", []))
+            if isinstance(character_design, dict)
+            else 0,
+            "event_coverage_complete": coverage.get("event_coverage_complete"),
+        }
         return {
             "question_id": self.question_id,
             "ready": ready,
-            "gaps": character_gaps or character_limitations or ["单书已就绪，跨书对比需多书数据。"],
-            "required_evidences": ["character_design_evidence"],
+            "observed": observed,
+            "gaps": character_gaps or character_limitations,
+            "required_artifact": "主角双层欲望与最小完整集证据表",
             "answer_scope": (
                 "PARTIAL"
-                if ready and insufficient_character_fields
-                else ("ANSWERED" if ready else "NOT_READY")
+                if not character_gaps and insufficient_character_fields
+                else None
             ),
+            "source_material": character_design,
         }
 
     def validate_answer(
         self,
         answer: LearningAnswerProposal,
         projection: dict[str, Any],
-        errors: list[dict[str, Any]],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> None:
         _validate_2_2_answer_against_projection(answer, projection)
 

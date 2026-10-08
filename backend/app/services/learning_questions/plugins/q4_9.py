@@ -542,9 +542,12 @@ def _validate_4_9_answer_against_projection(
 
 class Q4_9Plugin(BaseQuestionPlugin):
     question_id = "4.9"
+    requires_projection = True
+    is_program_compiled = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
         chapter_count = len(projection.get("chapters", []))
+        deep = projection.get("deep_analysis") or {}
         chapter_end_hooks_evidence = projection.get("chapter_end_hooks_evidence") or {}
         chapter_end_hooks = projection.get("chapter_end_hooks") or []
         valid_hook_samples = [
@@ -573,19 +576,32 @@ class Q4_9Plugin(BaseQuestionPlugin):
         if chapter_end_hooks and coverage.get("sequence_metrics_exact") is not True:
             hook_gaps.append("全书相邻轮换与连续强钩指标尚未通过精确合并检查。")
 
+        ready = not hook_gaps
         return {
             "question_id": self.question_id,
-            "ready": not hook_gaps,
-            "gaps": hook_gaps or ["单书已就绪，跨书对比需多书数据。"],
-            "required_evidences": ["chapter_end_hooks_evidence"],
-            "answer_scope": "ANSWERED" if not hook_gaps else "NOT_READY",
+            "ready": ready,
+            "observed": {
+                "chapter_count": chapter_count,
+                "required_sample_count": chapter_count,
+                "valid_chapter_end_sample_count": len(valid_hook_samples),
+                "sample_policy": coverage.get("sample_policy"),
+                "window_count": coverage.get("window_count"),
+                "sequence_metrics_exact": coverage.get("sequence_metrics_exact"),
+                "response_tracking_scope": coverage.get("response_tracking_scope"),
+                "generic_scene_analysis_count": len(deep.get("scene_analysis", [])),
+            },
+            "gaps": hook_gaps,
+            "required_artifact": "全书连续覆盖的章末钩类型与节律账本",
+            "answer_scope": "COMPLETE" if ready else "NOT_READY",
+            "source_material": chapter_end_hooks_evidence,
         }
 
     def validate_answer(
         self,
         answer: LearningAnswerProposal,
         projection: dict[str, Any],
-        errors: list[dict[str, Any]],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> None:
         _validate_4_9_answer_against_projection(answer, projection)
 

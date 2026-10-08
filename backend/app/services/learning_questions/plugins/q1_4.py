@@ -945,19 +945,29 @@ def _validate_1_4_answer_against_projection(
 
 class Q1_4Plugin(BaseQuestionPlugin):
     question_id = "1.4"
+    requires_projection = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
-        chapter_count = int(projection.get("chapter_count") or 0)
-        opening_events = [
-            e for e in projection.get("events", [])
-            if any(1 <= int(ch) <= 3 for ch in e.get("chapter_ordinals", []))
-        ]
+        chapters = projection.get("chapters", [])
+        chapter_count = len(chapters)
+        events = projection.get("events", [])
         overview = projection.get("story_overview") or {}
+        opening_events = [
+            event
+            for event in events
+            if any(
+                0 < int(chapter) <= 3
+                for chapter in event.get("chapter_ordinals", [])
+            )
+            and event.get("evidence_ids")
+        ]
         selling_point_gaps: list[str] = []
-        if not overview.get("premise"):
-            selling_point_gaps.append("故事总览缺少核心前提与主线目标。")
+        if not str(overview.get("premise") or "").strip():
+            selling_point_gaps.append("缺少可核验的故事前提，不能稳定压缩一句话卖点。")
+        if not overview.get("evidence_ids"):
+            selling_point_gaps.append("故事前提没有原文依据。")
         if not opening_events:
-            selling_point_gaps.append("前三章没有可用于定位首个卖点兑现的事件。")
+            selling_point_gaps.append("前三章没有带原文依据的开篇事件，无法定位首次兑现。")
         opening_payoff_candidates = (
             projection.get("opening_payoff_candidates_evidence")
             or projection.get("opening_payoff_candidates")
@@ -997,6 +1007,18 @@ class Q1_4Plugin(BaseQuestionPlugin):
         return {
             "question_id": self.question_id,
             "ready": ready,
+            "observed": {
+                "chapter_count": chapter_count,
+                "opening_event_count": len(opening_events),
+                "overview_evidence_count": len(overview.get("evidence_ids", [])),
+                "payoff_candidate_count": int(
+                    payoff_coverage.get("source_event_count") or 0
+                ),
+                "payoff_scanned_candidate_count": int(
+                    payoff_coverage.get("scanned_candidate_count") or 0
+                ),
+                "payoff_found": bool(payoff_selected),
+            },
             "gaps": (
                 selling_point_gaps
                 or [
@@ -1004,20 +1026,32 @@ class Q1_4Plugin(BaseQuestionPlugin):
                     "同品类同商业模式的多书对照仍缺失。"
                 ]
             ),
-            "required_evidences": ["opening_promise_sources", "opening_payoff_candidates_evidence"],
-            "answer_scope": "PARTIAL" if ready else "NOT_READY",
+            "required_artifact": "开篇承诺与首次兑现证据表",
+            "answer_scope": "PARTIAL" if not selling_point_gaps else "NOT_READY",
+            "source_material": {
+                "story_overview": overview,
+                "opening_events": opening_events,
+                "opening_payoff_candidates": opening_payoff_candidates,
+            },
         }
 
     def validate_answer(
         self,
         answer: LearningAnswerProposal,
         projection: dict[str, Any],
-        errors: list[dict[str, Any]],
+        errors: list[dict[str, Any]] | None = None,
+        *,
+        opening_promise_sources: dict[str, object] | None = None,
+        evidence_by_id: dict[str, EvidenceSpan] | None = None,
+        chapter_by_unit_id: dict[str, dict[str, object]] | None = None,
+        **kwargs: Any,
     ) -> None:
         _validate_1_4_answer_against_projection(
             answer,
             projection,
-            opening_promise_sources=projection.get("opening_promise_sources"),
+            opening_promise_sources=opening_promise_sources or projection.get("opening_promise_sources"),
+            evidence_by_id=evidence_by_id,
+            chapter_by_unit_id=chapter_by_unit_id,
         )
 
     def apply_program_answer(

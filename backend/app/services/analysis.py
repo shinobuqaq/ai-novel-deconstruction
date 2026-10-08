@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -984,6 +984,12 @@ class ConflictProposal(BaseModel):
     evidence_ids: list[str] = Field(min_length=1, max_length=16)
 
 
+_DEEP_SCENE_FUNCTION_COMPATIBILITY: dict[str, str] = {
+    "DIALOGUE": "OTHER",
+    "RESOLUTION": "AFTERMATH",
+}
+
+
 class SceneAnalysisProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -994,6 +1000,14 @@ class SceneAnalysisProposal(BaseModel):
     action_dialogue_balance: Literal["ACTION_HEAVY", "DIALOGUE_HEAVY", "BALANCED", "REFLECTIVE", "UNCERTAIN"]
     pace: Literal["SLOW", "STEADY", "FAST", "ACCELERATING", "BRAKING", "UNCERTAIN"]
     evidence_ids: list[str] = Field(min_length=1, max_length=16)
+
+    @field_validator("function", mode="before")
+    @classmethod
+    def _normalize_function_alias(cls, value: object) -> object:
+        if isinstance(value, str):
+            val_str = value.strip().upper()
+            return _DEEP_SCENE_FUNCTION_COMPATIBILITY.get(val_str, val_str)
+        return value
 
 
 class AnalysisClaimProposal(BaseModel):
@@ -2665,42 +2679,14 @@ def parse_hierarchical_digest(value: dict) -> HierarchicalDigestOutput:
         ) from exc
 
 
-_DEEP_SCENE_FUNCTION_COMPATIBILITY = {
-    "DIALOGUE": "OTHER",
-    "RESOLUTION": "AFTERMATH",
-}
-
-
 def _normalize_deep_scene_functions(value: dict) -> dict:
-    """Normalize two observed provider aliases without accepting unknown values."""
-    scenes = value.get("scene_analysis")
-    if not isinstance(scenes, list):
-        return value
-    normalized = dict(value)
-    normalized_scenes: list[object] = []
-    changed = False
-    for item in scenes:
-        if not isinstance(item, dict):
-            normalized_scenes.append(item)
-            continue
-        normalized_item = dict(item)
-        function = str(item.get("function") or "").strip().upper()
-        replacement = _DEEP_SCENE_FUNCTION_COMPATIBILITY.get(function)
-        if replacement is not None:
-            normalized_item["function"] = replacement
-            changed = True
-        normalized_scenes.append(normalized_item)
-    if not changed:
-        return value
-    normalized["scene_analysis"] = normalized_scenes
-    return normalized
+    """Legacy compatibility helper; validation is now natively handled by SceneAnalysisProposal."""
+    return value
 
 
 def parse_deep_analysis(value: dict) -> DeepAnalysisOutput:
     try:
-        return DeepAnalysisOutput.model_validate(
-            _normalize_deep_scene_functions(value)
-        )
+        return DeepAnalysisOutput.model_validate(value)
     except ValidationError as exc:
         raise StructuredOutputValidationError(
             "DEEP_ANALYSIS_OUTPUT_INVALID",

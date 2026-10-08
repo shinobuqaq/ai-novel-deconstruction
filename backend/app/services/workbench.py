@@ -28,7 +28,7 @@ from .opening_hook_payoffs import build_opening_hook_payoffs_projection
 from .opening_payoff_candidates import (
     build_opening_payoff_candidates_projection,
 )
-from .opening_structure import build_opening_structure_projection
+from .pacing_extractor import build_unified_scene_and_pacing_projection
 from .learning_report import assess_learning_report_readiness, build_learning_report_projection
 
 
@@ -1288,82 +1288,29 @@ def build_workbench_projection(
         ],
     }
     if include_question_evidence:
-        character_design_status, character_design_evidence = (
-            build_character_design_projection(session, run_id, projection)
-        )
-    else:
-        character_design_status, character_design_evidence = "NOT_GENERATED", None
-    projection["character_design_status"] = character_design_status
-    projection["character_design_evidence"] = character_design_evidence
-    if include_question_evidence:
-        (
-            opening_payoff_candidates_status,
-            opening_payoff_candidates_evidence,
-        ) = build_opening_payoff_candidates_projection(
-            session,
-            run_id,
-            projection,
-        )
-    else:
-        (
-            opening_payoff_candidates_status,
-            opening_payoff_candidates_evidence,
-        ) = ("NOT_GENERATED", None)
-    projection["opening_payoff_candidates_status"] = (
-        opening_payoff_candidates_status
-    )
-    projection["opening_payoff_candidates_evidence"] = (
-        opening_payoff_candidates_evidence
-    )
-    if include_question_evidence:
-        chapter_end_hooks_status, chapter_end_hooks_evidence = (
-            build_chapter_end_hooks_projection(session, run_id, projection)
-        )
-    else:
-        chapter_end_hooks_status, chapter_end_hooks_evidence = "NOT_GENERATED", None
-    projection["chapter_end_hooks_status"] = chapter_end_hooks_status
-    projection["chapter_end_hooks_evidence"] = chapter_end_hooks_evidence
-    projection["chapter_end_hooks"] = (
-        chapter_end_hooks_evidence.get("chapters", [])
-        if chapter_end_hooks_evidence
-        else []
-    )
-    if include_question_evidence:
-        opening_hook_payoffs_status, opening_hook_payoffs_evidence = (
-            build_opening_hook_payoffs_projection(
-                session,
-                run_id,
-                projection,
-                hook_evidence=chapter_end_hooks_evidence,
-            )
-        )
-    else:
-        opening_hook_payoffs_status, opening_hook_payoffs_evidence = (
-            "NOT_GENERATED",
-            None,
-        )
-    projection["opening_hook_payoffs_status"] = opening_hook_payoffs_status
-    projection["opening_hook_payoffs_evidence"] = opening_hook_payoffs_evidence
-    projection["opening_hook_payoffs"] = (
-        opening_hook_payoffs_evidence.get("hooks", [])
-        if opening_hook_payoffs_evidence
-        else []
-    )
-    if include_question_evidence:
-        opening_structure_status, opening_structure_evidence = (
-            build_opening_structure_projection(
+        projection.update(
+            build_unified_scene_and_pacing_projection(
                 session,
                 run_id,
                 projection,
             )
         )
     else:
-        opening_structure_status, opening_structure_evidence = (
-            "NOT_GENERATED",
-            None,
-        )
-    projection["opening_structure_status"] = opening_structure_status
-    projection["opening_structure_evidence"] = opening_structure_evidence
+        projection.update({
+            "character_design_status": "NOT_GENERATED",
+            "character_design_evidence": None,
+            "opening_payoff_candidates_status": "NOT_GENERATED",
+            "opening_payoff_candidates_evidence": None,
+            "chapter_end_hooks_status": "NOT_GENERATED",
+            "chapter_end_hooks_evidence": None,
+            "chapter_end_hooks": [],
+            "opening_hook_payoffs_status": "NOT_GENERATED",
+            "opening_hook_payoffs_evidence": None,
+            "opening_hook_payoffs": [],
+            "opening_structure_status": "NOT_GENERATED",
+            "opening_structure_evidence": None,
+            "narrative_scene_tree": None,
+        })
     learning_readiness = assess_learning_report_readiness(projection)
     learning_report_status, learning_report = build_learning_report_projection(
         session,

@@ -220,21 +220,83 @@ def _apply_program_3_1_answer(
 
 class Q3_1Plugin(BaseQuestionPlugin):
     question_id = "3.1"
+    requires_projection = True
+    is_program_compiled = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
+        chapter_count = len(projection.get("chapters", []))
         opening_structure = projection.get("opening_structure_evidence") or {}
-        cov = opening_structure.get("coverage") or {}
-        complete = bool(cov.get("event_coverage_complete"))
-        gaps = []
-        if not complete:
-            gaps.append("前三章开篇结构账本未生成或覆盖不全。")
+        opening_structure_status = str(
+            projection.get("opening_structure_status") or "NOT_GENERATED"
+        )
+        opening_scene = (
+            opening_structure.get("opening_scene", {})
+            if isinstance(opening_structure, dict)
+            else {}
+        )
+        shared_opening_gaps: list[str] = []
+        if opening_structure_status == "GENERATING":
+            shared_opening_gaps.append("前三章逐段账本仍在生成。")
+        elif opening_structure_status == "OUTDATED":
+            shared_opening_gaps.append("前三章逐段账本对应旧版正文或旧版主角识别。")
+        elif opening_structure_status == "FAILED":
+            shared_opening_gaps.append("前三章逐段账本上次生成失败，需要查看任务诊断。")
+        elif opening_structure_status != "READY":
+            shared_opening_gaps.append("尚未生成前三章逐段任务与信息装载账本。")
+        if chapter_count < 3:
+            shared_opening_gaps.append(
+                f"作品当前只有 {chapter_count} 章，无法形成完整黄金三章口径。"
+            )
+
+        opening_card_gaps = list(shared_opening_gaps)
+        if not (
+            str(opening_scene.get("opening_type") or "").strip()
+            and int(opening_scene.get("story_start_paragraph") or 0) > 0
+            and int(opening_scene.get("protagonist_first_paragraph") or 0) > 0
+            and str(opening_scene.get("protagonist_action") or "").strip()
+            and str(opening_scene.get("initial_trouble") or "").strip()
+            and str(opening_scene.get("first_sentence_function") or "").strip()
+            and str(opening_scene.get("first_paragraph_function") or "").strip()
+            and opening_scene.get("evidence_ids")
+        ):
+            opening_card_gaps.append(
+                "首章开场卡尚未完整记录正文起点、开场类型、主角登场、"
+                "初始麻烦和第一句话/段功能。"
+            )
+        ready = not opening_card_gaps
         return {
             "question_id": self.question_id,
-            "ready": complete,
-            "gaps": gaps or ["单书已就绪，跨书对比需多书数据。"],
-            "required_evidences": ["opening_structure_evidence"],
-            "answer_scope": "PARTIAL" if complete else "NOT_READY",
+            "ready": ready,
+            "observed": {
+                "opening_structure_status": opening_structure_status,
+                "opening_type": opening_scene.get("opening_type"),
+                "story_start_paragraph": opening_scene.get(
+                    "story_start_paragraph"
+                ),
+                "protagonist_first_paragraph": opening_scene.get(
+                    "protagonist_first_paragraph"
+                ),
+                "protagonist_first_source_char": opening_scene.get(
+                    "protagonist_first_source_char"
+                ),
+            },
+            "gaps": (
+                opening_card_gaps
+                or ["缺少同品类同商业模式作品的开局类型分布对照。"]
+            ),
+            "required_artifact": "前三章逐段任务与信息装载共享账本",
+            "answer_scope": "PARTIAL" if ready else "NOT_READY",
+            "source_material": {"opening_scene": opening_scene},
         }
+
+    def validate_answer(
+        self,
+        answer: LearningAnswerProposal,
+        projection: dict[str, Any],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        return
 
     def apply_program_answer(
         self,

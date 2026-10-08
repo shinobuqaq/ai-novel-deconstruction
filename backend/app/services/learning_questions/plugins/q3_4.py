@@ -70,10 +70,31 @@ class Q3_4Plugin(BaseQuestionPlugin):
         ):
             opening_hook_gaps.append("3.4 的回应章节与原文对应尚未通过程序校验。")
 
+        ready = not opening_hook_gaps
         return {
             "question_id": self.question_id,
-            "ready": not opening_hook_gaps,
-            "gaps": opening_hook_gaps or ["单书已就绪，跨书对比需多书数据。"],
-            "required_evidences": ["opening_hook_payoffs_evidence"],
-            "answer_scope": "ANSWERED" if not opening_hook_gaps else "NOT_READY",
+            "ready": ready,
+            "observed": {
+                "required_chapter_count": required_opening_hook_count,
+                "classified_opening_chapter_count": len(opening_hook_samples),
+                "valid_payoff_tracking_count": len(opening_hook_samples),
+                "search_policy": opening_coverage.get("search_policy"),
+                "window_count": opening_coverage.get("window_count"),
+                "all_windows_completed": opening_coverage.get(
+                    "all_windows_completed"
+                ),
+            },
+            "gaps": opening_hook_gaps,
+            "required_artifact": "前三章章末钩兑现追踪表（独立于 4.9）",
+            "answer_scope": "COMPLETE" if ready else "NOT_READY",
+            "source_material": opening_payoffs_evidence,
         }
+
+    def validate_answer(
+        self,
+        answer: LearningAnswerProposal,
+        projection: dict[str, Any],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        return

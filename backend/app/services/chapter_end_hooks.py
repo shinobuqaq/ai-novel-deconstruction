@@ -53,17 +53,8 @@ HOOK_TYPES = (
     "EMOTIONAL_FREEZE",
     "NONE",
 )
+from .pacing_extractor import TRAILING_BOILERPLATE_REGEX as _TRAILING_BOILERPLATE
 
-_TRAILING_BOILERPLATE = re.compile(
-    r"(?:https?://|www\.|\.com\b|\.net\b|"
-    r"更多精彩|更多好书|请看小说网|txt\d*\.com|"
-    r"声明[：:]?本书|本站只提供|用户上传|免费下载服务|版权.*无任何关系|"
-    r"^\s*(?:"
-    r"[【\[\(（]?\s*(?:THE\s+)?END\s*[】\]\)）]?|"
-    r"[【\[\(（]?\s*(?:全文|全书)?完(?:结)?\s*[】\]\)）]?"
-    r")\s*[。.!！]?\s*$)",
-    re.IGNORECASE,
-)
 class ChapterEndHookProposal(BaseModel):
     chapter_ordinal: int = Field(ge=1)
     ending_evidence_id: str = Field(min_length=1, max_length=64)

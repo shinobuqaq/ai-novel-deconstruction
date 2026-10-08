@@ -68,14 +68,12 @@ CHARACTER_DESIGN_FIELDS = (
     "boundary",
     "core_ability",
 )
-
-
-def _normalized(value: object) -> str:
-    return re.sub(r"\s+", "", str(value or "")).casefold()
-
-
-def _normalized_without_terminal_punctuation(value: object) -> str:
-    return _normalized(value).rstrip("。！？!?；;，,")
+from .pacing_extractor import (
+    extract_grounding_text as _grounding_text,
+    extract_overlap_ngrams as _evidence_overlap_ngrams,
+    normalize_narrative_text as _normalized,
+    normalize_without_terminal_punctuation as _normalized_without_terminal_punctuation,
+)
 
 
 class CharacterDesignFieldEvidence(BaseModel):
@@ -672,23 +670,6 @@ def _window_specs(
             "estimated_material_chars": current_chars,
         })
     return windows
-
-
-def _evidence_overlap_ngrams(value: object) -> set[str]:
-    normalized = _grounding_text(value)
-    return {
-        normalized[index:index + size]
-        for size in (2, 3, 4)
-        for index in range(max(0, len(normalized) - size + 1))
-    }
-
-
-def _grounding_text(value: object) -> str:
-    return re.sub(
-        r"[^0-9a-z\u4e00-\u9fff]+",
-        "",
-        str(value or "").casefold(),
-    )
 
 
 _NEGATION_TERMS = (

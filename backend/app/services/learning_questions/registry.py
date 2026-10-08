@@ -43,3 +43,18 @@ def get_question_plugin(question_id: str) -> BaseQuestionPlugin:
 
 def get_all_question_plugins() -> dict[str, BaseQuestionPlugin]:
     return dict(_QUESTION_REGISTRY)
+
+
+def get_program_compiled_question_ids() -> frozenset[str]:
+    return frozenset(
+        qid for qid, plugin in _QUESTION_REGISTRY.items()
+        if plugin.is_program_compiled
+    )
+
+
+def get_projection_question_ids() -> frozenset[str]:
+    return frozenset(
+        qid for qid, plugin in _QUESTION_REGISTRY.items()
+        if plugin.requires_projection
+    )
+

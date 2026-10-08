@@ -118,6 +118,8 @@ from app.services.learning_questions import (
     _validate_answer_user_text_boundaries,
     _validation_errors,
     get_all_question_plugins,
+    get_program_compiled_question_ids,
+    get_projection_question_ids,
     get_question_plugin,
 )
 from app.services.learning_questions.plugins.q1_4 import (
@@ -758,6 +760,23 @@ def _readiness_check(
     }
 
 
+def _evaluate_question_readiness(
+    question_id: str,
+    projection: dict[str, Any],
+) -> dict[str, object]:
+    plugin = get_question_plugin(question_id)
+    eval_result = plugin.assess_readiness(projection)
+    return _readiness_check(
+        question_id,
+        ready=bool(eval_result.get("ready")),
+        observed=eval_result.get("observed", {}),
+        gaps=list(eval_result.get("gaps", [])),
+        required_artifact=str(eval_result.get("required_artifact") or ""),
+        answer_scope=eval_result.get("answer_scope"),
+        source_material=eval_result.get("source_material"),
+    )
+
+
 def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
     """Classify each first-group question independently as complete, partial, or blocked."""
 
@@ -769,524 +788,14 @@ def assess_learning_report_readiness(projection: dict) -> dict[str, object]:
     deep = projection.get("deep_analysis") or {}
     action_counts = _opening_action_counts(projection)
 
-    opening_events = [
-        event
-        for event in events
-        if any(
-            0 < int(chapter) <= 3
-            for chapter in event.get("chapter_ordinals", [])
-        )
-        and event.get("evidence_ids")
-    ]
-    selling_point_gaps: list[str] = []
-    if not str(overview.get("premise") or "").strip():
-        selling_point_gaps.append("缺少可核验的故事前提，不能稳定压缩一句话卖点。")
-    if not overview.get("evidence_ids"):
-        selling_point_gaps.append("故事前提没有原文依据。")
-    if not opening_events:
-        selling_point_gaps.append("前三章没有带原文依据的开篇事件，无法定位首次兑现。")
-    opening_payoff_candidates = (
-        projection.get("opening_payoff_candidates_evidence") or {}
-    )
-    payoff_coverage = (
-        opening_payoff_candidates.get("coverage", {})
-        if isinstance(opening_payoff_candidates, dict)
-        else {}
-    )
-    payoff_selected = (
-        opening_payoff_candidates.get("selected")
-        if isinstance(opening_payoff_candidates, dict)
-        else None
-    )
-    payoff_projection_present = (
-        "opening_payoff_candidates_status" in projection
-        or "opening_payoff_candidates_evidence" in projection
-    )
-    if payoff_projection_present:
-        if not opening_payoff_candidates:
-            selling_point_gaps.append(
-                "卖点首次兑现连续候选账本尚未生成。"
-            )
-        elif opening_payoff_candidates.get("is_current") is False:
-            selling_point_gaps.append(
-                "卖点首次兑现连续候选账本已经过期。"
-            )
-        elif not payoff_selected and not payoff_coverage.get(
-            "all_source_events_scanned"
-        ):
-            selling_point_gaps.append(
-                "卖点首次兑现候选尚未连续扫描到首次完整兑现或全书末尾。"
-            )
     checks: dict[str, dict[str, object]] = {}
-    checks["1.4"] = _readiness_check(
-        "1.4",
-        ready=not selling_point_gaps,
-        observed={
-            "chapter_count": chapter_count,
-            "opening_event_count": len(opening_events),
-            "overview_evidence_count": len(overview.get("evidence_ids", [])),
-            "payoff_candidate_count": int(
-                payoff_coverage.get("source_event_count") or 0
-            ),
-            "payoff_scanned_candidate_count": int(
-                payoff_coverage.get("scanned_candidate_count") or 0
-            ),
-            "payoff_found": bool(payoff_selected),
-        },
-        gaps=(
-            selling_point_gaps
-            or [
-                "当前只能形成单书部分回答；书名与简介须按源文件前置内容核对，"
-                "同品类同商业模式的多书对照仍缺失。"
-            ]
-        ),
-        required_artifact="开篇承诺与首次兑现证据表",
-        answer_scope="PARTIAL" if not selling_point_gaps else "NOT_READY",
-        source_material={
-            "story_overview": overview,
-            "opening_events": opening_events,
-            "opening_payoff_candidates": opening_payoff_candidates,
-        },
-    )
-
-    opening_structure = projection.get("opening_structure_evidence") or {}
-    opening_structure_status = str(
-        projection.get("opening_structure_status") or "NOT_GENERATED"
-    )
-    opening_scene = (
-        opening_structure.get("opening_scene", {})
-        if isinstance(opening_structure, dict)
-        else {}
-    )
-    opening_chapter_tasks = (
-        opening_structure.get("chapter_tasks", [])
-        if isinstance(opening_structure, dict)
-        else []
-    )
-    opening_segments = (
-        opening_structure.get("paragraph_segments", [])
-        if isinstance(opening_structure, dict)
-        else []
-    )
-    information_timeline = (
-        opening_structure.get("information_timeline", [])
-        if isinstance(opening_structure, dict)
-        else []
-    )
-    opening_structure_coverage = (
-        opening_structure.get("coverage", {})
-        if isinstance(opening_structure, dict)
-        else {}
-    )
-    shared_opening_gaps: list[str] = []
-    if opening_structure_status == "GENERATING":
-        shared_opening_gaps.append("前三章逐段账本仍在生成。")
-    elif opening_structure_status == "OUTDATED":
-        shared_opening_gaps.append("前三章逐段账本对应旧版正文或旧版主角识别。")
-    elif opening_structure_status == "FAILED":
-        shared_opening_gaps.append("前三章逐段账本上次生成失败，需要查看任务诊断。")
-    elif opening_structure_status != "READY":
-        shared_opening_gaps.append("尚未生成前三章逐段任务与信息装载账本。")
-    if chapter_count < 3:
-        shared_opening_gaps.append(
-            f"作品当前只有 {chapter_count} 章，无法形成完整黄金三章口径。"
-        )
-
-    opening_card_gaps = list(shared_opening_gaps)
-    if not (
-        str(opening_scene.get("opening_type") or "").strip()
-        and int(opening_scene.get("story_start_paragraph") or 0) > 0
-        and int(opening_scene.get("protagonist_first_paragraph") or 0) > 0
-        and str(opening_scene.get("protagonist_action") or "").strip()
-        and str(opening_scene.get("initial_trouble") or "").strip()
-        and str(opening_scene.get("first_sentence_function") or "").strip()
-        and str(opening_scene.get("first_paragraph_function") or "").strip()
-        and opening_scene.get("evidence_ids")
-    ):
-        opening_card_gaps.append(
-            "首章开场卡尚未完整记录正文起点、开场类型、主角登场、"
-            "初始麻烦和第一句话/段功能。"
-        )
-    checks["3.1"] = _readiness_check(
-        "3.1",
-        ready=not opening_card_gaps,
-        observed={
-            "opening_structure_status": opening_structure_status,
-            "opening_type": opening_scene.get("opening_type"),
-            "story_start_paragraph": opening_scene.get(
-                "story_start_paragraph"
-            ),
-            "protagonist_first_paragraph": opening_scene.get(
-                "protagonist_first_paragraph"
-            ),
-            "protagonist_first_source_char": opening_scene.get(
-                "protagonist_first_source_char"
-            ),
-        },
-        gaps=(
-            opening_card_gaps
-            or ["缺少同品类同商业模式作品的开局类型分布对照。"]
-        ),
-        required_artifact="前三章逐段任务与信息装载共享账本",
-        answer_scope="PARTIAL" if not opening_card_gaps else "NOT_READY",
-        source_material={"opening_scene": opening_scene},
-    )
-
-    opening_sequence_gaps = list(shared_opening_gaps)
-    if (
-        opening_structure_coverage.get("paragraph_coverage_complete")
-        is not True
-        or opening_structure_coverage.get(
-            "paragraph_sequence_contiguous"
-        )
-        is not True
-    ):
-        opening_sequence_gaps.append(
-            "前三章段落没有通过连续、不重叠、不漏段的程序覆盖检查。"
-        )
-    if sorted(
-        int(item.get("chapter_ordinal") or 0)
-        for item in opening_chapter_tasks
-        if isinstance(item, dict)
-    ) != [1, 2, 3]:
-        opening_sequence_gaps.append("黄金三章逐章任务没有完整覆盖第 1 至 3 章。")
-    if not opening_segments:
-        opening_sequence_gaps.append("缺少前三章连续段落任务序列。")
-    if (
-        len(information_timeline) != 6
-        or {
-            str(item.get("module") or "")
-            for item in information_timeline
-            if isinstance(item, dict)
-        }
-        != {
-            "主角困境",
-            "主角性格",
-            "核心能力",
-            "世界观规则",
-            "威胁",
-            "短期目标",
-        }
-    ):
-        opening_sequence_gaps.append("六类信息模块没有逐项记录首次位置或未观察状态。")
-    checks["3.2"] = _readiness_check(
-        "3.2",
-        ready=not opening_sequence_gaps,
-        observed={
-            "opening_structure_status": opening_structure_status,
-            "chapter_task_count": len(opening_chapter_tasks),
-            "paragraph_segment_count": len(opening_segments),
-            "information_module_assessed_count": len(
-                information_timeline
-            ),
-            "paragraph_coverage_complete": (
-                opening_structure_coverage.get(
-                    "paragraph_coverage_complete"
-                )
-            ),
-            "story_character_count": opening_structure_coverage.get(
-                "story_character_count"
-            ),
-        },
-        gaps=(
-            opening_sequence_gaps
-            or ["缺少同品类多书使用同一口径形成的标准节奏区间。"]
-        ),
-        required_artifact="前三章逐段任务与信息装载共享账本",
-        answer_scope="PARTIAL" if not opening_sequence_gaps else "NOT_READY",
-        source_material=opening_structure,
-    )
-
-    opening_character_artifact = _opening_character_program_artifact(projection)
-    opening_character_roles = opening_character_artifact["roles"]
-    action_gaps: list[str] = []
-    for item in action_counts:
-        if min(int(item["through_chapter"]), chapter_count) > 0 and int(item["active_character_count"]) == 0:
-            action_gaps.append(
-                f"前 {item['through_chapter']} 章没有可由事件证据确认的有效行动人物。"
-            )
-    roles_without_first_evidence = [
-        str(item["character_name"])
-        for item in opening_character_roles
-        if not item.get("first_action_evidence_ids")
-    ]
-    action_ready = bool(opening_character_roles) and not roles_without_first_evidence
-    if not action_ready:
-        action_gaps.append("现有章节没有可由事件原文确认的有效行动人物。")
-    if roles_without_first_evidence:
-        action_gaps.append(
-            f"有 {len(roles_without_first_evidence)} 位人物的首次行动事件缺少原文，"
-            "不能判断首场功能。"
-        )
-    action_limitations = list(action_gaps)
-    if chapter_count < 30:
-        action_limitations.append(
-            f"当前只有 {chapter_count} 章，只能按实际篇幅回答，不能完成前 30 章口径。"
-        )
-    identity_candidate_count = len(
-        opening_character_artifact["identity_duplicate_candidates"]
-    )
-    if identity_candidate_count:
-        action_limitations.append(
-            f"仍有 {identity_candidate_count} 组涉及开篇人物的身份候选未裁定，"
-            "程序会单列风险，不把它们静默合并。"
-        )
-    action_limitations.append("缺少同品类同商业模式作品的开篇阵容对照。")
-    checks["2.1"] = _readiness_check(
-        "2.1",
-        ready=action_ready,
-        observed={
-            "program_counts": action_counts,
-            "opening_character_role_count": len(opening_character_roles),
-            "introduction_point_count": len(
-                opening_character_artifact["introduction_points"]
-            ),
-            "identity_duplicate_candidate_count": identity_candidate_count,
-            "roles_without_first_evidence_count": len(roles_without_first_evidence),
-        },
-        gaps=action_limitations,
-        required_artifact=(
-            "2.1 角色首行动序、首场功能、后续量级、新增间隔、"
-            "功能分布与身份风险完整账本"
-        ),
-        answer_scope="PARTIAL" if action_ready else "NOT_READY",
-        source_material=opening_character_artifact,
-    )
-
-    protagonist_name = str(overview.get("protagonist") or "").strip()
-    protagonist = next(
-        (
-            character
-            for character in characters
-            if str(character.get("name") or "").strip() == protagonist_name
-            or character.get("role") == "PROTAGONIST"
-        ),
-        None,
-    )
-    character_design = projection.get("character_design_evidence") or {}
-    field_items = character_design.get("fields", []) if isinstance(character_design, dict) else []
-    character_design_by_field = {
-        str(item.get("field") or ""): item
-        for item in field_items
-        if isinstance(item, dict)
-    }
-    if not character_design_by_field and isinstance(character_design, dict):
-        character_design_by_field = character_design
-    required_character_fields = {
-        "surface_desire": "表层欲望",
-        "deep_desire": "深层欲望",
-        "motivation": "动机",
-        "contrast": "性格反差",
-        "boundary": "行为底线",
-        "core_ability": "核心能力",
-    }
-    character_gaps: list[str] = []
-    character_limitations: list[str] = []
-    insufficient_character_fields: list[str] = []
-    if protagonist is None:
-        character_gaps.append("尚未确认主角。")
-    if character_design and character_design.get("is_current") is False:
-        character_gaps.append("主角证据表基于旧人物或旧拆解结果，需要重新生成。")
-    coverage = character_design.get("coverage", {}) if isinstance(character_design, dict) else {}
-    if character_design and coverage.get("event_coverage_complete") is not True:
-        character_gaps.append("主角证据表没有覆盖当前运行的全部主角事件。")
-    for key, label in required_character_fields.items():
-        item = character_design_by_field.get(key)
-        if not isinstance(item, dict):
-            character_gaps.append(f"缺少{label}的首次展示事件与原文。")
-            continue
-        status = item.get("status", "SUPPORTED")
-        if status == "SUPPORTED":
-            if (
-                not str(item.get("value") or "").strip()
-                or not item.get("first_display_chapter_ordinal")
-                or not item.get("first_display_event_id")
-                or not str(item.get("display_event") or "").strip()
-                or not item.get("evidence_ids")
-            ):
-                character_gaps.append(f"缺少{label}的首次展示事件与原文。")
-        elif status == "INSUFFICIENT_EVIDENCE":
-            if (
-                str(item.get("value") or "").strip()
-                or item.get("first_display_chapter_ordinal") is not None
-                or str(item.get("first_display_event_id") or "").strip()
-                or str(item.get("display_event") or "").strip()
-                or item.get("evidence_ids")
-                or not str(item.get("explanation") or "").strip()
-            ):
-                character_gaps.append(f"{label}的证据不足记录格式无效，需要重新生成。")
-            else:
-                insufficient_character_fields.append(label)
-                character_limitations.append(
-                    f"当前全书主角事件账本未找到可核验的{label}首次展示事件与原文。"
-                )
-        else:
-            character_gaps.append(f"{label}使用了未知证据状态，需要重新生成。")
-    if character_design and not str(character_design.get("arc_summary") or "").strip():
-        character_gaps.append("主角证据表缺少全书人物弧光总结。")
-    checks["2.2"] = _readiness_check(
-        "2.2",
-        ready=not character_gaps,
-        answer_scope=(
-            "PARTIAL"
-            if not character_gaps and insufficient_character_fields
-            else None
-        ),
-        observed={
-            "protagonist": protagonist_name,
-            "existing_goal_count": len((protagonist or {}).get("goals", [])),
-            "existing_motivation_count": len((protagonist or {}).get("motivations", [])),
-            "contract_field_evidence_count": sum(
-                1
-                for key in required_character_fields
-                if isinstance(character_design_by_field.get(key), dict)
-                and character_design_by_field[key].get("status", "SUPPORTED") == "SUPPORTED"
-                and character_design_by_field[key].get("evidence_ids")
-            ),
-            "contract_field_insufficient_count": len(
-                insufficient_character_fields
-            ),
-            "contract_field_assessed_count": sum(
-                1
-                for key in required_character_fields
-                if isinstance(character_design_by_field.get(key), dict)
-                and character_design_by_field[key].get(
-                    "status",
-                    "SUPPORTED",
-                )
-                in {"SUPPORTED", "INSUFFICIENT_EVIDENCE"}
-            ),
-            "desire_conflict_count": len(character_design.get("desire_conflicts", []))
-            if isinstance(character_design, dict)
-            else 0,
-            "event_coverage_complete": coverage.get("event_coverage_complete"),
-        },
-        gaps=character_gaps or character_limitations,
-        required_artifact="主角双层欲望与最小完整集证据表",
-        source_material=character_design,
-    )
-
-    chapter_end_hooks_evidence = projection.get("chapter_end_hooks_evidence") or {}
-    chapter_end_hooks = projection.get("chapter_end_hooks") or []
-    valid_hook_samples = [
-        item
-        for item in chapter_end_hooks
-        if item.get("ending_evidence_ids")
-        and item.get("hook_type")
-        and item.get("strength")
-    ]
-    hook_gaps: list[str] = []
-    if chapter_end_hooks_evidence and chapter_end_hooks_evidence.get("is_current") is False:
-        hook_gaps.append("章末钩账本对应旧版拆解或旧版正文，需要重新生成。")
-    if len(valid_hook_samples) < chapter_count:
-        hook_gaps.append(
-            f"需要连续覆盖全书 {chapter_count} 章，当前只有 {len(valid_hook_samples)} 章有效分类。"
-        )
-    coverage = (
-        chapter_end_hooks_evidence.get("coverage", {})
-        if isinstance(chapter_end_hooks_evidence, dict)
-        else {}
-    )
-    if chapter_end_hooks and coverage.get("ending_evidence_complete") is not True:
-        hook_gaps.append("章末钩账本没有通过程序的逐章结尾证据覆盖检查。")
-    if chapter_end_hooks and coverage.get("sample_policy") != "ALL_CHAPTERS_WINDOWED":
-        hook_gaps.append("章末钩账本不是按连续窗口覆盖全书，不能精确计算相邻轮换与连续记录。")
-    if chapter_end_hooks and coverage.get("sequence_metrics_exact") is not True:
-        hook_gaps.append("全书相邻轮换与连续强钩指标尚未通过精确合并检查。")
-    checks["4.9"] = _readiness_check(
-        "4.9",
-        ready=not hook_gaps,
-        observed={
-            "chapter_count": chapter_count,
-            "required_sample_count": chapter_count,
-            "valid_chapter_end_sample_count": len(valid_hook_samples),
-            "sample_policy": coverage.get("sample_policy"),
-            "window_count": coverage.get("window_count"),
-            "sequence_metrics_exact": coverage.get("sequence_metrics_exact"),
-            "response_tracking_scope": coverage.get("response_tracking_scope"),
-            "generic_scene_analysis_count": len(deep.get("scene_analysis", [])),
-        },
-        gaps=hook_gaps,
-        required_artifact="全书连续覆盖的章末钩类型与节律账本",
-        source_material=chapter_end_hooks_evidence,
-    )
-
-    opening_payoffs_evidence = (
-        projection.get("opening_hook_payoffs_evidence") or {}
-    )
-    opening_hook_samples = (
-        opening_payoffs_evidence.get("hooks", [])
-        if isinstance(opening_payoffs_evidence, dict)
-        else []
-    )
-    opening_coverage = (
-        opening_payoffs_evidence.get("coverage", {})
-        if isinstance(opening_payoffs_evidence, dict)
-        else {}
-    )
-    opening_hook_gaps: list[str] = []
-    required_opening_hook_count = min(3, chapter_count)
-    if not opening_payoffs_evidence:
-        opening_hook_gaps.append(
-            "3.4 需要独立的前三章章末钩兑现追踪；4.9 只负责全书类型与节律，不能再拿它代替。"
-        )
-    elif opening_payoffs_evidence.get("is_current") is False:
-        opening_hook_gaps.append(
-            "3.4 兑现追踪对应旧版正文或旧版 4.9 账本，需要重新生成。"
-        )
-    if len(opening_hook_samples) < required_opening_hook_count:
-        opening_hook_gaps.append(
-            f"前三章需要 {required_opening_hook_count} 条钩子兑现记录，"
-            f"当前只有 {len(opening_hook_samples)} 条。"
-        )
-    if chapter_count < 3:
-        opening_hook_gaps.append(
-            f"作品当前只有 {chapter_count} 章，无法形成完整三章口径。"
-        )
-    if (
-        opening_payoffs_evidence
-        and opening_coverage.get("search_policy")
-        != "ALL_LATER_CHAPTERS_WINDOWED"
-    ):
-        opening_hook_gaps.append(
-            "3.4 没有按连续窗口搜索全部后续章节，不能判定最早回应或全书未回应。"
-        )
-    if (
-        opening_payoffs_evidence
-        and opening_coverage.get("all_windows_completed") is not True
-        and opening_coverage.get("all_required_hooks_resolved") is not True
-    ):
-        opening_hook_gaps.append(
-            "3.4 尚未找到全部开篇钩子的首次回应，也没有连续检查到全书结尾。"
-        )
-    if (
-        opening_payoffs_evidence
-        and opening_coverage.get("ending_evidence_complete") is not True
-    ):
-        opening_hook_gaps.append("3.4 的前三章真实章末证据不完整。")
-    if (
-        opening_payoffs_evidence
-        and opening_coverage.get("response_position_program_validated")
-        is not True
-    ):
-        opening_hook_gaps.append("3.4 的回应章节与原文对应尚未通过程序校验。")
-    checks["3.4"] = _readiness_check(
-        "3.4",
-        ready=not opening_hook_gaps,
-        observed={
-            "required_chapter_count": required_opening_hook_count,
-            "classified_opening_chapter_count": len(opening_hook_samples),
-            "valid_payoff_tracking_count": len(opening_hook_samples),
-            "search_policy": opening_coverage.get("search_policy"),
-            "window_count": opening_coverage.get("window_count"),
-            "all_windows_completed": opening_coverage.get(
-                "all_windows_completed"
-            ),
-        },
-        gaps=opening_hook_gaps,
-        required_artifact="前三章章末钩兑现追踪表（独立于 4.9）",
-        source_material=opening_payoffs_evidence,
-    )
+    checks["1.4"] = _evaluate_question_readiness("1.4", projection)
+    checks["3.1"] = _evaluate_question_readiness("3.1", projection)
+    checks["3.2"] = _evaluate_question_readiness("3.2", projection)
+    checks["2.1"] = _evaluate_question_readiness("2.1", projection)
+    checks["2.2"] = _evaluate_question_readiness("2.2", projection)
+    checks["4.9"] = _evaluate_question_readiness("4.9", projection)
+    checks["3.4"] = _evaluate_question_readiness("3.4", projection)
 
     foreshadowing_ledger = projection.get("foreshadowing_ledger") or {}
     ledger_coverage = int(foreshadowing_ledger.get("covered_chapter_count") or 0)
@@ -2054,102 +1563,6 @@ def _split_user_text_clauses(text: str) -> list[str]:
     ]
 
 
-def _clause_marks_external_effect_uncertainty(clause: str) -> bool:
-    return bool(
-        _EXTERNAL_EFFECT_UNCERTAINTY.search(clause)
-        or _EXTERNAL_EFFECT_QUESTION.search(clause)
-    )
-
-
-def _has_unsupported_external_effect_claim(text: str) -> bool:
-    clauses = _split_user_text_clauses(text)
-    for index, clause in enumerate(clauses):
-        if _UNSUPPORTED_EXTERNAL_MAGNITUDE.search(clause):
-            return True
-        has_causal_claim = bool(
-            _UNSUPPORTED_EXTERNAL_CAUSALITY.search(clause)
-            or _UNSUPPORTED_EXTERNAL_EFFECT_ASSERTION.search(clause)
-            or _READER_BEHAVIOR_OR_PSYCHOLOGY.search(clause)
-        )
-        if not has_causal_claim and not _EXTERNAL_EFFECT_TERM.search(clause):
-            continue
-        if _clause_marks_external_effect_uncertainty(clause):
-            continue
-        if has_causal_claim:
-            return True
-        adjacent_clauses = clauses[max(0, index - 1):index] + clauses[
-            index + 1:index + 2
-        ]
-        if any(
-            _clause_marks_external_effect_uncertainty(adjacent)
-            for adjacent in adjacent_clauses
-        ):
-            continue
-        return True
-    return False
-
-
-def _has_out_of_scope_4_9_response_distance(
-    answer: LearningAnswerProposal,
-) -> bool:
-    return any(
-        _CHAPTER_END_RESPONSE_DISTANCE.search(clause)
-        and not _CHAPTER_END_RESPONSE_SCOPE_DENIAL.search(clause)
-        for text in _answer_user_visible_texts(answer)
-        for clause in _split_user_text_clauses(text)
-    )
-
-
-def _validate_answer_user_text_boundaries(
-    answer: LearningAnswerProposal,
-) -> None:
-    answer_texts = _answer_user_visible_texts(answer)
-    if any(_PROHIBITED_PRICING_TERM.search(text) for text in answer_texts):
-        raise LearningReportValidationError(
-            "LEARNING_REPORT_PRICING_OUT_OF_SCOPE",
-            [{
-                "path": ["answers", answer.question_id],
-                "type": "value_error",
-                "message": (
-                    "创作学习答案只记录 Token、调用、重试、耗时和失败，"
-                    "不得出现价格、币种、金额、单价或费用字段。"
-                ),
-            }],
-        )
-    unsupported_claims = [
-        text
-        for text in _answer_external_causality_texts(answer)
-        if _has_unsupported_external_effect_claim(text)
-    ]
-    if unsupported_claims:
-        raise LearningReportValidationError(
-            "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED",
-            [{
-                "path": ["answers", answer.question_id],
-                "type": "value_error",
-                "message": (
-                    "书内结构证据不能证明读者流失、留存、销量、"
-                    "口碑或市场表现的因果；请改写为结构观察或待外部数据验证。"
-                ),
-            }],
-        )
-    if (
-        answer.question_id == "4.9"
-        and _has_out_of_scope_4_9_response_distance(answer)
-    ):
-        raise LearningReportValidationError(
-            "LEARNING_REPORT_4_9_RESPONSE_METRIC_OUT_OF_SCOPE",
-            [{
-                "path": ["answers", answer.question_id],
-                "type": "value_error",
-                "message": (
-                    "4.9 只回答章末钩类型和节律，不得在用户答案中"
-                    "记录回应、兑现或回收距离。"
-                ),
-            }],
-        )
-
-
 def parse_learning_report(
     value: dict,
     *,
@@ -2329,19 +1742,17 @@ def _validate_selected_answers_against_projection(
     evidence_by_id: dict[str, EvidenceSpan] | None = None,
     chapter_by_unit_id: dict[str, dict[str, object]] | None = None,
 ) -> None:
+    errors: list[dict[str, Any]] = []
     for answer in output.answers:
-        if answer.question_id == "1.4":
-            _validate_1_4_answer_against_projection(
-                answer,
-                projection,
-                opening_promise_sources=opening_promise_sources,
-                evidence_by_id=evidence_by_id,
-                chapter_by_unit_id=chapter_by_unit_id,
-            )
-        elif answer.question_id == "2.2":
-            _validate_2_2_answer_against_projection(answer, projection)
-        elif answer.question_id == "4.9":
-            _validate_4_9_answer_against_projection(answer, projection)
+        plugin = get_question_plugin(answer.question_id)
+        plugin.validate_answer(
+            answer,
+            projection,
+            errors,
+            opening_promise_sources=opening_promise_sources,
+            evidence_by_id=evidence_by_id,
+            chapter_by_unit_id=chapter_by_unit_id,
+        )
 
 
 def _learning_report_json_default(value: object) -> str:
@@ -2387,7 +1798,7 @@ def persist_learning_report(
     projection: dict | None = None
     program_1_4_artifact: dict[str, object] | None = None
     if set(selected_question_ids).intersection(
-        LEARNING_REPORT_PROJECTION_QUESTION_IDS
+        get_projection_question_ids()
     ):
         from .workbench import build_workbench_projection
 
@@ -2433,35 +1844,11 @@ def persist_learning_report(
                 evidence_by_id=validation_evidence_by_id,
                 chapter_by_unit_id=validation_chapter_by_unit_id,
             )
-        if "2.2" in selected_question_ids:
-            character_design = (
-                projection.get("character_design_evidence") or {}
-            )
-            for answer in output.answers:
-                if answer.question_id == "2.2":
-                    _apply_program_2_2_answer(answer, character_design)
-        if {"3.1", "3.2"}.intersection(selected_question_ids):
-            opening_structure = (
-                projection.get("opening_structure_evidence") or {}
-            )
-            for answer in output.answers:
-                if answer.question_id == "3.1":
-                    _apply_program_3_1_answer(
-                        answer,
-                        opening_structure,
-                    )
-                elif answer.question_id == "3.2":
-                    _apply_program_3_2_answer(
-                        answer,
-                        opening_structure,
-                    )
-        if "4.9" in selected_question_ids:
-            chapter_end_hooks = (
-                projection.get("chapter_end_hooks_evidence") or {}
-            )
-            for answer in output.answers:
-                if answer.question_id == "4.9":
-                    _apply_program_4_9_answer(answer, chapter_end_hooks)
+        for answer in output.answers:
+            if answer.question_id in selected_question_ids:
+                plugin = get_question_plugin(answer.question_id)
+                if plugin.is_program_compiled:
+                    plugin.apply_program_answer(output, projection)
         _validate_selected_answers_against_projection(
             output,
             projection,

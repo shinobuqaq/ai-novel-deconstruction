@@ -389,9 +389,18 @@ def _has_out_of_scope_4_9_response_distance(
     )
 
 
-def _validate_answer_user_text_boundaries(
+def validate_answer_user_text_boundaries(
     answer: LearningAnswerProposal,
-) -> None:
+    *,
+    soft_annotation: bool = False,
+) -> list[dict[str, Any]]:
+    """Validate answer user text boundaries.
+
+    When soft_annotation is False (strict mode for invariants & unit tests),
+    unsupported causality claims raise LearningReportValidationError.
+    When soft_annotation is True, unsupported claims are collected as
+    soft annotation warnings with confidence penalty instead of raising.
+    """
     answer_texts = _answer_user_visible_texts(answer)
     if any(_PROHIBITED_PRICING_TERM.search(text) for text in answer_texts):
         raise LearningReportValidationError(
@@ -405,23 +414,36 @@ def _validate_answer_user_text_boundaries(
                 ),
             }],
         )
+
+    soft_annotations: list[dict[str, Any]] = []
     unsupported_claims = [
         text
         for text in _answer_external_causality_texts(answer)
         if _has_unsupported_external_effect_claim(text)
     ]
     if unsupported_claims:
-        raise LearningReportValidationError(
-            "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED",
-            [{
-                "path": ["answers", answer.question_id],
-                "type": "value_error",
+        if not soft_annotation:
+            raise LearningReportValidationError(
+                "LEARNING_REPORT_EXTERNAL_CAUSALITY_UNSUPPORTED",
+                [{
+                    "path": ["answers", answer.question_id],
+                    "type": "value_error",
+                    "message": (
+                        "书内结构证据不能证明读者流失、留存、销量、"
+                        "口碑或市场表现的因果；请改写为结构观察或待外部数据验证。"
+                    ),
+                }],
+            )
+        for claim in unsupported_claims:
+            soft_annotations.append({
+                "type": "EXTERNAL_CAUSALITY_UNSUPPORTED",
+                "flagged_text": claim,
+                "confidence_penalty": 0.15,
                 "message": (
-                    "书内结构证据不能证明读者流失、留存、销量、"
-                    "口碑或市场表现的因果；请改写为结构观察或待外部数据验证。"
+                    "包含未经验证的书外读者心理或市场表现因果推断，已软性衰减置信度。"
                 ),
-            }],
-        )
+            })
+
     if (
         answer.question_id == "4.9"
         and _has_out_of_scope_4_9_response_distance(answer)
@@ -437,6 +459,12 @@ def _validate_answer_user_text_boundaries(
                 ),
             }],
         )
+
+    return soft_annotations
+
+
+# Backward compatibility alias
+_validate_answer_user_text_boundaries = validate_answer_user_text_boundaries
 
 
 def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:

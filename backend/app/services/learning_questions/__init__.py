@@ -72,4 +72,9 @@ from .common import (
     _validate_answer_user_text_boundaries,
     _validation_errors,
 )
-from .registry import get_all_question_plugins, get_question_plugin
+from .registry import (
+    get_all_question_plugins,
+    get_program_compiled_question_ids,
+    get_projection_question_ids,
+    get_question_plugin,
+)

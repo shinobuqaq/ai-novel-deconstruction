@@ -28,6 +28,7 @@ class StandardQuestionPlugin(BaseQuestionPlugin):
         answer: LearningAnswerProposal,
         projection: dict[str, Any],
         errors: list[dict[str, Any]],
+        **kwargs: Any,
     ) -> None:
         pass
 

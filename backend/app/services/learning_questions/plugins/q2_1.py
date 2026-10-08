@@ -577,6 +577,7 @@ def _program_2_1_reading_fields(
 
 class Q2_1Plugin(BaseQuestionPlugin):
     question_id = "2.1"
+    requires_projection = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
         chapter_count = int(projection.get("chapter_count") or 0)
@@ -620,16 +621,30 @@ class Q2_1Plugin(BaseQuestionPlugin):
         return {
             "question_id": self.question_id,
             "ready": action_ready,
+            "observed": {
+                "program_counts": action_counts,
+                "opening_character_role_count": len(opening_character_roles),
+                "introduction_point_count": len(
+                    opening_character_artifact["introduction_points"]
+                ),
+                "identity_duplicate_candidate_count": identity_candidate_count,
+                "roles_without_first_evidence_count": len(roles_without_first_evidence),
+            },
             "gaps": action_limitations,
-            "required_evidences": ["opening_character_artifact"],
+            "required_artifact": (
+                "2.1 角色首行动序、首场功能、后续量级、新增间隔、"
+                "功能分布与身份风险完整账本"
+            ),
             "answer_scope": "PARTIAL" if action_ready else "NOT_READY",
+            "source_material": opening_character_artifact,
         }
 
     def validate_answer(
         self,
         answer: LearningAnswerProposal,
         projection: dict[str, Any],
-        errors: list[dict[str, Any]],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> None:
         item_by_id = {item.item_id: item for item in answer.contract_items}
         function_item = item_by_id.get("first_scene_functions")

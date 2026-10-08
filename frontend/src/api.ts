@@ -975,6 +975,7 @@ export type Workbench = {
   learning_report_status: "READY" | "GENERATING" | "OUTDATED" | "FAILED" | "NOT_GENERATED";
   learning_report: WorkbenchLearningReport;
   chapters: WorkbenchChapterRef[];
+  narrative_scene_tree?: Record<string, unknown> | null;
 };
 
 export type WorkbenchStateAtChapter = {
@@ -1150,8 +1151,15 @@ export const api = {
     request<EntityCandidate[]>(`/api/analysis-runs/${runId}/entities`),
   analysisEvents: (runId: string) =>
     request<EventCandidate[]>(`/api/analysis-runs/${runId}/events`),
-  analysisWorkbench: (runId: string, deepRevision?: number) =>
-    request<Workbench>(`/api/analysis-runs/${runId}/workbench${deepRevision ? `?deep_revision=${deepRevision}` : ""}`),
+  analysisWorkbench: (runId: string, deepRevision?: number, view?: string) => {
+    const params = new URLSearchParams();
+    if (deepRevision) params.set("deep_revision", String(deepRevision));
+    if (view) params.set("view", view);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return request<Workbench>(`/api/analysis-runs/${runId}/workbench${qs}`);
+  },
+  analysisWorkbenchPacing: (runId: string) =>
+    request<Record<string, unknown>>(`/api/analysis-runs/${runId}/workbench/pacing`),
   decidePersonIdentity: (
     runId: string,
     candidateKey: string,

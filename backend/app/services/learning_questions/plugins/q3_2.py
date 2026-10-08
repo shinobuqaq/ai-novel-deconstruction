@@ -274,21 +274,123 @@ def _apply_program_3_2_answer(
 
 class Q3_2Plugin(BaseQuestionPlugin):
     question_id = "3.2"
+    requires_projection = True
+    is_program_compiled = True
 
     def assess_readiness(self, projection: dict[str, Any]) -> dict[str, object]:
+        chapter_count = len(projection.get("chapters", []))
         opening_structure = projection.get("opening_structure_evidence") or {}
-        cov = opening_structure.get("coverage") or {}
-        complete = bool(cov.get("event_coverage_complete"))
-        gaps = []
-        if not complete:
-            gaps.append("前三章开篇结构账本未生成或覆盖不全。")
+        opening_structure_status = str(
+            projection.get("opening_structure_status") or "NOT_GENERATED"
+        )
+        opening_chapter_tasks = (
+            opening_structure.get("chapter_tasks", [])
+            if isinstance(opening_structure, dict)
+            else []
+        )
+        opening_segments = (
+            opening_structure.get("paragraph_segments", [])
+            if isinstance(opening_structure, dict)
+            else []
+        )
+        information_timeline = (
+            opening_structure.get("information_timeline", [])
+            if isinstance(opening_structure, dict)
+            else []
+        )
+        opening_structure_coverage = (
+            opening_structure.get("coverage", {})
+            if isinstance(opening_structure, dict)
+            else {}
+        )
+        shared_opening_gaps: list[str] = []
+        if opening_structure_status == "GENERATING":
+            shared_opening_gaps.append("前三章逐段账本仍在生成。")
+        elif opening_structure_status == "OUTDATED":
+            shared_opening_gaps.append("前三章逐段账本对应旧版正文或旧版主角识别。")
+        elif opening_structure_status == "FAILED":
+            shared_opening_gaps.append("前三章逐段账本上次生成失败，需要查看任务诊断。")
+        elif opening_structure_status != "READY":
+            shared_opening_gaps.append("尚未生成前三章逐段任务与信息装载账本。")
+        if chapter_count < 3:
+            shared_opening_gaps.append(
+                f"作品当前只有 {chapter_count} 章，无法形成完整黄金三章口径。"
+            )
+
+        opening_sequence_gaps = list(shared_opening_gaps)
+        if (
+            opening_structure_coverage.get("paragraph_coverage_complete")
+            is not True
+            or opening_structure_coverage.get(
+                "paragraph_sequence_contiguous"
+            )
+            is not True
+        ):
+            opening_sequence_gaps.append(
+                "前三章段落没有通过连续、不重叠、不漏段的程序覆盖检查。"
+            )
+        if sorted(
+            int(item.get("chapter_ordinal") or 0)
+            for item in opening_chapter_tasks
+            if isinstance(item, dict)
+        ) != [1, 2, 3]:
+            opening_sequence_gaps.append("黄金三章逐章任务没有完整覆盖第 1 至 3 章。")
+        if not opening_segments:
+            opening_sequence_gaps.append("缺少前三章连续段落任务序列。")
+        if (
+            len(information_timeline) != 6
+            or {
+                str(item.get("module") or "")
+                for item in information_timeline
+                if isinstance(item, dict)
+            }
+            != {
+                "主角困境",
+                "主角性格",
+                "核心能力",
+                "世界观规则",
+                "威胁",
+                "短期目标",
+            }
+        ):
+            opening_sequence_gaps.append("六类信息模块没有逐项记录首次位置或未观察状态。")
+        ready = not opening_sequence_gaps
         return {
             "question_id": self.question_id,
-            "ready": complete,
-            "gaps": gaps or ["单书已就绪，跨书对比需多书数据。"],
-            "required_evidences": ["opening_structure_evidence"],
-            "answer_scope": "PARTIAL" if complete else "NOT_READY",
+            "ready": ready,
+            "observed": {
+                "opening_structure_status": opening_structure_status,
+                "chapter_task_count": len(opening_chapter_tasks),
+                "paragraph_segment_count": len(opening_segments),
+                "information_module_assessed_count": len(
+                    information_timeline
+                ),
+                "paragraph_coverage_complete": (
+                    opening_structure_coverage.get(
+                        "paragraph_coverage_complete"
+                    )
+                ),
+                "story_character_count": opening_structure_coverage.get(
+                    "story_character_count"
+                ),
+            },
+            "gaps": (
+                opening_sequence_gaps
+                or ["缺少同品类多书使用同一口径形成的标准节奏区间。"]
+            ),
+            "required_artifact": "前三章逐段任务与信息装载共享账本",
+            "answer_scope": "PARTIAL" if ready else "NOT_READY",
+            "source_material": opening_structure,
         }
+
+    def validate_answer(
+        self,
+        answer: LearningAnswerProposal,
+        projection: dict[str, Any],
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        return
 
     def apply_program_answer(
         self,
